@@ -30,7 +30,7 @@ impl Server {
         };
 
         if let Some(var) = lookup::variable_at_offset(&file, offset) {
-            return same_file_variable_locations(&file, var.raw, file_id);
+            return same_file_variable_locations(&file, var.raw, var.start, file_id);
         }
 
         let Some(cursor_analysis) = self.file_analysis_for(file_id) else { return Vec::new() };
@@ -82,14 +82,61 @@ fn might_contain(haystack: &[u8], needle: &[u8]) -> bool {
     (0..=last).any(|i| haystack[i..i + needle.len()].iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
-fn same_file_variable_locations(file: &MagoFile, raw: &[u8], file_id: FileId) -> Vec<SymbolLocation> {
-    lookup::lex(file)
-        .into_iter()
+fn same_file_variable_locations(file: &MagoFile, raw: &[u8], offset: u32, file_id: FileId) -> Vec<SymbolLocation> {
+    let tokens = lookup::lex(file);
+    let target_scope = variable_scope(&tokens, offset);
+
+    tokens
+        .iter()
         .filter(|t| matches!(t.kind, TokenKind::Variable) && t.value == raw)
+        .filter(|t| variable_scope(&tokens, t.start.offset) == target_scope)
         .map(|t| {
             let start = t.start.offset;
             let end = start + t.value.len() as u32;
             SymbolLocation { file: file_id, range: Range::new(start, end) }
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VariableScope {
+    Global,
+    Function { start: u32, end: u32 },
+}
+
+fn variable_scope(tokens: &[mago_syntax::token::Token<'_>], offset: u32) -> VariableScope {
+    let mut scope = VariableScope::Global;
+
+    for (idx, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Function | TokenKind::Fn) || token.start.offset > offset {
+            continue;
+        }
+
+        let Some(end) = function_scope_end(tokens, idx) else { continue };
+        if offset < end {
+            scope = VariableScope::Function { start: token.start.offset, end };
+        }
+    }
+
+    scope
+}
+
+fn function_scope_end(tokens: &[mago_syntax::token::Token<'_>], function_idx: usize) -> Option<u32> {
+    let body_start = tokens[function_idx..].iter().position(|t| matches!(t.kind, TokenKind::LeftBrace))? + function_idx;
+    let mut depth = 0u32;
+
+    for token in &tokens[body_start..] {
+        match token.kind {
+            TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(token.start.offset + token.value.len() as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }

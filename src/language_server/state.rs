@@ -269,6 +269,8 @@ fn build_database_configuration(root: &Path, configuration: &Configuration) -> D
 
     let includes: Vec<Cow<'static, [u8]>> =
         source.includes.iter().cloned().map(|s| Cow::<'static, [u8]>::Owned(s.into_bytes())).collect();
+    let patches: Vec<Cow<'static, [u8]>> =
+        source.patches.iter().cloned().map(|s| Cow::<'static, [u8]>::Owned(s.into_bytes())).collect();
     let extensions: Vec<Cow<'static, [u8]>> = if source.extensions.is_empty() {
         vec![Cow::Borrowed(b"php")]
     } else {
@@ -293,5 +295,13 @@ fn build_database_configuration(root: &Path, configuration: &Configuration) -> D
         })
         .collect();
 
-    DatabaseConfiguration { workspace, paths, includes, excludes, extensions, glob: source.glob.to_database_settings() }
+    DatabaseConfiguration {
+        workspace,
+        paths,
+        includes,
+        excludes,
+        extensions,
+        glob: source.glob.to_database_settings(),
+        patches,
+    }
 }

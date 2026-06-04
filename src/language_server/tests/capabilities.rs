@@ -210,6 +210,55 @@ async fn rename() {
 }
 
 #[tokio::test]
+async fn rename_variable_accepts_dollar_prefixed_name() {
+    let code = "<?php\n$name = 'Ada';\necho $name;\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let prepare = h.at("textDocument/prepareRename", "a.php", 1, 2).await;
+    assert_eq!(prepare["placeholder"], "$name");
+
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 1, "character": 2 },
+                "newName": "$label",
+            }),
+        )
+        .await;
+
+    let edits = result["changes"][&h.url("a.php")].as_array().unwrap();
+    let texts: Vec<&str> = edits.iter().map(|e| e["newText"].as_str().unwrap_or("")).collect();
+    assert_eq!(texts, vec!["$label", "$label"]);
+}
+
+#[tokio::test]
+async fn rename_variable_only_renames_enclosing_scope() {
+    let code = "<?php\n$name = 'global';\nfunction greet(string $name): void {\n    echo $name;\n}\necho $name;\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 3, "character": 11 },
+                "newName": "$label",
+            }),
+        )
+        .await;
+
+    let edits = result["changes"][&h.url("a.php")].as_array().unwrap();
+    let lines: Vec<u64> = edits.iter().map(|e| e["range"]["start"]["line"].as_u64().unwrap()).collect();
+    let texts: Vec<&str> = edits.iter().map(|e| e["newText"].as_str().unwrap_or("")).collect();
+    assert_eq!(texts, vec!["$label", "$label"]);
+    assert_eq!(lines, vec![2, 3]);
+}
+
+#[tokio::test]
 async fn document_link() {
     let lib = "<?php\nnamespace App;\nclass Greeter {}\n";
     let consumer = "<?php\nuse App\\Greeter;\n\n$g = new Greeter();\n";

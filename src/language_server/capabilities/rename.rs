@@ -36,7 +36,7 @@ pub fn prepare(resolved: &ResolvedNames<'_>, file: &MagoFile, offset: u32) -> Op
     let var = lookup::variable_at_offset(file, offset)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: range_at_offsets(file, var.start, var.end),
-        placeholder: String::from_utf8_lossy(var.name).into_owned(),
+        placeholder: String::from_utf8_lossy(var.raw).into_owned(),
     })
 }
 
@@ -46,9 +46,20 @@ pub fn compute(
     offset: u32,
     new_name: String,
 ) -> Option<WorkspaceEdit> {
-    if !is_valid_php_identifier(&new_name) {
-        return None;
-    }
+    let replacement_name = if lookup::variable_at_offset(file, offset).is_some() {
+        let variable_name = new_name.strip_prefix('$').unwrap_or(&new_name);
+        if !is_valid_php_identifier(variable_name) {
+            return None;
+        }
+
+        format!("${variable_name}")
+    } else {
+        if !is_valid_php_identifier(&new_name) {
+            return None;
+        }
+
+        new_name
+    };
 
     let references = workspace.server.get_references(file.id, offset, true);
     if references.is_empty() {
@@ -61,7 +72,7 @@ pub fn compute(
             changes
                 .entry(location.uri)
                 .or_default()
-                .push(TextEdit { range: location.range, new_text: new_name.clone() });
+                .push(TextEdit { range: location.range, new_text: replacement_name.clone() });
         }
     }
 
