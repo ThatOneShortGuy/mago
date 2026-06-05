@@ -11,6 +11,7 @@ use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_database::Database;
@@ -36,6 +37,8 @@ pub struct ExpressionTypeIndex {
     /// Maps an expression's `(start, end)` byte span to the class-like names its
     /// inferred type resolves to.
     pub by_span: HashMap<(u32, u32), Vec<Word>>,
+    /// Maps an expression's `(start, end)` byte span to its rendered inferred type.
+    pub display_by_span: HashMap<(u32, u32), String>,
 }
 
 /// A transport-agnostic backend for a single workspace.
@@ -236,7 +239,10 @@ impl Server {
 
 fn build_index(artifacts: &AnalysisArtifacts) -> ExpressionTypeIndex {
     let mut by_span: HashMap<(u32, u32), Vec<Word>> = HashMap::default();
+    let mut display_by_span: HashMap<(u32, u32), String> = HashMap::default();
     for (span, ty) in artifacts.expression_types.iter() {
+        display_by_span.insert(*span, ty.get_id().to_string());
+
         let mut classes: Vec<Word> = Vec::new();
         for atomic in ty.types.iter() {
             match atomic {
@@ -251,5 +257,5 @@ fn build_index(artifacts: &AnalysisArtifacts) -> ExpressionTypeIndex {
         }
     }
 
-    ExpressionTypeIndex { by_span }
+    ExpressionTypeIndex { by_span, display_by_span }
 }

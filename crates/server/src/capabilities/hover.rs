@@ -29,10 +29,19 @@ impl Server {
         }
 
         let var = lookup::variable_at_offset(&file, offset)?;
-        Some(HoverInfo {
-            markdown: format!("```php\n${}\n```\n\n*variable*", BytesDisplay(var.name)),
-            range: Range::new(var.start, var.end),
-        })
+        let name = var.name.to_vec();
+        let start = var.start;
+        let end = var.end;
+        let ty =
+            self.type_index_for(file_id).and_then(|index| index.display_by_span.get(&(start, end))).map(String::as_str);
+        Some(HoverInfo { markdown: render_variable(&name, ty), range: Range::new(start, end) })
+    }
+}
+
+fn render_variable(name: &[u8], ty: Option<&str>) -> String {
+    match ty {
+        Some(ty) => format!("_@var_ `{}` `${}`", ty, BytesDisplay(name)),
+        None => format!("_@var_ ${}", BytesDisplay(name)),
     }
 }
 

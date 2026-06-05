@@ -49,6 +49,18 @@ async fn hover_class() {
 }
 
 #[tokio::test]
+async fn hover_variable_shows_type() {
+    let code = "<?php\nfunction greet(string $name): void {\n    echo $name;\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h.at("textDocument/hover", "a.php", 2, 11).await;
+    let value = result["contents"]["value"].as_str().unwrap_or("");
+    assert!(value.contains("string $name"), "got {value:?}");
+    assert!(value.contains("*variable*"), "got {value:?}");
+}
+
+#[tokio::test]
 async fn goto_definition() {
     let code = "<?php\nclass Greeter {}\n\n$g = new Greeter();\n";
     let mut h = Harness::start(&[("a.php", code)]).await;
