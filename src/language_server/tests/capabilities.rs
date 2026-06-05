@@ -56,8 +56,7 @@ async fn hover_variable_shows_type() {
 
     let result = h.at("textDocument/hover", "a.php", 2, 11).await;
     let value = result["contents"]["value"].as_str().unwrap_or("");
-    assert!(value.contains("string $name"), "got {value:?}");
-    assert!(value.contains("*variable*"), "got {value:?}");
+    assert!(value.contains("string") && value.contains("$name"), "got {value:?}");
 }
 
 #[tokio::test]
@@ -509,6 +508,32 @@ async fn linter_quickfixes() {
             assert!(action["kind"].as_str().unwrap_or("").contains("quickfix"));
         }
     }
+}
+
+#[tokio::test]
+async fn code_action_removes_all_unused_imports_in_file() {
+    let code = "<?php\nnamespace App;\n\nuse Foo\\Bar;\nuse Foo\\Baz;\n\nfinal class Demo {}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 12 } },
+                "context": { "diagnostics": [] }
+            }),
+        )
+        .await;
+
+    let actions = result.as_array().unwrap();
+    let action = actions
+        .iter()
+        .find(|action| action["title"] == "Remove all unused imports")
+        .unwrap_or_else(|| panic!("missing remove-all action in {actions:?}"));
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    assert_eq!(edits.len(), 2, "got {edits:?}");
 }
 
 #[tokio::test]

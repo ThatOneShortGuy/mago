@@ -25,9 +25,11 @@ impl Server {
     #[must_use]
     pub fn get_code_actions(&self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
         let mut actions = Vec::new();
+        let mut remove_unused_import_edits = Vec::new();
 
         if let Some(issues) = self.last_issues() {
             for issue in issues.iter() {
+                collect_unused_import_edits(issue, file_id, &mut remove_unused_import_edits);
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
@@ -36,14 +38,62 @@ impl Server {
 
         for analysis in self.analyses() {
             for issue in analysis.lint_issues.iter() {
+                collect_unused_import_edits(issue, file_id, &mut remove_unused_import_edits);
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
             }
         }
 
+        if !remove_unused_import_edits.is_empty() {
+            actions.insert(0, remove_all_unused_imports_action(file_id, remove_unused_import_edits));
+        }
+
         actions
     }
+}
+
+fn remove_all_unused_imports_action(file_id: FileId, edits: Vec<TextReplacement>) -> CodeActionItem {
+    let mut grouped = HashMap::default();
+    grouped.insert(file_id, edits);
+
+    CodeActionItem { title: "Remove all unused imports".to_string(), edits: grouped, diagnostic: None }
+}
+
+fn collect_unused_import_edits(issue: &Issue, file_id: FileId, out: &mut Vec<TextReplacement>) {
+    if !is_unused_import_issue(issue) {
+        return;
+    }
+
+    let Some(file_edits) = issue.edits.get(&file_id) else {
+        return;
+    };
+
+    out.extend(file_edits.iter().map(|edit| TextReplacement {
+        range: Range::new(edit.range.start, edit.range.end),
+        new_text: String::from_utf8_lossy(&edit.new_text).into_owned(),
+    }));
+}
+
+fn is_unused_import_issue(issue: &Issue) -> bool {
+    if issue.code.as_deref() != Some("no-redundant-use") {
+        return false;
+    }
+
+    contains_unused_import_text(&issue.message)
+        || issue.help.as_deref().is_some_and(contains_unused_import_text)
+        || issue
+            .annotations
+            .iter()
+            .filter_map(|annotation| annotation.message.as_deref())
+            .any(contains_unused_import_text)
+}
+
+fn contains_unused_import_text(text: &str) -> bool {
+    text.contains("Unused import")
+        || text.contains("unused symbols")
+        || text.contains("are unused")
+        || text.contains("never used")
 }
 
 /// Build a code action for `issue` if it has edits and its primary annotation
