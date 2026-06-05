@@ -19,17 +19,23 @@ use crate::domain::Range;
 use crate::domain::Severity;
 use crate::domain::TextReplacement;
 
+#[derive(Default)]
+struct FileWideFix {
+    issue_count: usize,
+    edits: Vec<TextReplacement>,
+}
+
 impl Server {
     /// Quickfix code actions for issues anchored within `[start, end]` of
     /// `file_id`.
     #[must_use]
     pub fn get_code_actions(&self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
         let mut actions = Vec::new();
-        let mut remove_unused_import_edits = Vec::new();
+        let mut file_wide_fixes: HashMap<String, FileWideFix> = HashMap::default();
 
         if let Some(issues) = self.last_issues() {
             for issue in issues.iter() {
-                collect_unused_import_edits(issue, file_id, &mut remove_unused_import_edits);
+                collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
@@ -38,62 +44,48 @@ impl Server {
 
         for analysis in self.analyses() {
             for issue in analysis.lint_issues.iter() {
-                collect_unused_import_edits(issue, file_id, &mut remove_unused_import_edits);
+                collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
             }
         }
 
-        if !remove_unused_import_edits.is_empty() {
-            actions.insert(0, remove_all_unused_imports_action(file_id, remove_unused_import_edits));
-        }
-
-        actions
+        file_wide_fixes
+            .into_iter()
+            .filter(|(_, fix)| fix.issue_count > 1 && !fix.edits.is_empty())
+            .map(|(code, fix)| file_action(file_id, format!("Fix all `{code}` issues in file"), fix.edits))
+            .chain(actions)
+            .collect()
     }
 }
 
-fn remove_all_unused_imports_action(file_id: FileId, edits: Vec<TextReplacement>) -> CodeActionItem {
+fn file_action(file_id: FileId, title: String, edits: Vec<TextReplacement>) -> CodeActionItem {
     let mut grouped = HashMap::default();
     grouped.insert(file_id, edits);
 
-    CodeActionItem { title: "Remove all unused imports".to_string(), edits: grouped, diagnostic: None }
+    CodeActionItem { title, edits: grouped, diagnostic: None }
 }
 
-fn collect_unused_import_edits(issue: &Issue, file_id: FileId, out: &mut Vec<TextReplacement>) {
-    if !is_unused_import_issue(issue) {
+fn collect_file_wide_fix(issue: &Issue, file_id: FileId, fixes: &mut HashMap<String, FileWideFix>) {
+    let Some(code) = issue.code.as_deref() else {
         return;
-    }
+    };
 
     let Some(file_edits) = issue.edits.get(&file_id) else {
         return;
     };
 
-    out.extend(file_edits.iter().map(|edit| TextReplacement {
+    if file_edits.is_empty() {
+        return;
+    }
+
+    let fix = fixes.entry(code.to_string()).or_default();
+    fix.issue_count += 1;
+    fix.edits.extend(file_edits.iter().map(|edit| TextReplacement {
         range: Range::new(edit.range.start, edit.range.end),
         new_text: String::from_utf8_lossy(&edit.new_text).into_owned(),
     }));
-}
-
-fn is_unused_import_issue(issue: &Issue) -> bool {
-    if issue.code.as_deref() != Some("no-redundant-use") {
-        return false;
-    }
-
-    contains_unused_import_text(&issue.message)
-        || issue.help.as_deref().is_some_and(contains_unused_import_text)
-        || issue
-            .annotations
-            .iter()
-            .filter_map(|annotation| annotation.message.as_deref())
-            .any(contains_unused_import_text)
-}
-
-fn contains_unused_import_text(text: &str) -> bool {
-    text.contains("Unused import")
-        || text.contains("unused symbols")
-        || text.contains("are unused")
-        || text.contains("never used")
 }
 
 /// Build a code action for `issue` if it has edits and its primary annotation

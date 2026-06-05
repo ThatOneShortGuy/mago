@@ -530,10 +530,64 @@ async fn code_action_removes_all_unused_imports_in_file() {
     let actions = result.as_array().unwrap();
     let action = actions
         .iter()
-        .find(|action| action["title"] == "Remove all unused imports")
+        .find(|action| action["title"] == "Fix all `no-redundant-use` issues in file")
         .unwrap_or_else(|| panic!("missing remove-all action in {actions:?}"));
     let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
     assert_eq!(edits.len(), 2, "got {edits:?}");
+}
+
+#[tokio::test]
+async fn code_action_wraps_all_interpolated_variables_in_braces() {
+    let code = "<?php\n$name = 'Ada';\necho \"Hello, $name!\";\necho \"Bye, $name!\";\nfinal class Demo {}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "range": { "start": { "line": 4, "character": 12 }, "end": { "line": 4, "character": 12 } },
+                "context": { "diagnostics": [] }
+            }),
+        )
+        .await;
+
+    let actions = result.as_array().unwrap();
+    let action = actions
+        .iter()
+        .find(|action| action["title"] == "Fix all `braced-string-interpolation` issues in file")
+        .unwrap_or_else(|| panic!("missing interpolation action in {actions:?}"));
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_texts: Vec<&str> = edits.iter().map(|edit| edit["newText"].as_str().unwrap_or("")).collect();
+    assert_eq!(new_texts, vec!["{", "}", "{", "}"]);
+}
+
+#[tokio::test]
+async fn code_action_fix_all_groups_any_repeated_fixable_issue() {
+    let code = "<?php\nIF (true) {\n    ECHO \"ok\";\n}\nfinal class Demo {}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "range": { "start": { "line": 4, "character": 12 }, "end": { "line": 4, "character": 12 } },
+                "context": { "diagnostics": [] }
+            }),
+        )
+        .await;
+
+    let actions = result.as_array().unwrap();
+    let action = actions
+        .iter()
+        .find(|action| action["title"] == "Fix all `lowercase-keyword` issues in file")
+        .unwrap_or_else(|| panic!("missing lowercase-keyword fix-all action in {actions:?}"));
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_texts: Vec<&str> = edits.iter().map(|edit| edit["newText"].as_str().unwrap_or("")).collect();
+    assert_eq!(new_texts, vec!["if", "echo"]);
 }
 
 #[tokio::test]
