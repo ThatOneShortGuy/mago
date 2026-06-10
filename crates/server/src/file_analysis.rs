@@ -1,14 +1,13 @@
 //! Per-file derived data computed in a single parse + name-resolve pass.
 //!
-//! Each [`FileAnalysis`] owns its own [`Bump`] arena. The arena keeps
+//! Each [`FileAnalysis`] owns its own [`LocalArena`]. The arena keeps
 //! the parse tree and [`ResolvedNames`] alive for the lifetime of the
 //! analysis, so capability handlers can use `mago_names`'s resolution
 //! map directly instead of going through an owned shadow copy.
 
 use std::sync::Arc;
 
-use bumpalo::Bump;
-
+use mago_allocator::LocalArena;
 use mago_database::file::File as MagoFile;
 use mago_linter::Linter;
 use mago_names::ResolvedNames;
@@ -59,19 +58,19 @@ pub struct FileAnalysis {
     /// `[start, end)`. Owned (no arena borrow), so completion can resolve names
     /// exactly as the resolver did without re-parsing `use` statements.
     scopes: Vec<(u32, u32, NamespaceScope)>,
-    /// Boxed so the `Bump`'s address is stable across moves of
+    /// Boxed so the `LocalArena`'s address is stable across moves of
     /// `FileAnalysis`. Treated as frozen storage after construction:
     /// nothing reaches it, nothing allocates, nothing resets. When the
     /// analysis is dropped, the heap chunks are freed and the
     /// references in `resolved` are invalidated at the same instant.
-    _arena: Box<Bump>,
+    _arena: Box<LocalArena>,
 }
 
-// SAFETY: After construction the `Bump` is never accessed via a shared
+// SAFETY: After construction the `LocalArena` is never accessed via a shared
 // reference: no `alloc` (which mutates allocator state through `&self`)
 // and no `reset` (which requires `&mut self`) is reachable. The `&str`
 // values in `resolved` point at immutable bytes in heap chunks the
-// `Bump` owns; reading immutable bytes from multiple threads is safe.
+// `LocalArena` owns; reading immutable bytes from multiple threads is safe.
 unsafe impl Sync for FileAnalysis {}
 
 impl std::fmt::Debug for FileAnalysis {
@@ -152,14 +151,14 @@ fn collect_scopes(program: &Program<'_>, file_size: u32) -> Vec<(u32, u32, Names
 /// file (otherwise semantic issues get reported twice).
 #[must_use]
 pub fn build(file: &MagoFile, linter_ctx: &LinterContext, with_semantics: bool) -> FileAnalysis {
-    let arena: Box<Bump> = Box::new(Bump::new());
+    let arena: Box<LocalArena> = Box::new(LocalArena::new());
 
     // SAFETY: `arena` is moved into the returned `FileAnalysis` at the
     // end of this function. Until then it stays at a stable heap address
     // (it's already boxed, and Box doesn't move its allocation on move).
     // Borrows derived from `arena_ref` end up stored in the same struct
     // as `arena` itself, so they're freed together.
-    let arena_ref: &'static Bump = unsafe { &*(arena.as_ref() as *const Bump) };
+    let arena_ref: &'static LocalArena = unsafe { &*(arena.as_ref() as *const LocalArena) };
 
     let program = parse_file_with_settings(arena_ref, file, linter_ctx.parser_settings);
     let resolved = NameResolver::new(arena_ref).resolve(program);
