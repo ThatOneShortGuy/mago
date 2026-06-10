@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_class_case;
 use mago_reporting::Annotation;
@@ -26,8 +25,9 @@ pub struct InterfaceNameRule {
     cfg: InterfaceNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct InterfaceNameConfig {
     pub level: Level,
     pub psr: bool,
@@ -87,7 +87,10 @@ impl LintRule for InterfaceNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Interface(interface) = node else {
             return;
         };
@@ -112,7 +115,7 @@ impl LintRule for InterfaceNameRule {
                     .with_note(format!("The interface name `{name}` does not follow class naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `{}` to adhere to the naming convention.",
-                        mago_casing::to_class_case(name)
+                        String::from_utf8_lossy(&mago_casing::to_class_case(name))
                     )),
             );
         }

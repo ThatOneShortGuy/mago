@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_camel_case;
 use mago_casing::is_snake_case;
@@ -28,8 +27,9 @@ pub struct MethodNameRule {
     cfg: MethodNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct MethodNameConfig {
     pub level: Level,
     /// When `true`, method names must be in camelCase. When `false`, they must be in snake_case.
@@ -107,7 +107,10 @@ impl LintRule for MethodNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Method(method) = node else {
             return;
         };
@@ -136,7 +139,7 @@ impl LintRule for MethodNameRule {
                         )
                         .with_help(format!(
                             "Consider renaming it to `{}` to adhere to the naming convention.",
-                            to_snake_case(name)
+                            String::from_utf8_lossy(&to_snake_case(name))
                         )),
                 );
             }
@@ -161,8 +164,8 @@ impl LintRule for MethodNameRule {
                     ))
                     .with_help(format!(
                         "Consider renaming it to `{}` or `{}`.",
-                        to_camel_case(name),
-                        to_snake_case(name)
+                        String::from_utf8_lossy(&to_camel_case(name)),
+                        String::from_utf8_lossy(&to_snake_case(name))
                     )),
                 );
             }
@@ -178,7 +181,7 @@ impl LintRule for MethodNameRule {
                         .with_note(format!("The method name `{name}` does not follow camel naming convention."))
                         .with_help(format!(
                             "Consider renaming it to `{}` to adhere to the naming convention.",
-                            to_camel_case(name)
+                            String::from_utf8_lossy(&to_camel_case(name))
                         )),
                 );
             }
@@ -193,7 +196,7 @@ impl LintRule for MethodNameRule {
                     .with_note(format!("The method name `{name}` does not follow snake naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `{}` to adhere to the naming convention.",
-                        to_snake_case(name)
+                        String::from_utf8_lossy(&to_snake_case(name))
                     )),
             );
         }

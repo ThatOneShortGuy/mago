@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,8 +27,9 @@ pub struct PreferSelfReturnTypeRule {
     cfg: PreferSelfReturnTypeConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct PreferSelfReturnTypeConfig {
     pub level: Level,
 }
@@ -109,7 +109,10 @@ impl LintRule for PreferSelfReturnTypeRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let return_type_hint = match node {
             Node::Function(function) => function.return_type_hint.as_ref(),
             Node::Method(method) => method.return_type_hint.as_ref(),
@@ -134,7 +137,10 @@ impl LintRule for PreferSelfReturnTypeRule {
 }
 
 impl PreferSelfReturnTypeRule {
-    fn check_hint<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, class_fqn: &[u8], hint: &Hint<'arena>) {
+    fn check_hint<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, class_fqn: &[u8], hint: &Hint<'arena>)
+    where
+        A: Arena,
+    {
         match hint {
             Hint::Identifier(identifier) => {
                 let resolved = ctx.lookup_name(identifier);

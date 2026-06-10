@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -35,8 +34,9 @@ pub struct LoopDoesNotIterateRule {
     cfg: LoopDoesNotIterateConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct LoopDoesNotIterateConfig {
     pub level: Level,
 }
@@ -98,7 +98,10 @@ impl LintRule for LoopDoesNotIterateRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let terminator = match node {
             Node::For(for_loop) => match &for_loop.body {
                 ForBody::Statement(stmt) => get_loop_terminator_from_statement(stmt),
@@ -122,13 +125,15 @@ impl LintRule for LoopDoesNotIterateRule {
     }
 }
 
-fn check_loop<'ast, 'arena>(
+fn check_loop<'ast, 'arena, A>(
     r#loop: Node<'ast, 'arena>,
     terminator: LoopTerminator<'ast, 'arena>,
-    ctx: &mut LintContext,
+    ctx: &mut LintContext<'_, '_, A>,
     cfg: LoopDoesNotIterateConfig,
     meta: &'static RuleMeta,
-) {
+) where
+    A: Arena,
+{
     let (terminator_span, terminator_name) = match terminator {
         LoopTerminator::Break(stmt) => (stmt.span(), "`break`"),
         LoopTerminator::Return(stmt) => (stmt.span(), "`return`"),

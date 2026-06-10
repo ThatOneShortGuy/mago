@@ -1,5 +1,3 @@
-use serde::Serialize;
-
 use mago_span::HasSpan;
 use mago_span::Span;
 
@@ -57,8 +55,9 @@ pub mod value_of;
 pub mod variable;
 pub mod wildcard;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
-#[serde(tag = "type", content = "value")]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
 #[non_exhaustive]
 pub enum Type<'arena> {
     Parenthesized(ParenthesizedType<'arena>),
@@ -100,6 +99,8 @@ pub enum Type<'arena> {
     Object(ObjectType<'arena>),
     Numeric(Keyword<'arena>),
     Scalar(Keyword<'arena>),
+    Empty(Keyword<'arena>),
+    EmptyScalar(Keyword<'arena>),
     CallableString(Keyword<'arena>),
     LowercaseCallableString(Keyword<'arena>),
     UppercaseCallableString(Keyword<'arena>),
@@ -180,6 +181,8 @@ impl HasSpan for Type<'_> {
             Type::String(ty) => ty.span(),
             Type::ArrayKey(ty) => ty.span(),
             Type::Scalar(ty) => ty.span(),
+            Type::Empty(ty) => ty.span(),
+            Type::EmptyScalar(ty) => ty.span(),
             Type::Object(ty) => ty.span(),
             Type::Numeric(ty) => ty.span(),
             Type::CallableString(ty) => ty.span(),
@@ -265,6 +268,8 @@ impl std::fmt::Display for Type<'_> {
             Type::String(ty) => write!(f, "{ty}"),
             Type::ArrayKey(ty) => write!(f, "{ty}"),
             Type::Scalar(ty) => write!(f, "{ty}"),
+            Type::Empty(ty) => write!(f, "{ty}"),
+            Type::EmptyScalar(ty) => write!(f, "{ty}"),
             Type::Object(ty) => write!(f, "{ty}"),
             Type::Numeric(ty) => write!(f, "{ty}"),
             Type::CallableString(ty) => write!(f, "{ty}"),

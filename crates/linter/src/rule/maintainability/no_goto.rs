@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -24,8 +23,9 @@ pub struct NoGotoRule {
     cfg: NoGotoConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NoGotoConfig {
     pub level: Level,
 }
@@ -96,7 +96,10 @@ impl LintRule for NoGotoRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::Goto(goto) => {
                 let issue = Issue::new(self.cfg.level, "Avoid using `goto`.")

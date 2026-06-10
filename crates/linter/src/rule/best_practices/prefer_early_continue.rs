@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -35,8 +34,9 @@ pub struct PreferEarlyContinueRule {
     cfg: PreferEarlyContinueConfig,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[derive(Debug, Clone, Copy, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct PreferEarlyContinueConfig {
     pub level: Level,
     pub max_allowed_statements: usize,
@@ -101,7 +101,10 @@ impl LintRule for PreferEarlyContinueRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let (if_statement, loop_span) = match node {
             Node::For(for_loop) => {
                 let body = match &for_loop.body {

@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,8 +27,9 @@ pub struct MissingDocsRule {
     cfg: MissingDocsConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct MissingDocsConfig {
     pub level: Level,
     pub functions: bool,
@@ -118,7 +118,10 @@ impl LintRule for MissingDocsRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Program(program) = node else {
             return;
         };
@@ -130,12 +133,14 @@ impl LintRule for MissingDocsRule {
 }
 
 impl MissingDocsRule {
-    fn check_statement<'ast, 'arena>(
+    fn check_statement<'ast, 'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         program: &'ast Program<'arena>,
         stmt: &'ast Statement<'arena>,
-    ) {
+    ) where
+        A: Arena,
+    {
         match stmt {
             Statement::Function(func) if self.cfg.functions => {
                 self.check_docs(ctx, program, func, "function");
@@ -183,12 +188,14 @@ impl MissingDocsRule {
         }
     }
 
-    fn check_members<'ast, 'arena>(
+    fn check_members<'ast, 'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         program: &'ast Program<'arena>,
         members: impl Iterator<Item = &'ast ClassLikeMember<'arena>>,
-    ) {
+    ) where
+        A: Arena,
+    {
         for member in members {
             match member {
                 ClassLikeMember::Constant(constant) if self.cfg.constants => {
@@ -208,13 +215,15 @@ impl MissingDocsRule {
         }
     }
 
-    fn check_docs<'ast, 'arena>(
+    fn check_docs<'ast, 'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         program: &'ast Program<'arena>,
         node: &'ast impl HasSpan,
         subject: &'static str,
-    ) {
+    ) where
+        A: Arena,
+    {
         let trivia = get_docblock_for_node(program, node);
 
         if trivia.is_none_or(|t| !t.kind.is_docblock()) {

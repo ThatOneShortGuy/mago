@@ -2,9 +2,6 @@
 
 use std::fmt::Debug;
 
-use bumpalo::collections::Vec;
-use serde::Serialize;
-
 use mago_database::file::FileId;
 use mago_span::HasSpan;
 use mago_span::Position;
@@ -25,13 +22,14 @@ pub mod node;
 pub mod sequence;
 pub mod trivia;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Program<'arena> {
     pub file_id: FileId,
     pub source_text: &'arena [u8],
     pub trivia: Sequence<'arena, Trivia<'arena>>,
     pub statements: Sequence<'arena, Statement<'arena>>,
-    pub errors: Vec<'arena, ParseError>,
+    pub errors: &'arena [ParseError],
 }
 
 impl Program<'_> {

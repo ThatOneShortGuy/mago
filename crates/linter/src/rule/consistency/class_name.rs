@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_class_case;
 use mago_casing::to_class_case;
@@ -27,8 +26,9 @@ pub struct ClassNameRule {
     cfg: ClassNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct ClassNameConfig {
     pub level: Level,
     pub psr: bool,
@@ -90,7 +90,10 @@ impl LintRule for ClassNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Class(class) = node else { return };
         let mut issues = vec![];
         let name_bytes = class.name.value;
@@ -105,14 +108,14 @@ impl LintRule for ClassNameRule {
                 .with_note(format!("The class name `{name}` does not follow class naming convention."))
                 .with_help(format!(
                     "Consider renaming it to `{}` to adhere to the naming convention.",
-                    to_class_case(name)
+                    String::from_utf8_lossy(&to_class_case(name))
                 ));
 
             issues.push(issue);
         }
 
         if class.modifiers.contains_abstract() && self.cfg.psr && !name_bytes.starts_with(b"Abstract") {
-            let suggested_name = format!("Abstract{}", to_class_case(name));
+            let suggested_name = format!("Abstract{}", String::from_utf8_lossy(&to_class_case(name)));
 
             issues.push(
                 Issue::new(

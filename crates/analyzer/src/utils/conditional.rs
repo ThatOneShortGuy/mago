@@ -1,3 +1,4 @@
+use mago_allocator::Arena;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -26,14 +27,17 @@ use crate::context::scope::if_scope::IfScope;
 use crate::error::AnalysisError;
 use crate::reconciler::reconcile_keyed_types;
 
-pub(crate) fn analyze<'ctx, 'arena>(
-    context: &mut Context<'ctx, 'arena>,
+pub(crate) fn analyze<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
     mut outer_context: BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     if_scope: &mut IfScope,
     condition: &Expression<'arena>,
     check_for_paradoxes: bool,
-) -> Result<(IfConditionalScope<'ctx>, BlockContext<'ctx>), AnalysisError> {
+) -> Result<(IfConditionalScope<'ctx>, BlockContext<'ctx>), AnalysisError>
+where
+    A: Arena,
+{
     let mut entry_clauses = vec![];
 
     let old_outer_context = outer_context.clone();
@@ -81,9 +85,21 @@ pub(crate) fn analyze<'ctx, 'arena>(
 
     let was_inside_conditional = externally_applied_context.flags.inside_conditional();
 
+    // When the second pass below runs it re-covers everything this pass touches, so record and
+    // discard this pass's diagnostics to avoid reporting them twice; its type/data-flow effects
+    // are kept regardless.
+    let must_reanalyze_full_condition =
+        internally_applied_if_cond_expr != condition || externally_applied_if_cond_expr != condition;
+
     externally_applied_context.flags.set_inside_conditional(true);
     let tmp_if_body_context = std::mem::take(&mut externally_applied_context.if_body_context);
+    if must_reanalyze_full_condition {
+        context.collector.start_recording();
+    }
     externally_applied_if_cond_expr.analyze(context, &mut externally_applied_context, artifacts)?;
+    if must_reanalyze_full_condition {
+        context.collector.finish_recording();
+    }
     externally_applied_context.if_body_context = tmp_if_body_context;
 
     let first_cond_assigned_var_ids = externally_applied_context.assigned_variable_ids.clone();
@@ -104,7 +120,7 @@ pub(crate) fn analyze<'ctx, 'arena>(
     let post_if_context = externally_applied_context.clone();
     let mut conditionally_referenced_variable_ids;
     let assigned_in_conditional_variable_ids;
-    if internally_applied_if_cond_expr != condition || externally_applied_if_cond_expr != condition {
+    if must_reanalyze_full_condition {
         if_conditional_context.assigned_variable_ids = WordMap::default();
         if_conditional_context.conditionally_referenced_variable_ids.clear();
 
@@ -256,9 +272,10 @@ fn get_definitely_evaluated_expression_inside_if<'ast, 'arena>(
     condition
 }
 
-pub fn handle_paradoxical_condition<T>(context: &mut Context<'_, '_>, expression: &T, expression_type: &TUnion)
+pub fn handle_paradoxical_condition<T, A>(context: &mut Context<'_, '_, A>, expression: &T, expression_type: &TUnion)
 where
     T: HasSpan,
+    A: Arena,
 {
     let type_id = expression_type.get_id();
 

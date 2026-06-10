@@ -1,9 +1,8 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use mago_span::HasSpan;
 use mago_span::Span;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,11 +27,12 @@ pub struct NoEmptyCommentRule {
     cfg: NoEmptyCommentConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NoEmptyCommentConfig {
     pub level: Level,
-    #[serde(alias = "preserve-single-line-comments")]
+    #[cfg_attr(feature = "serde", serde(alias = "preserve-single-line-comments"))]
     pub preserve_single_line_comments: bool,
 }
 
@@ -95,7 +95,10 @@ impl LintRule for NoEmptyCommentRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Program(program) = node else {
             return;
         };

@@ -1,8 +1,7 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use mago_text_edit::TextEdit;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,8 +27,9 @@ pub struct NoRedundantReadonlyRule {
     cfg: NoRedundantReadonlyConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NoRedundantReadonlyConfig {
     pub level: Level,
 }
@@ -90,7 +90,10 @@ impl LintRule for NoRedundantReadonlyRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Class(class) = node else {
             return;
         };
@@ -122,7 +125,10 @@ impl LintRule for NoRedundantReadonlyRule {
 }
 
 impl NoRedundantReadonlyRule {
-    fn report(&self, ctx: &mut LintContext<'_, '_>, readonly_span: Span) {
+    fn report<A>(&self, ctx: &mut LintContext<'_, '_, A>, readonly_span: Span)
+    where
+        A: Arena,
+    {
         let issue =
             Issue::new(self.cfg.level(), "The `readonly` modifier is redundant as the class is already readonly.")
                 .with_code(self.meta.code)

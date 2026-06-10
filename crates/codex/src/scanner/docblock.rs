@@ -1,3 +1,4 @@
+use mago_allocator::Arena;
 use mago_docblock::error::ParseError;
 use mago_docblock::tag::AssertionTag;
 use mago_docblock::tag::ImportTypeTag;
@@ -25,7 +26,6 @@ use mago_docblock::tag::parse_where_tag;
 use mago_docblock::tag::split_tag_content;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
-use serde::Serialize;
 
 use mago_docblock::document::Element;
 use mago_docblock::document::Tag;
@@ -37,7 +37,8 @@ use mago_span::Span;
 
 use crate::scanner::Context;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ClassLikeDocblockComment {
     pub span: Span,
     pub is_deprecated: bool,
@@ -64,7 +65,8 @@ pub struct ClassLikeDocblockComment {
     pub mixins: Vec<TypeString>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct FunctionLikeDocblockComment {
     pub span: Span,
     pub is_deprecated: bool,
@@ -91,7 +93,8 @@ pub struct FunctionLikeDocblockComment {
     pub unchecked: bool,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct PropertyDocblockComment {
     pub span: Span,
     pub type_string: Option<TypeString>,
@@ -101,7 +104,8 @@ pub struct PropertyDocblockComment {
     pub is_readonly: bool,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ConstantDocblockComment {
     pub span: Span,
     pub type_string: Option<TypeString>,
@@ -111,7 +115,8 @@ pub struct ConstantDocblockComment {
     pub is_final: bool,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[allow(clippy::struct_field_names)]
 pub struct TraitUseDocblockComment {
     pub template_extends: Vec<TypeString>,
@@ -119,7 +124,8 @@ pub struct TraitUseDocblockComment {
     pub template_use: Vec<TypeString>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct PropertyHookDocblockComment {
     pub span: Span,
     pub param_type_string: Option<ParameterTag>,
@@ -130,11 +136,14 @@ pub struct PropertyHookDocblockComment {
 }
 
 impl ClassLikeDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         class_like: impl HasSpan,
         scope: &mut NamespaceScope,
-    ) -> Result<Option<ClassLikeDocblockComment>, ParseError> {
+    ) -> Result<Option<ClassLikeDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(class_like) else {
             return Ok(None);
         };
@@ -339,11 +348,14 @@ impl ClassLikeDocblockComment {
 }
 
 impl FunctionLikeDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         function: impl HasSpan,
         scope: &mut NamespaceScope,
-    ) -> Result<Option<FunctionLikeDocblockComment>, ParseError> {
+    ) -> Result<Option<FunctionLikeDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(function) else {
             return Ok(None);
         };
@@ -552,10 +564,13 @@ impl FunctionLikeDocblockComment {
 }
 
 impl PropertyDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         property: impl HasSpan,
-    ) -> Result<Option<PropertyDocblockComment>, ParseError> {
+    ) -> Result<Option<PropertyDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(property) else {
             return Ok(None);
         };
@@ -619,10 +634,13 @@ impl PropertyDocblockComment {
 }
 
 impl ConstantDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         constant: impl HasSpan,
-    ) -> Result<Option<ConstantDocblockComment>, ParseError> {
+    ) -> Result<Option<ConstantDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(constant) else {
             return Ok(None);
         };
@@ -687,10 +705,13 @@ impl ConstantDocblockComment {
 }
 
 impl TraitUseDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         trait_use: impl HasSpan,
-    ) -> Result<Option<TraitUseDocblockComment>, ParseError> {
+    ) -> Result<Option<TraitUseDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(trait_use) else {
             return Ok(None);
         };
@@ -740,10 +761,13 @@ impl TraitUseDocblockComment {
 }
 
 impl PropertyHookDocblockComment {
-    pub fn create(
-        context: &Context<'_, '_>,
+    pub fn create<A>(
+        context: &Context<'_, '_, A>,
         hook: impl HasSpan,
-    ) -> Result<Option<PropertyHookDocblockComment>, ParseError> {
+    ) -> Result<Option<PropertyHookDocblockComment>, ParseError>
+    where
+        A: Arena,
+    {
         let Some(docblock) = context.get_docblock(hook) else {
             return Ok(None);
         };

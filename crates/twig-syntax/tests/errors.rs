@@ -8,7 +8,7 @@ mod common;
 
 use crate::common::parse;
 use crate::common::tokenize;
-use bumpalo::Bump;
+use mago_allocator::LocalArena;
 use mago_twig_syntax::error::ParseError;
 use mago_twig_syntax::error::SyntaxError;
 
@@ -202,7 +202,7 @@ fn parse_macro_missing_parens() {
 
 #[test]
 fn parse_error_has_span() {
-    let arena = Bump::new();
+    let arena = LocalArena::new();
     let tpl = parse(&arena, "{% if a %}body");
     let err = tpl.errors.first().expect("expected a deferred error");
     use mago_span::HasSpan;
@@ -211,14 +211,17 @@ fn parse_error_has_span() {
 
 #[test]
 fn parse_error_implements_display() {
-    let arena = Bump::new();
+    let arena = LocalArena::new();
     let tpl = parse(&arena, "{% if a %}body");
     let err = tpl.errors.first().expect("expected a deferred error");
     let msg = err.message();
     assert!(!msg.is_empty());
 }
 
-fn run_with_large_stack<F: FnOnce() + Send + 'static>(f: F) {
+fn run_with_large_stack<F>(f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
     std::thread::Builder::new()
         .stack_size(128 * 1024 * 1024)
         .spawn(f)
@@ -256,7 +259,7 @@ fn parse_fuzzer_nested_array_argument_does_not_overflow() {
         let mut src = String::from("{{ date(date = ");
         src.push_str(&"[".repeat(5000));
         src.push_str(") }}");
-        let arena = Bump::new();
+        let arena = LocalArena::new();
         let _ = parse(&arena, &src);
     });
 }
@@ -269,7 +272,7 @@ fn parse_deeply_nested_blocks_does_not_overflow() {
         for _ in 0..5000 {
             src.push_str("{% if x %}");
         }
-        let arena = Bump::new();
+        let arena = LocalArena::new();
         let _ = parse(&arena, &src);
     });
 }

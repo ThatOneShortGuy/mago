@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_constant_case;
 use mago_casing::to_constant_case;
@@ -26,8 +25,9 @@ pub struct ConstantNameRule {
     cfg: ConstantNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct ConstantNameConfig {
     pub level: Level,
 }
@@ -96,7 +96,10 @@ impl LintRule for ConstantNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::Constant(constant) => {
                 for item in &constant.items {
@@ -114,7 +117,7 @@ impl LintRule for ConstantNameRule {
                                 ))
                                 .with_help(format!(
                                     "Consider renaming it to `{}` to adhere to the naming convention.",
-                                    to_constant_case(name)
+                                    String::from_utf8_lossy(&to_constant_case(name))
                                 )),
                         );
                     }
@@ -137,7 +140,7 @@ impl LintRule for ConstantNameRule {
                                 ))
                                 .with_help(format!(
                                     "Consider renaming it to `{}` to adhere to the naming convention.",
-                                    to_constant_case(name)
+                                    String::from_utf8_lossy(&to_constant_case(name))
                                 )),
                         );
                     }

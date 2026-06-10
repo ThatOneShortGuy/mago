@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -26,15 +25,16 @@ pub struct DisallowedTypeInstantiationRule {
 }
 
 /// An entry that can be either a simple string or an object with name and optional help.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Eq, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(untagged))]
 pub enum DisallowedTypeEntry {
     /// Simple string entry (just the name).
     Simple(String),
     /// Entry with name and optional help message.
     WithHelp {
         name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
         help: Option<String>,
     },
 }
@@ -59,11 +59,12 @@ impl DisallowedTypeEntry {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Eq, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct DisallowedTypeInstantiationConfig {
     pub level: Level,
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub types: Vec<DisallowedTypeEntry>,
 }
 
@@ -141,7 +142,10 @@ impl LintRule for DisallowedTypeInstantiationRule {
         Self { meta: Self::meta(), cfg: settings.config.clone() }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Instantiation(instantiation) = node else {
             return;
         };

@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -69,8 +68,9 @@ pub struct UseDedicatedExpectationRule {
     cfg: UseDedicatedExpectationConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct UseDedicatedExpectationConfig {
     pub level: Level,
 }
@@ -148,7 +148,10 @@ impl LintRule for UseDedicatedExpectationRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::MethodCall(method_call) = node else {
             return;
         };
@@ -192,15 +195,17 @@ impl LintRule for UseDedicatedExpectationRule {
 }
 
 impl UseDedicatedExpectationRule {
-    fn report(
+    fn report<A>(
         &self,
-        ctx: &mut LintContext<'_, '_>,
+        ctx: &mut LintContext<'_, '_, A>,
         method_call: &MethodCall<'_>,
         _expect_call: &FunctionCall<'_>,
         func_call: &FunctionCall<'_>,
         matched_name: &str,
         matcher: &str,
-    ) {
+    ) where
+        A: Arena,
+    {
         let issue =
             Issue::new(self.cfg.level(), format!("Use `{matcher}()` instead of `{matched_name}()` with `toBeTrue()`."))
                 .with_code(self.meta.code)

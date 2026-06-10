@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -58,8 +57,9 @@ pub struct NonceVerificationRule {
     cfg: NonceVerificationConfig,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Eq, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NonceVerificationConfig {
     pub level: Level,
     pub custom_nonce_functions: Vec<String>,
@@ -133,7 +133,10 @@ impl LintRule for NonceVerificationRule {
         Self { meta: Self::meta(), cfg: settings.config.clone() }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let custom_nonce = self.cfg.custom_nonce_functions.as_slice();
 
         if let Node::ArrowFunction(arrow) = node {
@@ -162,13 +165,15 @@ impl LintRule for NonceVerificationRule {
 }
 
 impl NonceVerificationRule {
-    fn collect_and_report<'arena>(
+    fn collect_and_report<'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         node: Node<'_, 'arena>,
         custom_nonce_functions: &[String],
         exempt: bool,
-    ) {
+    ) where
+        A: Arena,
+    {
         match node.kind() {
             NodeKind::Function | NodeKind::Method | NodeKind::Closure | NodeKind::ArrowFunction => return,
             _ => {}
@@ -261,11 +266,14 @@ fn is_superglobal_expr(expr: &Expression) -> bool {
     matches!(expr, Expression::Variable(Variable::Direct(var)) if is_nonce_superglobal(var.name))
 }
 
-fn node_tree_contains_nonce_call<'arena>(
-    ctx: &LintContext<'_, 'arena>,
+fn node_tree_contains_nonce_call<'arena, A>(
+    ctx: &LintContext<'_, 'arena, A>,
     node: Node<'_, 'arena>,
     custom_nonce_functions: &[String],
-) -> bool {
+) -> bool
+where
+    A: Arena,
+{
     if let Node::FunctionCall(function_call) = node
         && (function_call_matches_any(ctx, function_call, DEFAULT_NONCE_FUNCTIONS).is_some()
             || function_call_matches_any(ctx, function_call, custom_nonce_functions).is_some())

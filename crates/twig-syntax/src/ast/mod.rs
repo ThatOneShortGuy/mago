@@ -10,7 +10,7 @@
 //!   the root so consumers can recover the exact source by interleaving
 //!   statements and trivia by span.
 //!
-//! All nodes are arena-allocated in a [`bumpalo::Bump`]; string fragments
+//! All nodes are arena-allocated in a [`arena`]; string fragments
 //! borrow directly from the source template wherever possible.
 
 pub use crate::ast::expression::*;
@@ -27,9 +27,6 @@ pub mod sequence;
 pub mod statement;
 pub mod trivia;
 
-use bumpalo::collections::Vec as BVec;
-use serde::Serialize;
-
 use mago_database::file::FileId;
 use mago_database::file::HasFileId;
 use mago_span::HasSpan;
@@ -44,13 +41,14 @@ use crate::error::ParseError;
 /// by the lexer, so that `(statements, trivia)` can be re-serialised back to
 /// the original bytes (though consumers must interleave the two by span -
 /// trivia are not embedded in the statement tree).
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Template<'arena> {
     pub file_id: FileId,
     pub source_text: &'arena [u8],
     pub trivia: Sequence<'arena, Trivia<'arena>>,
     pub statements: Sequence<'arena, Statement<'arena>>,
-    pub errors: BVec<'arena, ParseError<'arena>>,
+    pub errors: &'arena [ParseError<'arena>],
 }
 
 impl Template<'_> {

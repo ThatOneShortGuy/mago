@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -30,8 +29,9 @@ pub struct CyclomaticComplexityRule {
     cfg: CyclomaticComplexityConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct CyclomaticComplexityConfig {
     pub level: Level,
     pub threshold: usize,
@@ -192,7 +192,10 @@ impl LintRule for CyclomaticComplexityRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let span = get_class_like_header_span(node);
 
         match node {
@@ -209,13 +212,15 @@ impl LintRule for CyclomaticComplexityRule {
 }
 
 impl CyclomaticComplexityRule {
-    fn check_class_like<'arena>(
+    fn check_class_like<'arena, A>(
         &self,
         kind: &'static str,
         members: &[ClassLikeMember<'arena>],
         span: impl HasSpan,
-        ctx: &mut LintContext<'_, 'arena>,
-    ) {
+        ctx: &mut LintContext<'_, 'arena, A>,
+    ) where
+        A: Arena,
+    {
         let threshold = self.cfg.threshold;
 
         let complexity = get_cyclomatic_complexity_of_class_like_members(members);
@@ -253,13 +258,15 @@ impl CyclomaticComplexityRule {
         }
     }
 
-    fn check_function_like<'arena>(
+    fn check_function_like<'arena, A>(
         &self,
         kind: &'static str,
         body: &Block<'arena>,
         span: impl HasSpan,
-        ctx: &mut LintContext<'_, 'arena>,
-    ) {
+        ctx: &mut LintContext<'_, 'arena, A>,
+    ) where
+        A: Arena,
+    {
         let threshold = self.cfg.threshold;
 
         let complexity = get_cyclomatic_complexity_of_node(Node::Block(body));

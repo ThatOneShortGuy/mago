@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use bumpalo::Bump;
+use mago_allocator::Arena;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_span::HasSpan;
@@ -68,6 +68,8 @@ use crate::ttype::get_arraykey;
 use crate::ttype::get_bool;
 use crate::ttype::get_callable_string;
 use crate::ttype::get_closed_resource;
+use crate::ttype::get_empty;
+use crate::ttype::get_empty_scalar;
 use crate::ttype::get_false;
 use crate::ttype::get_float;
 use crate::ttype::get_int;
@@ -148,14 +150,17 @@ use crate::ttype::wrap_atomic;
 /// - An unsupported type construct is encountered
 /// - Type references cannot be resolved (e.g., `self` outside a class context)
 /// - Invalid type combinations are used (e.g., incompatible intersection types)
-pub fn get_type_from_string<'arena>(
-    arena: &'arena Bump,
+pub fn get_type_from_string<'arena, A>(
+    arena: &'arena A,
     type_string: &'arena [u8],
     span: Span,
     scope: &NamespaceScope,
     type_context: &TypeResolutionContext,
     classname: Option<Word>,
-) -> Result<TUnion, TypeError> {
+) -> Result<TUnion, TypeError>
+where
+    A: Arena,
+{
     let ast = mago_type_syntax::parse_str(arena, span, type_string)?;
 
     get_union_from_type_ast(&ast, scope, type_context, classname)
@@ -485,6 +490,8 @@ pub fn get_union_from_type_ast(
         Type::ArrayKey(_) => get_arraykey(),
         Type::Numeric(_) => get_numeric(),
         Type::Scalar(_) => get_scalar(),
+        Type::Empty(_) => get_empty(),
+        Type::EmptyScalar(_) => get_empty_scalar(),
         Type::CallableString(_) => get_callable_string(),
         Type::LowercaseCallableString(_) => get_string_with_props(false, false, false, true, TStringCasing::Lowercase),
         Type::UppercaseCallableString(_) => get_string_with_props(false, false, false, true, TStringCasing::Uppercase),

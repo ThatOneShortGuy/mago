@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -119,8 +118,9 @@ pub struct ValidatedSanitizedInputRule {
     cfg: ValidatedSanitizedInputConfig,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Eq, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct ValidatedSanitizedInputConfig {
     pub level: Level,
     pub custom_sanitization_functions: Vec<String>,
@@ -196,7 +196,10 @@ impl LintRule for ValidatedSanitizedInputRule {
         Self { meta: Self::meta(), cfg: settings.config.clone() }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::ArrowFunction(arrow) => {
                 self.collect_unsanitized_accesses(ctx, Node::Expression(arrow.expression), false);
@@ -228,7 +231,10 @@ fn is_superglobal_expr(expr: &Expression) -> bool {
     matches!(expr, Expression::Variable(Variable::Direct(var)) if is_input_superglobal(var.name))
 }
 
-fn is_wp_unslash_call<'arena>(ctx: &LintContext<'_, 'arena>, expr: &Expression<'arena>) -> bool {
+fn is_wp_unslash_call<'arena, A>(ctx: &LintContext<'_, 'arena, A>, expr: &Expression<'arena>) -> bool
+where
+    A: Arena,
+{
     if let Expression::Call(Call::Function(fc)) = expr {
         function_call_matches_any(ctx, fc, UNSLASHING_FUNCTIONS).is_some()
     } else {
@@ -237,12 +243,14 @@ fn is_wp_unslash_call<'arena>(ctx: &LintContext<'_, 'arena>, expr: &Expression<'
 }
 
 impl ValidatedSanitizedInputRule {
-    fn collect_unsanitized_accesses<'arena>(
+    fn collect_unsanitized_accesses<'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         node: Node<'_, 'arena>,
         sanitized: bool,
-    ) {
+    ) where
+        A: Arena,
+    {
         match node.kind() {
             NodeKind::Function | NodeKind::Method | NodeKind::Closure | NodeKind::ArrowFunction => return,
             _ => {}

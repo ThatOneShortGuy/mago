@@ -1148,7 +1148,7 @@ function phpinfo(int $flags = INFO_ALL): bool {}
  *
  * @return ($extension is null ? non-empty-string : non-empty-string|false)
  */
-function phpversion(?string $extension): string|false {}
+function phpversion(?string $extension = null): string|false {}
 
 function phpcredits(int $flags = CREDITS_ALL): bool {}
 
@@ -2806,7 +2806,7 @@ function ini_get(string $option): string|false {}
 /**
  * @return array{'global_value': string, 'local_value': string, 'access': int}|false
  */
-function ini_get_all(?string $extension, bool $details = true): array|false {}
+function ini_get_all(?string $extension = null, bool $details = true): array|false {}
 
 function ini_set(string $option, string|int|float|bool|null $value): string|false {}
 
@@ -3663,7 +3663,7 @@ function array_reverse(array $array, bool $preserve_keys = false): array {}
  * @template I
  *
  * @param array<K, V> $array
- * @param (callable(null|I, V): I) $callback
+ * @param (callable(I, V): I) $callback
  * @param null|I $initial
  *
  * @return I

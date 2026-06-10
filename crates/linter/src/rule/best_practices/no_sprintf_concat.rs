@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,8 +27,9 @@ pub struct NoSprintfConcatRule {
     cfg: NoSprintfConcatConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NoSprintfConcatConfig {
     pub level: Level,
 }
@@ -91,7 +91,10 @@ impl LintRule for NoSprintfConcatRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Binary(binary) = node else {
             return;
         };
@@ -128,7 +131,10 @@ impl LintRule for NoSprintfConcatRule {
     }
 }
 
-fn is_sprintf_call<'arena>(expression: &Expression<'arena>, context: &LintContext<'_, 'arena>) -> bool {
+fn is_sprintf_call<'arena, A>(expression: &Expression<'arena>, context: &LintContext<'_, 'arena, A>) -> bool
+where
+    A: Arena,
+{
     let Expression::Call(Call::Function(call)) = expression else {
         return false;
     };

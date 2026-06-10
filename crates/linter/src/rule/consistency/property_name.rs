@@ -1,8 +1,7 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use mago_span::Span;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_camel_case;
 use mago_casing::is_snake_case;
@@ -31,8 +30,9 @@ pub struct PropertyNameRule {
     cfg: PropertyNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct PropertyNameConfig {
     pub level: Level,
     pub camel: bool,
@@ -106,7 +106,10 @@ impl LintRule for PropertyNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::PropertyItem(property_item) => {
                 self.check_property_item(ctx, property_item);
@@ -120,17 +123,22 @@ impl LintRule for PropertyNameRule {
 }
 
 impl PropertyNameRule {
-    fn check_property_item<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, property_item: &PropertyItem<'arena>) {
+    fn check_property_item<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, property_item: &PropertyItem<'arena>)
+    where
+        A: Arena,
+    {
         let variable = property_item.variable();
 
         self.check_property_name(ctx, variable.name, variable.span());
     }
 
-    fn check_promoted_property<'arena>(
+    fn check_promoted_property<'arena, A>(
         &self,
-        ctx: &mut LintContext<'_, 'arena>,
+        ctx: &mut LintContext<'_, 'arena, A>,
         parameter: &FunctionLikeParameter<'arena>,
-    ) {
+    ) where
+        A: Arena,
+    {
         if !parameter.is_promoted_property() {
             return;
         }
@@ -138,7 +146,10 @@ impl PropertyNameRule {
         self.check_property_name(ctx, parameter.variable.name, parameter.variable.span());
     }
 
-    fn check_property_name(&self, ctx: &mut LintContext<'_, '_>, name_bytes: &[u8], span: Span) {
+    fn check_property_name<A>(&self, ctx: &mut LintContext<'_, '_, A>, name_bytes: &[u8], span: Span)
+    where
+        A: Arena,
+    {
         let Some(name) = std::str::from_utf8(name_bytes).ok() else { return };
         let name_without_dollar = name.strip_prefix('$').unwrap_or(name);
 
@@ -158,8 +169,8 @@ impl PropertyNameRule {
                     ))
                     .with_help(format!(
                         "Consider renaming it to `${}` or `${}` to adhere to the naming convention.",
-                        to_camel_case(name_without_dollar),
-                        to_snake_case(name_without_dollar)
+                        String::from_utf8_lossy(&to_camel_case(name_without_dollar)),
+                        String::from_utf8_lossy(&to_snake_case(name_without_dollar))
                     )),
                 );
             }
@@ -177,7 +188,7 @@ impl PropertyNameRule {
                     .with_note(format!("The property name `{name}` does not follow camel naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `${}` to adhere to the naming convention.",
-                        to_camel_case(name_without_dollar)
+                        String::from_utf8_lossy(&to_camel_case(name_without_dollar))
                     )),
             );
         } else if !self.cfg.camel && !is_snake_case(name_without_dollar) {
@@ -190,7 +201,7 @@ impl PropertyNameRule {
                     .with_note(format!("The property name `{name}` does not follow snake naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `${}` to adhere to the naming convention.",
-                        to_snake_case(name_without_dollar)
+                        String::from_utf8_lossy(&to_snake_case(name_without_dollar))
                     )),
             );
         }

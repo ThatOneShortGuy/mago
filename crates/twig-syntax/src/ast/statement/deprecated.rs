@@ -1,6 +1,3 @@
-use bumpalo::collections::Vec as BVec;
-use serde::Serialize;
-
 use mago_span::HasSpan;
 use mago_span::Span;
 
@@ -8,7 +5,8 @@ use crate::ast::Identifier;
 use crate::ast::Keyword;
 use crate::ast::expression::Expression;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DeprecatedOption<'arena> {
     pub name: Identifier<'arena>,
     pub equal: Span,
@@ -21,12 +19,13 @@ impl HasSpan for DeprecatedOption<'_> {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Deprecated<'arena> {
     pub open_tag: Span,
     pub keyword: Keyword<'arena>,
     pub message: Expression<'arena>,
-    pub options: BVec<'arena, DeprecatedOption<'arena>>,
+    pub options: &'arena [DeprecatedOption<'arena>],
     pub close_tag: Span,
 }
 

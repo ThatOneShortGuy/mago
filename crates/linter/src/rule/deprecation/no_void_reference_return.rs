@@ -1,7 +1,6 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_php_version::PHPVersion;
 use mago_php_version::PHPVersionRange;
@@ -28,8 +27,9 @@ pub struct NoVoidReferenceReturnRule {
     cfg: NoVoidReferenceReturnConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct NoVoidReferenceReturnConfig {
     pub level: Level,
 }
@@ -89,7 +89,10 @@ impl LintRule for NoVoidReferenceReturnRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::Function(function) => {
                 let Some(amperstand) = function.ampersand.as_ref() else {
@@ -168,7 +171,16 @@ impl LintRule for NoVoidReferenceReturnRule {
 }
 
 impl NoVoidReferenceReturnRule {
-    fn report(&self, ctx: &mut LintContext, kind: &'static str, span: Span, ampersand: &Span, is_set_hook: bool) {
+    fn report<A>(
+        &self,
+        ctx: &mut LintContext<'_, '_, A>,
+        kind: &'static str,
+        span: Span,
+        ampersand: &Span,
+        is_set_hook: bool,
+    ) where
+        A: Arena,
+    {
         let message = if is_set_hook {
             "Returning by reference from a set property hook is deprecated since PHP 8.0.".to_string()
         } else {

@@ -1,9 +1,8 @@
+use mago_allocator::Arena;
 use std::borrow::Cow;
 
 use indoc::indoc;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -30,8 +29,9 @@ pub struct PreferTestAttributeRule {
     cfg: PreferTestAttributeConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct PreferTestAttributeConfig {
     pub level: Level,
 }
@@ -102,7 +102,10 @@ impl LintRule for PreferTestAttributeRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         let Node::Method(method) = node else {
             return;
         };
@@ -152,7 +155,10 @@ impl LintRule for PreferTestAttributeRule {
     }
 }
 
-fn has_test_attribute(ctx: &LintContext<'_, '_>, method: &Method<'_>) -> bool {
+fn has_test_attribute<A>(ctx: &LintContext<'_, '_, A>, method: &Method<'_>) -> bool
+where
+    A: Arena,
+{
     for attribute_list in method.attribute_lists.iter() {
         for attribute in attribute_list.attributes.iter() {
             let resolved_name = ctx.resolved_names.get(&attribute.name);
@@ -184,7 +190,10 @@ fn compute_new_name(name: &str) -> Cow<'_, str> {
     }
 }
 
-fn get_method_indent<'arena>(ctx: &LintContext<'_, 'arena>, method: &Method<'arena>) -> String {
+fn get_method_indent<'arena, A>(ctx: &LintContext<'_, 'arena, A>, method: &Method<'arena>) -> String
+where
+    A: Arena,
+{
     let source: &[u8] = ctx.source_file.contents.as_ref();
     let start = method.span().start_offset() as usize;
     let line_start = memchr::memrchr(b'\n', &source[..start]).map_or(0, |pos| pos + 1);

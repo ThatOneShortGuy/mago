@@ -37,6 +37,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -230,6 +239,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "blink-alloc"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e669f146bb8b2327006ed94c69cf78c8ec81c100192564654230a40b4f091d82"
+dependencies = [
+ "allocator-api2",
+ "parking_lot",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -259,9 +278,6 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "bytes"
@@ -617,16 +633,6 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
-name = "cruet"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7a9ae414b9768aada1b316493261653e41af05c9d2ccc9c504a8fc051c6a790"
-dependencies = [
- "once_cell",
- "regex",
-]
 
 [[package]]
 name = "crunchy"
@@ -1096,6 +1102,13 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "heck"
@@ -1513,7 +1526,6 @@ dependencies = [
 name = "mago"
 version = "1.30.1"
 dependencies = [
- "bumpalo",
  "clap",
  "clap_complete",
  "colored 3.1.1",
@@ -1526,6 +1538,7 @@ dependencies = [
  "indoc",
  "libtest-mimic",
  "mago-algebra",
+ "mago-allocator",
  "mago-analyzer",
  "mago-bytes",
  "mago-codex",
@@ -1586,10 +1599,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mago-allocator"
+version = "1.30.0"
+dependencies = [
+ "allocator-api2",
+ "blink-alloc",
+ "hashbrown 0.17.1",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "mago-analyzer"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "codspeed-criterion-compat",
  "diffy",
  "foldhash 0.2.0",
@@ -1597,6 +1620,7 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "mago-algebra",
+ "mago-allocator",
  "mago-bytes",
  "mago-codex",
  "mago-collector",
@@ -1622,18 +1646,15 @@ version = "1.30.0"
 [[package]]
 name = "mago-casing"
 version = "1.30.0"
-dependencies = [
- "cruet",
-]
 
 [[package]]
 name = "mago-codex"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "codspeed-criterion-compat",
  "foldhash 0.2.0",
  "indexmap",
+ "mago-allocator",
  "mago-bytes",
  "mago-database",
  "mago-docblock",
@@ -1657,8 +1678,8 @@ dependencies = [
 name = "mago-collector"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
+ "mago-allocator",
  "mago-database",
  "mago-reporting",
  "mago-span",
@@ -1697,7 +1718,7 @@ dependencies = [
 name = "mago-docblock"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
+ "mago-allocator",
  "mago-database",
  "mago-span",
  "mago-syntax",
@@ -1730,9 +1751,9 @@ dependencies = [
 name = "mago-fingerprint"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
  "indoc",
+ "mago-allocator",
  "mago-database",
  "mago-names",
  "mago-span",
@@ -1745,9 +1766,9 @@ dependencies = [
 name = "mago-formatter"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
  "indoc",
+ "mago-allocator",
  "mago-bytes",
  "mago-database",
  "mago-php-version",
@@ -1766,9 +1787,9 @@ dependencies = [
 name = "mago-guard"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
  "indoc",
+ "mago-allocator",
  "mago-bytes",
  "mago-codex",
  "mago-collector",
@@ -1790,9 +1811,9 @@ dependencies = [
 name = "mago-linter"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
  "indoc",
+ "mago-allocator",
  "mago-bytes",
  "mago-casing",
  "mago-collector",
@@ -1817,8 +1838,8 @@ dependencies = [
 name = "mago-names"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
+ "mago-allocator",
  "mago-span",
  "mago-syntax",
  "mago-word",
@@ -1831,9 +1852,9 @@ dependencies = [
 name = "mago-orchestrator"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "foldhash 0.2.0",
  "indicatif",
+ "mago-allocator",
  "mago-analyzer",
  "mago-bytes",
  "mago-codex",
@@ -1866,8 +1887,8 @@ name = "mago-prelude"
 version = "1.30.0"
 dependencies = [
  "bincode",
- "bumpalo",
  "codspeed-criterion-compat",
+ "mago-allocator",
  "mago-codex",
  "mago-database",
  "mago-names",
@@ -1902,7 +1923,7 @@ dependencies = [
 name = "mago-semantics"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
+ "mago-allocator",
  "mago-bytes",
  "mago-database",
  "mago-names",
@@ -1949,8 +1970,8 @@ dependencies = [
 name = "mago-syntax"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "codspeed-criterion-compat",
+ "mago-allocator",
  "mago-database",
  "mago-php-version",
  "mago-reporting",
@@ -1970,7 +1991,7 @@ dependencies = [
 name = "mago-syntax-core"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
+ "mago-allocator",
  "mago-database",
  "mago-span",
  "memchr",
@@ -1991,10 +2012,10 @@ dependencies = [
 name = "mago-twig-syntax"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "codspeed-criterion-compat",
  "foldhash 0.2.0",
  "indoc",
+ "mago-allocator",
  "mago-database",
  "mago-span",
  "mago-syntax-core",
@@ -2008,8 +2029,8 @@ dependencies = [
 name = "mago-type-syntax"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
  "codspeed-criterion-compat",
+ "mago-allocator",
  "mago-database",
  "mago-span",
  "mago-syntax-core",
@@ -2022,7 +2043,7 @@ dependencies = [
 name = "mago-wasm"
 version = "1.30.0"
 dependencies = [
- "bumpalo",
+ "mago-allocator",
  "mago-analyzer",
  "mago-database",
  "mago-formatter",

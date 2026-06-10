@@ -1,6 +1,3 @@
-use serde::Deserialize;
-use serde::Serialize;
-
 use mago_word::Word;
 use mago_word::word;
 
@@ -24,7 +21,8 @@ pub mod string;
 ///
 /// This includes general types (int, float, string, bool), literal types,
 /// union types (num, array-key), and the top type (scalar).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TScalar {
     /// Represents the top type `scalar`, encompassing all other scalar variants.
     Generic,
@@ -520,6 +518,7 @@ impl TScalar {
 
     /// Check if the scalar is falsy (i.e., will resolve to `false` in a boolean context).
     #[inline]
+    #[must_use]
     pub fn is_falsy(&self) -> bool {
         match &self {
             TScalar::Bool(b) => b.is_false(),
@@ -528,7 +527,8 @@ impl TScalar {
                 None => false,
             },
             TScalar::Float(f) => f.get_literal_value().is_some_and(|v| v == 0.0),
-            TScalar::String(s) => s.get_known_literal_value().is_some_and(<[u8]>::is_empty),
+            // The only falsy strings in PHP are `''` and `'0'`.
+            TScalar::String(s) => s.get_known_literal_value().is_some_and(|value| value.is_empty() || value == b"0"),
             TScalar::ClassLikeString(_) => false,
             _ => false,
         }

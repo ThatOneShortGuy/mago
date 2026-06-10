@@ -1,4 +1,4 @@
-use serde::de::DeserializeOwned;
+use mago_allocator::Arena;
 
 use mago_php_version::PHPVersion;
 use mago_reporting::Level;
@@ -9,6 +9,7 @@ use crate::context::LintContext;
 use crate::integration::IntegrationSet;
 use crate::rule_meta::RuleMeta;
 use crate::settings::RuleSettings;
+#[cfg(feature = "serde")]
 use crate::settings::RulesSettings;
 use crate::settings::Settings;
 
@@ -37,7 +38,20 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-pub trait Config: Default + DeserializeOwned {
+#[cfg(feature = "serde")]
+pub trait Config: Default + serde::de::DeserializeOwned {
+    /// Whether the rule is enabled by default.
+    #[must_use]
+    fn default_enabled() -> bool {
+        true
+    }
+
+    /// The severity level of the rule.
+    fn level(&self) -> Level;
+}
+
+#[cfg(not(feature = "serde"))]
+pub trait Config: Default {
     /// Whether the rule is enabled by default.
     #[must_use]
     fn default_enabled() -> bool {
@@ -68,7 +82,9 @@ pub trait LintRule {
 
     fn build(settings: &RuleSettings<Self::Config>) -> Self;
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>);
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena;
 }
 
 macro_rules! define_rules {
@@ -150,7 +166,10 @@ macro_rules! define_rules {
             }
 
             #[inline]
-            pub fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>)  {
+            pub fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+            where
+                A: Arena,
+            {
                 match self {
                     $( AnyRule::$variant(r) => r.check(ctx, node), )*
                 }
@@ -161,6 +180,7 @@ macro_rules! define_rules {
         ///
         /// Returns a JSON map containing only rules whose requirements are met
         /// by the given PHP version and integrations.
+        #[cfg(feature = "serde")]
         #[must_use]
         pub fn filter_rules_settings(
             rules: &RulesSettings,

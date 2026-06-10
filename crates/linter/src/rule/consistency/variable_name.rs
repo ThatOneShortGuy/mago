@@ -1,8 +1,7 @@
 use indoc::indoc;
+use mago_allocator::Arena;
 use mago_span::Span;
 use schemars::JsonSchema;
-use serde::Deserialize;
-use serde::Serialize;
 
 use mago_casing::is_camel_case;
 use mago_casing::is_snake_case;
@@ -33,8 +32,9 @@ pub struct VariableNameRule {
     cfg: VariableNameConfig,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case", deny_unknown_fields))]
 pub struct VariableNameConfig {
     pub level: Level,
     pub camel: bool,
@@ -102,7 +102,10 @@ impl LintRule for VariableNameRule {
         Self { meta: Self::meta(), cfg: settings.config }
     }
 
-    fn check<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, node: Node<'_, 'arena>) {
+    fn check<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, node: Node<'_, 'arena>)
+    where
+        A: Arena,
+    {
         match node {
             Node::Assignment(assignment) => {
                 self.check_assignment(ctx, assignment);
@@ -116,7 +119,10 @@ impl LintRule for VariableNameRule {
 }
 
 impl VariableNameRule {
-    fn check_assignment<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, assignment: &Assignment<'arena>) {
+    fn check_assignment<'arena, A>(&self, ctx: &mut LintContext<'_, 'arena, A>, assignment: &Assignment<'arena>)
+    where
+        A: Arena,
+    {
         if !assignment.operator.is_assign() {
             return;
         }
@@ -134,7 +140,13 @@ impl VariableNameRule {
         self.check_variable_name(ctx, name, variable.span());
     }
 
-    fn check_parameter<'arena>(&self, ctx: &mut LintContext<'_, 'arena>, parameter: &FunctionLikeParameter<'arena>) {
+    fn check_parameter<'arena, A>(
+        &self,
+        ctx: &mut LintContext<'_, 'arena, A>,
+        parameter: &FunctionLikeParameter<'arena>,
+    ) where
+        A: Arena,
+    {
         if !self.cfg.check_parameters {
             return;
         }
@@ -148,7 +160,10 @@ impl VariableNameRule {
         self.check_variable_name(ctx, name, parameter.variable.span());
     }
 
-    fn check_variable_name(&self, ctx: &mut LintContext<'_, '_>, name: &[u8], span: Span) {
+    fn check_variable_name<A>(&self, ctx: &mut LintContext<'_, '_, A>, name: &[u8], span: Span)
+    where
+        A: Arena,
+    {
         let Some(name_str) = std::str::from_utf8(name).ok() else { return };
         let name = name_str;
         let clean_name = name.trim_start_matches(|c: char| c == '$' || c == '_' || c.is_ascii_digit());
@@ -169,8 +184,8 @@ impl VariableNameRule {
                     ))
                     .with_help(format!(
                         "Consider renaming it to `${}` or `${}` to adhere to the naming convention.",
-                        to_camel_case(clean_name),
-                        to_snake_case(clean_name)
+                        String::from_utf8_lossy(&to_camel_case(clean_name)),
+                        String::from_utf8_lossy(&to_snake_case(clean_name))
                     )),
                 );
             }
@@ -188,7 +203,7 @@ impl VariableNameRule {
                     .with_note(format!("The variable name `{name}` does not follow camel naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `${}` to adhere to the naming convention.",
-                        to_camel_case(clean_name)
+                        String::from_utf8_lossy(&to_camel_case(clean_name))
                     )),
             );
         } else if !self.cfg.camel && !is_snake_case(clean_name) {
@@ -201,7 +216,7 @@ impl VariableNameRule {
                     .with_note(format!("The variable name `{name}` does not follow snake naming convention."))
                     .with_help(format!(
                         "Consider renaming it to `${}` to adhere to the naming convention.",
-                        to_snake_case(clean_name)
+                        String::from_utf8_lossy(&to_snake_case(clean_name))
                     )),
             );
         }
