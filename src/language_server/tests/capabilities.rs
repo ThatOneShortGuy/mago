@@ -618,6 +618,34 @@ async fn code_action_lowercases_self_keyword() {
 }
 
 #[tokio::test]
+async fn code_action_adds_mago_expect_for_diagnostic() {
+    let code = "<?php\nenum InvoiceStatus {\n    case New;\n\n    public function label(): string {\n        return match ($this) {\n            Self::New => 'New',\n        };\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "range": { "start": { "line": 6, "character": 12 }, "end": { "line": 6, "character": 16 } },
+                "context": { "diagnostics": [] }
+            }),
+        )
+        .await;
+
+    let actions = result.as_array().unwrap();
+    let action = actions
+        .iter()
+        .find(|action| action["title"] == "Add @mago-expect lint:lowercase-keyword")
+        .unwrap_or_else(|| panic!("missing @mago-expect action in {actions:?}"));
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    assert_eq!(edits.len(), 1, "got {edits:?}");
+    assert_eq!(edits[0]["newText"], "            /** @mago-expect lint:lowercase-keyword */\n");
+    assert_eq!(edits[0]["range"]["start"]["line"], 6);
+}
+
+#[tokio::test]
 async fn completion_ranks_acronym_above_substring() {
     let lib = "<?php\nnamespace App;\nclass GetAllTransactionsQueryHandler {}\nclass Gauge {}\n";
     let consumer = "<?php\nnamespace App;\n\n$x = new GATQH\n";

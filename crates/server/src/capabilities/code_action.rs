@@ -6,6 +6,7 @@
 
 use foldhash::HashMap;
 
+use mago_database::DatabaseReader;
 use mago_database::file::FileId;
 use mago_reporting::Annotation;
 use mago_reporting::AnnotationKind;
@@ -36,6 +37,9 @@ impl Server {
         if let Some(issues) = self.last_issues() {
             for issue in issues.iter() {
                 collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
+                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "analysis") {
+                    actions.push(action);
+                }
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
@@ -45,6 +49,9 @@ impl Server {
         for analysis in self.analyses() {
             for issue in analysis.lint_issues.iter() {
                 collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
+                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "lint") {
+                    actions.push(action);
+                }
                 if let Some(action) = action_for(issue, file_id, start, end) {
                     actions.push(action);
                 }
@@ -86,6 +93,45 @@ fn collect_file_wide_fix(issue: &Issue, file_id: FileId, fixes: &mut HashMap<Str
         range: Range::new(edit.range.start, edit.range.end),
         new_text: String::from_utf8_lossy(&edit.new_text).into_owned(),
     }));
+}
+
+fn expect_action_for(
+    server: &Server,
+    issue: &Issue,
+    file_id: FileId,
+    start: u32,
+    end: u32,
+    category: &str,
+) -> Option<CodeActionItem> {
+    if !overlaps(issue, file_id, start, end) {
+        return None;
+    }
+
+    let code = issue.code.as_deref()?;
+    let primary = primary_annotation(issue)?;
+    let file = server.database().get(&file_id).ok()?;
+    let line = file.line_number(primary.span.start.offset);
+    let line_start = file.get_line_start_offset(line)?;
+    let indent = line_indent(&file.contents[line_start as usize..]);
+    let qualified_code = format!("{category}:{code}");
+    let new_text = format!("{indent}/** @mago-expect {qualified_code} */\n");
+
+    let mut edits = HashMap::default();
+    edits.insert(file_id, vec![TextReplacement { range: Range::new(line_start, line_start), new_text }]);
+
+    let diagnostic = primary_annotation(issue).map(|primary| DiagnosticData {
+        file: primary.span.file_id,
+        range: Range::new(primary.span.start.offset, primary.span.end.offset),
+        severity: level_to_severity(issue.level),
+        code: issue.code.clone(),
+        message: issue.message.clone(),
+    });
+
+    Some(CodeActionItem { title: format!("Add @mago-expect {qualified_code}"), edits, diagnostic })
+}
+
+fn line_indent(line: &[u8]) -> String {
+    line.iter().take_while(|b| matches!(b, b' ' | b'\t')).map(|b| *b as char).collect()
 }
 
 /// Build a code action for `issue` if it has edits and its primary annotation
