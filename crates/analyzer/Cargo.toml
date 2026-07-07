@@ -24,7 +24,7 @@ mago-names = { workspace = true }
 mago-database = { workspace = true }
 mago-algebra = { workspace = true }
 mago-php-version = { workspace = true }
-mago-docblock = { workspace = true }
+mago-phpdoc-syntax = { workspace = true }
 mago-collector = { workspace = true }
 foldhash = { workspace = true }
 tracing = { workspace = true }
@@ -33,6 +33,8 @@ itertools = { workspace = true }
 indexmap = { workspace = true }
 mago-allocator = { workspace = true }
 diffy = { workspace = true }
+itoa = { workspace = true }
+ryu = { workspace = true }
 memchr = { workspace = true }
 
 [dev-dependencies]

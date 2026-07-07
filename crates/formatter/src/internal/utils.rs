@@ -1,27 +1,27 @@
 use mago_allocator::Arena;
 use mago_allocator::CollectIn;
 use mago_allocator::vec::Vec;
-use mago_syntax::ast::Argument;
-use mago_syntax::ast::ArgumentList;
-use mago_syntax::ast::ClassConstantAccess;
-use mago_syntax::ast::ClassLikeConstantSelector;
-use mago_syntax::ast::ClassLikeMemberSelector;
-use mago_syntax::ast::CompositeString;
-use mago_syntax::ast::ConstantAccess;
-use mago_syntax::ast::FunctionCall;
-use mago_syntax::ast::Identifier;
-use mago_syntax::ast::StaticMethodCall;
-use mago_syntax::ast::Variable;
+use mago_syntax::cst::Argument;
+use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::ClassConstantAccess;
+use mago_syntax::cst::ClassLikeConstantSelector;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::Identifier;
+use mago_syntax::cst::StaticMethodCall;
+use mago_syntax::cst::Variable;
 use unicode_width::UnicodeWidthStr;
 
-use mago_syntax::ast::Access;
-use mago_syntax::ast::ArrayElement;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::Literal;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::PartialApplication;
-use mago_syntax::ast::StringPart;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::ArrayElement;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::Literal;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::PartialApplication;
+use mago_syntax::cst::StringPart;
 
 use crate::document::Align;
 use crate::document::BreakMode;
@@ -29,6 +29,7 @@ use crate::document::Document;
 use crate::document::IndentIfBreak;
 use crate::document::Separator;
 use crate::internal::FormatterState;
+use crate::internal::format::call_arguments::promote_argument_list_to_partial;
 use crate::internal::format::call_arguments::should_break_all_arguments;
 use crate::internal::format::misc::is_breaking_expression;
 use crate::internal::format::misc::is_simple_single_line_expression;
@@ -283,16 +284,17 @@ where
                 return could_expand_value(f, first_arg.value(), true);
             }
 
-            should_break_all_arguments(f, arguments, false)
-                || should_expand_first_arg(f, arguments, true)
-                || should_expand_last_arg(f, arguments, true)
+            let partial_arguments = promote_argument_list_to_partial(f.arena, arguments);
+            should_break_all_arguments(f, partial_arguments, false)
+                || should_expand_first_arg(f, partial_arguments, true)
+                || should_expand_last_arg(f, partial_arguments, true)
         }
         Expression::Literal(Literal::String(literal_string)) => {
             literal_string.raw.contains(&b'\n') || literal_string.raw.contains(&b'\r')
         }
         Expression::CompositeString(composite_string) => composite_string.parts().iter().any(|part| match part {
             StringPart::Literal(literal_string) => {
-                literal_string.value.contains(&b'\n') || literal_string.value.contains(&b'\r')
+                literal_string.raw.contains(&b'\n') || literal_string.raw.contains(&b'\r')
             }
             _ => false,
         }),
@@ -305,9 +307,10 @@ where
                 return could_expand_value(f, first_arg.value(), true);
             }
 
-            should_break_all_arguments(f, argument_list, false)
-                || should_expand_first_arg(f, argument_list, true)
-                || should_expand_last_arg(f, argument_list, true)
+            let partial_arguments = promote_argument_list_to_partial(f.arena, argument_list);
+            should_break_all_arguments(f, partial_arguments, false)
+                || should_expand_first_arg(f, partial_arguments, true)
+                || should_expand_last_arg(f, partial_arguments, true)
         }
         _ => false,
     }
@@ -413,11 +416,11 @@ fn get_composite_string_width(composite_string: &CompositeString<'_>) -> Option<
     for part in composite_string.parts() {
         width += match part {
             StringPart::Literal(literal) => {
-                if literal.value.contains(&b'\n') || literal.value.contains(&b'\r') {
+                if literal.raw.contains(&b'\n') || literal.raw.contains(&b'\r') {
                     return None;
                 }
 
-                bytes_width(literal.value)
+                bytes_width(literal.raw)
             }
             StringPart::Expression(expression) => get_expression_width(expression)?,
             StringPart::BracedExpression(braced) => get_expression_width(braced.expression)? + 2,

@@ -1,16 +1,16 @@
 use crate::T;
-use crate::ast::ast::Call;
-use crate::ast::ast::Clone;
-use crate::ast::ast::Expression;
-use crate::ast::ast::FunctionCall;
-use crate::ast::ast::FunctionPartialApplication;
-use crate::ast::ast::Identifier;
-use crate::ast::ast::LocalIdentifier;
-use crate::ast::ast::Parenthesized;
-use crate::ast::ast::PartialApplication;
-use crate::ast::ast::PartialArgument;
-use crate::ast::ast::PartialArgumentList;
-use crate::ast::sequence::TokenSeparatedSequence;
+use crate::cst::cst::Call;
+use crate::cst::cst::Clone;
+use crate::cst::cst::Expression;
+use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::Identifier;
+use crate::cst::cst::LocalIdentifier;
+use crate::cst::cst::Parenthesized;
+use crate::cst::cst::PartialApplication;
+use crate::cst::cst::PartialArgument;
+use crate::cst::cst::PartialArgumentList;
+use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::Precedence;
@@ -109,17 +109,15 @@ where
             ) => return Err(self.stream.unexpected(None, &[])),
         };
 
+        let parenthesized = self.arena.alloc(Expression::Parenthesized(Parenthesized {
+            left_parenthesis: partial_args.left_parenthesis,
+            expression: self.arena.alloc(cloned_expression),
+            right_parenthesis: partial_args.right_parenthesis,
+        }));
+
         Ok(Expression::Clone(Clone {
             clone,
-            object: {
-                let object = Expression::Parenthesized(Parenthesized {
-                    left_parenthesis: partial_args.left_parenthesis,
-                    expression: self.arena.alloc(cloned_expression),
-                    right_parenthesis: partial_args.right_parenthesis,
-                });
-
-                self.arena.alloc(object)
-            },
+            object: self.parse_expression_continuation(parenthesized, Precedence::Clone)?,
         }))
     }
 }

@@ -18,27 +18,29 @@ use mago_codex::ttype::get_array_value_parameter;
 use mago_codex::ttype::get_iterable_value_parameter;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Access;
-use mago_syntax::ast::BinaryOperator;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::ClassConstantAccess;
-use mago_syntax::ast::ClassLikeConstantSelector;
-use mago_syntax::ast::Construct;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::FunctionCall;
-use mago_syntax::ast::Literal;
-use mago_syntax::ast::LocalIdentifier;
-use mago_syntax::ast::UnaryPrefix;
-use mago_syntax::ast::UnaryPrefixOperator;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassConstantAccess;
+use mago_syntax::cst::ClassLikeConstantSelector;
+use mago_syntax::cst::Construct;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::Literal;
+use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::UnaryPrefix;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
+use mago_word::concat_word;
 use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::assertion::AssertionContext;
 use crate::resolver::class_name::get_class_name_from_atomic;
 use crate::utils::expression::get_expression_id;
+use crate::utils::expression::get_index_id;
 use crate::utils::misc::unwrap_expression;
 
 #[derive(Debug, Clone, Copy)]
@@ -121,16 +123,25 @@ where
                     && let Some(first_argument_type) = artifacts.get_expression_type(first_argument.value())
                 {
                     let mut callables = vec![];
-                    for argument_type_atomic in first_argument_type.types.as_ref() {
-                        if let Some(callable) =
-                            cast_atomic_to_callable(argument_type_atomic, assertion_context.codebase, None)
-                        {
+
+                    let mut add_callable_assertion = |atomic: &TAtomic| {
+                        if let Some(callable) = cast_atomic_to_callable(atomic, assertion_context.codebase, None) {
                             callables.push(Assertion::IsType(TAtomic::Callable(callable.into_owned())));
-                        } else if let TAtomic::Scalar(TScalar::String(string)) = argument_type_atomic {
+                        } else if let TAtomic::Scalar(TScalar::String(string)) = atomic {
                             callables.push(Assertion::IsType(TAtomic::Scalar(TScalar::String(string.as_callable()))));
-                        } else {
-                            // not a callable-shaped type; skip without producing an assertion
                         }
+                    };
+
+                    for argument_type_atomic in first_argument_type.types.as_ref() {
+                        if let TAtomic::GenericParameter(generic_parameter) = argument_type_atomic {
+                            for constrained_atomic in generic_parameter.constraint.types.as_ref() {
+                                add_callable_assertion(constrained_atomic);
+                            }
+
+                            continue;
+                        }
+
+                        add_callable_assertion(argument_type_atomic);
                     }
 
                     if !callables.is_empty() {
@@ -293,6 +304,35 @@ where
     let resolved_function_name = ascii_lowercase_word(assertion_context.resolved_names.get(function_identifier));
     let should_check_against_unresolved = { function_identifier.is_local() };
 
+    let is_array_key_exists = |name: &[u8]| matches!(name, b"array_key_exists" | b"key_exists");
+    if (should_check_against_unresolved && is_array_key_exists(function_name.as_bytes()))
+        || is_array_key_exists(resolved_function_name.as_bytes())
+    {
+        let key_argument = function_call.argument_list.arguments.first().map(mago_syntax::cst::Argument::value);
+        let array_argument = function_call.argument_list.arguments.get(1).map(mago_syntax::cst::Argument::value);
+
+        if let (Some(key_argument), Some(array_argument)) = (key_argument, array_argument)
+            && get_expression_array_key(artifacts, key_argument).is_none()
+            && let Some(array_id) = get_expression_id(
+                array_argument,
+                assertion_context.this_class_name,
+                assertion_context.resolved_names,
+                Some(assertion_context.codebase),
+            )
+            && let Some(index_id) = get_index_id(
+                key_argument,
+                assertion_context.this_class_name,
+                assertion_context.resolved_names,
+                Some(assertion_context.codebase),
+            )
+        {
+            let access_id = concat_word!(array_id.as_bytes(), b"[", index_id.as_bytes(), b"]");
+            if_types.insert(access_id, vec![vec![Assertion::ArrayKeyExists]]);
+
+            return if_types;
+        }
+    }
+
     let (argument_variable_id_position, function_assertions) = if resolved_function_name
         .as_bytes()
         .starts_with(b"psl\\")
@@ -303,7 +343,7 @@ where
                     .argument_list
                     .arguments
                     .get(1)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|array_key| get_expression_array_key(artifacts, array_key))
                 {
                     (0, vec![Assertion::HasArrayKey(array_key)])
@@ -316,7 +356,7 @@ where
                     .argument_list
                     .arguments
                     .get(0)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))
                 else {
                     return if_types;
@@ -351,7 +391,7 @@ where
                 .argument_list
                 .arguments
                 .first()
-                .map(mago_syntax::ast::Argument::value)
+                .map(mago_syntax::cst::Argument::value)
                 .and_then(|array_key| get_expression_array_key(artifacts, array_key))
                 .map(|key| (1, vec![Assertion::HasArrayKey(key)])),
             b"is_countable" => Some((0, vec![Assertion::Countable])),
@@ -394,7 +434,7 @@ where
                     .argument_list
                     .arguments
                     .get(1)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))
                     .and_then(|ty| ty.get_single_literal_string_value())?;
 
@@ -405,7 +445,7 @@ where
                     .argument_list
                     .arguments
                     .get(1)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))
                     .and_then(|ty| ty.get_single_literal_string_value())?;
 
@@ -416,7 +456,7 @@ where
                     .argument_list
                     .arguments
                     .get(1)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))?;
 
                 let is_subclass_of_call = name == b"is_subclass_of";
@@ -426,6 +466,20 @@ where
                     .get(2)
                     .and_then(|argument| artifacts.get_expression_type(argument.value()))
                     .map_or(is_subclass_of_call, |t| !t.is_false());
+
+                let subject_is_string_only = function_call
+                    .argument_list
+                    .arguments
+                    .first()
+                    .map(mago_syntax::cst::Argument::value)
+                    .and_then(|expr| artifacts.get_expression_type(expr))
+                    .is_some_and(|subject| {
+                        !subject.types.is_empty()
+                            && subject
+                                .types
+                                .iter()
+                                .all(|atomic| matches!(atomic, TAtomic::Scalar(scalar) if scalar.is_any_string()))
+                    });
 
                 let mut assertions = vec![];
                 for atomic in class_name_type.types.as_ref() {
@@ -441,7 +495,9 @@ where
                         ))));
                     }
 
-                    assertions.push(Assertion::IsType(object_type));
+                    if !(allow_string && subject_is_string_only) {
+                        assertions.push(Assertion::IsType(object_type));
+                    }
                 }
 
                 if assertions.is_empty() {
@@ -466,7 +522,7 @@ where
                     .argument_list
                     .arguments
                     .get(1)
-                    .map(mago_syntax::ast::Argument::value)
+                    .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))?;
 
                 let mut value_types = None;
@@ -535,7 +591,7 @@ where
     };
 
     if let Some(argument) =
-        function_call.argument_list.arguments.get(argument_variable_id_position).map(mago_syntax::ast::Argument::value)
+        function_call.argument_list.arguments.get(argument_variable_id_position).map(mago_syntax::cst::Argument::value)
         && let Some((variable_id, needs_isset)) = extract_expression_id(argument)
     {
         let mut assertions = vec![function_assertions];
@@ -1856,48 +1912,40 @@ where
 {
     let mut if_types = WordMap::default();
 
-    let var_name;
-    let other_value_var_name;
-    let var_type;
-    let other_value_type;
-
-    match typed_value_position {
-        OtherValuePosition::Right => {
-            var_name = get_expression_id(
+    let (var_name, other_value_var_name, var_type, other_value_type) = match typed_value_position {
+        OtherValuePosition::Right => (
+            get_expression_id(
                 left,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-
-            other_value_var_name = get_expression_id(
+            ),
+            get_expression_id(
                 right,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-
-            var_type = artifacts.get_expression_type(&left.span());
-            other_value_type = artifacts.get_expression_type(&right.span());
-        }
-        OtherValuePosition::Left => {
-            var_name = get_expression_id(
+            ),
+            artifacts.get_expression_type(&left.span()),
+            artifacts.get_expression_type(&right.span()),
+        ),
+        OtherValuePosition::Left => (
+            get_expression_id(
                 right,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-            other_value_var_name = get_expression_id(
+            ),
+            get_expression_id(
                 left,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-
-            var_type = artifacts.get_expression_type(&right.span());
-            other_value_type = artifacts.get_expression_type(&left.span());
-        }
-    }
+            ),
+            artifacts.get_expression_type(&right.span()),
+            artifacts.get_expression_type(&left.span()),
+        ),
+    };
 
     let Some(var_name) = var_name else {
         return vec![];
@@ -1949,47 +1997,40 @@ where
 {
     let mut if_types = WordMap::default();
 
-    let var_name;
-    let other_value_var_name;
-    let other_value_type;
-    let var_type;
-
-    match typed_value_position {
-        OtherValuePosition::Right => {
-            var_name = get_expression_id(
+    let (var_name, other_value_var_name, var_type, other_value_type) = match typed_value_position {
+        OtherValuePosition::Right => (
+            get_expression_id(
                 left,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-            other_value_var_name = get_expression_id(
+            ),
+            get_expression_id(
                 right,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-
-            var_type = artifacts.get_expression_type(&left.span());
-            other_value_type = artifacts.get_expression_type(&right.span());
-        }
-        OtherValuePosition::Left => {
-            var_name = get_expression_id(
+            ),
+            artifacts.get_expression_type(&left.span()),
+            artifacts.get_expression_type(&right.span()),
+        ),
+        OtherValuePosition::Left => (
+            get_expression_id(
                 right,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-            other_value_var_name = get_expression_id(
+            ),
+            get_expression_id(
                 left,
                 assertion_context.this_class_name,
                 assertion_context.resolved_names,
                 Some(assertion_context.codebase),
-            );
-
-            var_type = artifacts.get_expression_type(&right.span());
-            other_value_type = artifacts.get_expression_type(&left.span());
-        }
-    }
+            ),
+            artifacts.get_expression_type(&right.span()),
+            artifacts.get_expression_type(&left.span()),
+        ),
+    };
 
     if let Some(var_name) = var_name
         && let Some(other_value_type) = other_value_type

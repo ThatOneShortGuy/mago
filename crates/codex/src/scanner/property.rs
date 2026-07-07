@@ -1,10 +1,12 @@
 use mago_allocator::Arena;
 use mago_names::scope::NamespaceScope;
+use mago_phpdoc_syntax::cst::Document;
+use mago_phpdoc_syntax::cst::TagValue;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::*;
+use mago_syntax::cst::*;
 use mago_syntax::walker::MutWalker;
 use mago_word::Word;
 use mago_word::word;
@@ -19,11 +21,12 @@ use crate::metadata::ttype::TypeMetadata;
 use crate::misc::VariableIdentifier;
 use crate::scanner::Context;
 use crate::scanner::attribute::scan_attribute_lists;
-use crate::scanner::docblock::PropertyDocblockComment;
-use crate::scanner::docblock::PropertyHookDocblockComment;
+use crate::scanner::docblock::HookParamTag;
+use crate::scanner::docblock::find_most_trusted_tag;
+use crate::scanner::docblock::parse_docblock;
 use crate::scanner::inference::infer;
 use crate::scanner::ttype::get_type_metadata_from_hint;
-use crate::scanner::ttype::get_type_metadata_from_type_string;
+use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::ttype::merge_type_preserving_nullability;
 use crate::scanner::version_claim::TypeOverride;
 use crate::scanner::version_claim::evaluate_version_attributes;
@@ -116,29 +119,8 @@ where
     }
 
     // Check for inline @var docblock comment on the parameter
-    match PropertyDocblockComment::create(context, parameter) {
-        Ok(Some(docblock)) => {
-            update_property_metadata_from_docblock(
-                context.arena,
-                &mut property_metadata,
-                &docblock,
-                classname,
-                type_context,
-                scope,
-                class_like_metadata,
-            );
-
-            if let Some(type_metadata) = property_metadata.type_metadata.as_ref()
-                && type_metadata.from_docblock
-                && !used_parameter_type_from_docblock
-            {
-                parameter_metadata.type_metadata = Some(type_metadata.clone());
-            }
-        }
-        Ok(None) => {
-            // No docblock comment found; do nothing
-        }
-        Err(parse_error) => {
+    if let Some(document) = parse_docblock(context, parameter) {
+        for parse_error in document.errors {
             class_like_metadata.issues.push(
                 Issue::error("Failed to parse promoted property docblock comment.")
                     .with_code(ScanningIssueKind::MalformedDocblockComment)
@@ -146,6 +128,23 @@ where
                     .with_note(parse_error.note())
                     .with_help(parse_error.help()),
             );
+        }
+
+        update_property_metadata_from_docblock(
+            &mut property_metadata,
+            &document,
+            classname,
+            type_context,
+            scope,
+            class_like_metadata,
+            true,
+        );
+
+        if let Some(type_metadata) = property_metadata.type_metadata.as_ref()
+            && type_metadata.from_docblock
+            && !used_parameter_type_from_docblock
+        {
+            parameter_metadata.type_metadata = Some(type_metadata.clone());
         }
     }
 
@@ -164,9 +163,10 @@ pub fn scan_properties<'arena, A>(
 where
     A: Arena,
 {
-    let docblock = match PropertyDocblockComment::create(context, property) {
-        Ok(docblock) => docblock,
-        Err(parse_error) => {
+    let document = parse_docblock(context, property);
+
+    if let Some(document) = document.as_ref() {
+        for parse_error in document.errors {
             class_like_metadata.issues.push(
                 Issue::error("Failed to parse property docblock comment.")
                     .with_code(ScanningIssueKind::MalformedDocblockComment)
@@ -174,10 +174,8 @@ where
                     .with_note(parse_error.note())
                     .with_help(parse_error.help()),
             );
-
-            None
         }
-    };
+    }
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
 
@@ -242,15 +240,15 @@ where
                             .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), context)),
                     );
 
-                    if let Some(docblock) = docblock.as_ref() {
+                    if let Some(document) = document.as_ref() {
                         update_property_metadata_from_docblock(
-                            context.arena,
                             &mut metadata,
-                            docblock,
+                            document,
                             classname,
                             type_context,
                             scope,
                             class_like_metadata,
+                            false,
                         );
                     }
 
@@ -306,15 +304,15 @@ where
                     .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), context)),
             );
 
-            if let Some(docblock) = docblock.as_ref() {
+            if let Some(document) = document.as_ref() {
                 update_property_metadata_from_docblock(
-                    context.arena,
                     &mut metadata,
-                    docblock,
+                    document,
                     classname,
                     type_context,
                     scope,
                     class_like_metadata,
+                    false,
                 );
             }
 
@@ -376,63 +374,51 @@ where
     let mut return_type_metadata = None;
     let mut issues = Vec::new();
 
-    match PropertyHookDocblockComment::create(context, hook) {
-        Ok(None) => {
-            // No docblock, nothing to do
+    if let Some(document) = parse_docblock(context, hook) {
+        has_docblock = true;
+
+        for parse_error in document.errors {
+            issues.push(
+                Issue::error("Failed to parse property hook docblock comment.")
+                    .with_code(ScanningIssueKind::MalformedDocblockComment)
+                    .with_annotation(Annotation::primary(parse_error.span()).with_message(parse_error.to_string()))
+                    .with_note(parse_error.note())
+                    .with_help(parse_error.help()),
+            );
         }
-        Ok(Some(docblock)) => {
-            has_docblock = true;
 
-            if let Some(param_tag) = &docblock.param_type_string {
-                if !has_explicit_parameter {
-                    issues.push(
-                        Issue::error("The `@param` tag cannot be used on a set hook without an explicit parameter.")
-                            .with_code(ScanningIssueKind::InvalidParamTag)
-                            .with_annotation(
-                                Annotation::primary(param_tag.span)
-                                    .with_message("This @param cannot be applied to implicit `$value` parameter"),
-                            )
-                            .with_note("Set hooks without an explicit parameter use an implicit `$value` parameter that inherits the property type.")
-                            .with_help("Either add an explicit parameter `set(Type $value) {}` or remove the @param tag."),
-                    );
-                } else if let Some(ref mut param) = parameter
-                    && let Some(type_string) = &param_tag.type_string
-                {
-                    let type_context = TypeResolutionContext::new();
-                    match get_type_metadata_from_type_string(context.arena, type_string, None, &type_context, scope) {
-                        Ok(docblock_type) => {
-                            let native_type = param.type_declaration_metadata.as_ref();
-                            let merged = merge_type_preserving_nullability(docblock_type, native_type);
-                            param.set_type_metadata(Some(merged));
-                        }
-                        Err(typing_error) => {
-                            issues.push(
-                                Issue::error("Could not resolve the type for the @param tag.")
-                                    .with_code(ScanningIssueKind::InvalidParamTag)
-                                    .with_annotation(
-                                        Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
-                                    )
-                                    .with_note(typing_error.note())
-                                    .with_help(typing_error.help()),
-                            );
-                        }
-                    }
-                }
-            }
+        let parameter_tag = find_most_trusted_tag(&document, |tag| match &tag.value {
+            TagValue::Param(param) => Some(HookParamTag::Typed(*param)),
+            TagValue::TypelessParam(param) => Some(HookParamTag::Typeless(*param)),
+            _ => None,
+        });
 
-            if let Some(return_type_string) = &docblock.return_type_string
-                && is_get
+        if let Some(param_tag) = &parameter_tag {
+            if !has_explicit_parameter {
+                issues.push(
+                    Issue::error("The `@param` tag cannot be used on a set hook without an explicit parameter.")
+                        .with_code(ScanningIssueKind::InvalidParamTag)
+                        .with_annotation(
+                            Annotation::primary(param_tag.span())
+                                .with_message("This @param cannot be applied to implicit `$value` parameter"),
+                        )
+                        .with_note("Set hooks without an explicit parameter use an implicit `$value` parameter that inherits the property type.")
+                        .with_help("Either add an explicit parameter `set(Type $value) {}` or remove the @param tag."),
+                );
+            } else if let Some(ref mut param) = parameter
+                && let Some(param_type) = param_tag.get_type()
             {
                 let type_context = TypeResolutionContext::new();
-                match get_type_metadata_from_type_string(context.arena, return_type_string, None, &type_context, scope)
-                {
+                match get_type_metadata_from_type(param_type, None, &type_context, scope) {
                     Ok(docblock_type) => {
-                        return_type_metadata = Some(docblock_type);
+                        let native_type = param.type_declaration_metadata.as_ref();
+                        let merged = merge_type_preserving_nullability(docblock_type, native_type);
+                        param.set_type_metadata(Some(merged));
                     }
                     Err(typing_error) => {
                         issues.push(
-                            Issue::error("Could not resolve the type for the @return tag.")
-                                .with_code(ScanningIssueKind::InvalidReturnTag)
+                            Issue::error("Could not resolve the type for the @param tag.")
+                                .with_code(ScanningIssueKind::InvalidParamTag)
                                 .with_annotation(
                                     Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
                                 )
@@ -443,14 +429,32 @@ where
                 }
             }
         }
-        Err(parse_error) => {
-            issues.push(
-                Issue::error("Failed to parse property hook docblock comment.")
-                    .with_code(ScanningIssueKind::MalformedDocblockComment)
-                    .with_annotation(Annotation::primary(parse_error.span()).with_message(parse_error.to_string()))
-                    .with_note(parse_error.note())
-                    .with_help(parse_error.help()),
-            );
+
+        let return_type_tag = find_most_trusted_tag(&document, |tag| match &tag.value {
+            TagValue::Return(return_tag) => Some(*return_tag),
+            _ => None,
+        });
+
+        if let Some(return_tag) = &return_type_tag
+            && is_get
+        {
+            let type_context = TypeResolutionContext::new();
+            match get_type_metadata_from_type(return_tag.r#type, None, &type_context, scope) {
+                Ok(docblock_type) => {
+                    return_type_metadata = Some(docblock_type);
+                }
+                Err(typing_error) => {
+                    issues.push(
+                        Issue::error("Could not resolve the type for the @return tag.")
+                            .with_code(ScanningIssueKind::InvalidReturnTag)
+                            .with_annotation(
+                                Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
+                            )
+                            .with_note(typing_error.note())
+                            .with_help(typing_error.help()),
+                    );
+                }
+            }
         }
     }
 
@@ -538,35 +542,54 @@ where
     }
 }
 
-fn update_property_metadata_from_docblock<A>(
-    arena: &A,
+fn update_property_metadata_from_docblock(
     property_metadata: &mut PropertyMetadata,
-    docblock: &PropertyDocblockComment,
+    document: &Document<'_>,
     classname: Word,
     type_context: &TypeResolutionContext,
     scope: &NamespaceScope,
     class_like_metadata: &mut ClassLikeMetadata,
-) where
-    A: Arena,
-{
-    if docblock.is_internal {
-        property_metadata.flags |= MetadataFlags::INTERNAL;
+    allow_param_tag: bool,
+) {
+    for tag in document.tags() {
+        match &tag.value {
+            TagValue::Internal(_) => {
+                property_metadata.flags |= MetadataFlags::INTERNAL;
+            }
+            TagValue::Experimental(_) => {
+                property_metadata.flags |= MetadataFlags::EXPERIMENTAL;
+            }
+            TagValue::Deprecated(_) => {
+                property_metadata.flags |= MetadataFlags::DEPRECATED;
+            }
+            TagValue::NotDeprecated(_) => {
+                property_metadata.flags.set(MetadataFlags::DEPRECATED, false);
+            }
+            TagValue::Readonly(_) => {
+                property_metadata.flags |= MetadataFlags::READONLY;
+            }
+            _ => {}
+        }
     }
 
-    if docblock.is_experimental {
-        property_metadata.flags |= MetadataFlags::EXPERIMENTAL;
-    }
+    let var_type = find_most_trusted_tag(document, |tag| match &tag.value {
+        TagValue::Var(var) => Some(var.r#type),
+        _ => None,
+    });
 
-    if docblock.is_deprecated {
-        property_metadata.flags |= MetadataFlags::DEPRECATED;
-    }
+    let docblock_type = var_type.or_else(|| {
+        if !allow_param_tag {
+            return None;
+        }
 
-    if docblock.is_readonly {
-        property_metadata.flags |= MetadataFlags::READONLY;
-    }
+        find_most_trusted_tag(document, |tag| match &tag.value {
+            TagValue::Param(param) => Some(param.r#type),
+            _ => None,
+        })
+    });
 
-    if let Some(type_string) = &docblock.type_string {
-        match get_type_metadata_from_type_string(arena, type_string, Some(classname), type_context, scope) {
+    if let Some(docblock_type) = docblock_type {
+        match get_type_metadata_from_type(docblock_type, Some(classname), type_context, scope) {
             Ok(property_type_metadata) => {
                 let real_type = property_metadata.type_declaration_metadata.as_ref();
                 let property_type_metadata = merge_type_preserving_nullability(property_type_metadata, real_type);
@@ -574,7 +597,7 @@ fn update_property_metadata_from_docblock<A>(
                 property_metadata.set_type_metadata(Some(property_type_metadata));
             }
             Err(typing_error) => class_like_metadata.issues.push(
-                Issue::error("Could not resolve the type for the @var tag.")
+                Issue::error("Could not resolve the property type from its docblock.")
                     .with_code(ScanningIssueKind::InvalidVarTag)
                     .with_annotation(Annotation::primary(typing_error.span()).with_message(typing_error.to_string()))
                     .with_note(typing_error.note())

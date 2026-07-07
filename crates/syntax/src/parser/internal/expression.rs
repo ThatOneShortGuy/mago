@@ -4,37 +4,38 @@ use mago_span::HasSpan;
 use mago_span::Span;
 
 use crate::T;
-use crate::ast::ast::Access;
-use crate::ast::ast::ArrayAccess;
-use crate::ast::ast::ArrayAppend;
-use crate::ast::ast::Assignment;
-use crate::ast::ast::AssignmentOperator;
-use crate::ast::ast::Binary;
-use crate::ast::ast::BinaryOperator;
-use crate::ast::ast::Call;
-use crate::ast::ast::ClassConstantAccess;
-use crate::ast::ast::ClassLikeConstantSelector;
-use crate::ast::ast::ClassLikeMemberSelector;
-use crate::ast::ast::Conditional;
-use crate::ast::ast::ConstantAccess;
-use crate::ast::ast::Expression;
-use crate::ast::ast::FunctionCall;
-use crate::ast::ast::FunctionPartialApplication;
-use crate::ast::ast::MethodCall;
-use crate::ast::ast::MethodPartialApplication;
-use crate::ast::ast::NullSafeMethodCall;
-use crate::ast::ast::NullSafePropertyAccess;
-use crate::ast::ast::Parenthesized;
-use crate::ast::ast::PartialApplication;
-use crate::ast::ast::Pipe;
-use crate::ast::ast::PropertyAccess;
-use crate::ast::ast::StaticMethodCall;
-use crate::ast::ast::StaticMethodPartialApplication;
-use crate::ast::ast::StaticPropertyAccess;
-use crate::ast::ast::UnaryPostfix;
-use crate::ast::ast::UnaryPostfixOperator;
-use crate::ast::ast::UnaryPrefix;
-use crate::ast::ast::UnaryPrefixOperator;
+use crate::cst::cst::Access;
+use crate::cst::cst::ArrayAccess;
+use crate::cst::cst::ArrayAppend;
+use crate::cst::cst::Assignment;
+use crate::cst::cst::AssignmentOperator;
+use crate::cst::cst::Binary;
+use crate::cst::cst::BinaryOperator;
+use crate::cst::cst::Call;
+use crate::cst::cst::ClassConstantAccess;
+use crate::cst::cst::ClassLikeConstantSelector;
+use crate::cst::cst::ClassLikeMemberSelector;
+use crate::cst::cst::Clone;
+use crate::cst::cst::Conditional;
+use crate::cst::cst::ConstantAccess;
+use crate::cst::cst::Expression;
+use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::MethodCall;
+use crate::cst::cst::MethodPartialApplication;
+use crate::cst::cst::NullSafeMethodCall;
+use crate::cst::cst::NullSafePropertyAccess;
+use crate::cst::cst::Parenthesized;
+use crate::cst::cst::PartialApplication;
+use crate::cst::cst::Pipe;
+use crate::cst::cst::PropertyAccess;
+use crate::cst::cst::StaticMethodCall;
+use crate::cst::cst::StaticMethodPartialApplication;
+use crate::cst::cst::StaticPropertyAccess;
+use crate::cst::cst::UnaryPostfix;
+use crate::cst::cst::UnaryPostfixOperator;
+use crate::cst::cst::UnaryPrefix;
+use crate::cst::cst::UnaryPrefixOperator;
 use crate::error::ParseError;
 use crate::parser::MAX_RECURSION_DEPTH;
 use crate::parser::Parser;
@@ -135,11 +136,18 @@ where
         &mut self,
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
-        let mut left = self.parse_lhs_expression(precedence)?;
+        let left = self.parse_lhs_expression(precedence)?;
 
+        self.parse_expression_continuation(left, precedence)
+    }
+
+    pub(crate) fn parse_expression_continuation(
+        &mut self,
+        mut left: &'arena Expression<'arena>,
+        precedence: Precedence,
+    ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
-            if !self.state.within_indirect_variable
-                && !matches!(precedence, Precedence::Instanceof | Precedence::New)
+            if !matches!(precedence, Precedence::Instanceof | Precedence::New)
                 && !matches!(next.kind, T!["(" | "::"])
                 && let Expression::Identifier(identifier) = left
             {
@@ -177,7 +185,18 @@ where
                     break;
                 }
 
-                left = self.parse_infix_expression(left)?;
+                if let Expression::Binary(binary) = left
+                    && matches!(binary.rhs, Expression::Assignment(_))
+                    && infix_precedence > binary.operator.precedence()
+                {
+                    left = self.arena.alloc(Expression::Binary(Binary {
+                        lhs: binary.lhs,
+                        operator: binary.operator,
+                        rhs: self.parse_infix_expression(binary.rhs)?,
+                    }));
+                } else {
+                    left = self.parse_infix_expression(left)?;
+                }
             } else {
                 break;
             }
@@ -358,10 +377,22 @@ where
                         right_bracket: self.stream.consume_span()?,
                     })
                 } else {
+                    let is_numeric_offset = matches!(next.kind, T![OffsetNumber])
+                        || (matches!(next.kind, T!["-"])
+                            && matches!(self.stream.peek_kind(1)?, Some(T![OffsetNumber])));
+
+                    let index = if is_numeric_offset {
+                        self.parse_interpolated_numeric_offset()?
+                    } else if matches!(next.kind, T![OffsetString]) {
+                        self.parse_interpolated_string_offset()?
+                    } else {
+                        self.parse_expression_with_precedence(Precedence::Lowest)?
+                    };
+
                     Expression::ArrayAccess(ArrayAccess {
                         array: lhs,
                         left_bracket,
-                        index: self.parse_expression_with_precedence(Precedence::Lowest)?,
+                        index,
                         right_bracket: self.stream.eat_span(T!["]"])?,
                     })
                 }
@@ -844,6 +875,14 @@ where
                 then: conditional.then,
                 colon: conditional.colon,
                 r#else: self.create_assignment_expression(conditional.r#else, operator, rhs),
+            })),
+            // `clone` is the highest-precedence prefix construct, but assignment's
+            // LHS is grammatically a variable, so `clone $b = 1` binds as
+            // `clone ($b = 1)` (the `=` shifts into clone's operand), not
+            // `(clone $b) = 1`.
+            Expression::Clone(cloned) => self.arena.alloc(Expression::Clone(Clone {
+                clone: cloned.clone,
+                object: self.create_assignment_expression(cloned.object, operator, rhs),
             })),
             _ => self.arena.alloc(Expression::Assignment(Assignment { lhs, operator, rhs })),
         }

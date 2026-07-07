@@ -1,8 +1,8 @@
-use mago_syntax::ast::ClassLikeMemberSelector;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::Method;
-use mago_syntax::ast::MethodBody;
-use mago_syntax::ast::Variable;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::Method;
+use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Variable;
 use mago_syntax::utils::reference::MethodReference;
 use mago_syntax::utils::reference::find_method_references_in_block;
 
@@ -243,16 +243,14 @@ pub const ASSERTION_METHODS: [&str; 173] = [
 ];
 
 #[inline]
-pub fn find_all_assertion_references_in_method<'ast, 'arena>(
-    method: &'ast Method<'arena>,
-) -> Vec<MethodReference<'ast, 'arena>> {
+pub fn find_all_assertion_references_in_method<'arena>(method: &'arena Method<'arena>) -> Vec<MethodReference<'arena>> {
     find_assertion_references_in_method(method, &ASSERTION_METHODS)
 }
 
 #[inline]
-pub fn find_testing_or_assertion_references_in_method<'ast, 'arena>(
-    method: &'ast Method<'arena>,
-) -> Vec<MethodReference<'ast, 'arena>> {
+pub fn find_testing_or_assertion_references_in_method<'arena>(
+    method: &'arena Method<'arena>,
+) -> Vec<MethodReference<'arena>> {
     find_assertion_references_in_method(
         method,
         ASSERTION_METHODS.into_iter().chain(TESTING_METHODS).collect::<Vec<_>>().as_slice(),
@@ -260,10 +258,10 @@ pub fn find_testing_or_assertion_references_in_method<'ast, 'arena>(
 }
 
 #[inline]
-pub fn find_assertion_references_in_method<'ast, 'arena>(
-    method: &'ast Method<'arena>,
+pub fn find_assertion_references_in_method<'arena>(
+    method: &'arena Method<'arena>,
     method_names: &[&str],
-) -> Vec<MethodReference<'ast, 'arena>> {
+) -> Vec<MethodReference<'arena>> {
     let MethodBody::Concrete(block) = &method.body else {
         return Vec::new();
     };

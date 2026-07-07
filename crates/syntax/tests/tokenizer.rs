@@ -241,7 +241,7 @@ echo $a;
         TokenKind::StringPart,
         TokenKind::StringPart,
         TokenKind::StringPart,
-        TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -274,8 +274,11 @@ $a = <<<PHP
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Whitespace,
     ];
@@ -302,8 +305,11 @@ $a = <<<'PHP'
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Nowdoc),
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Whitespace,
     ];
@@ -339,7 +345,7 @@ echo $a;
         TokenKind::StringPart,
         TokenKind::StringPart,
         TokenKind::StringPart,
-        TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -736,7 +742,9 @@ fn test_literal_nowdoc_heredoc() -> Result<(), SyntaxError> {
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Nowdoc),
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -745,7 +753,9 @@ fn test_literal_nowdoc_heredoc() -> Result<(), SyntaxError> {
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -788,7 +798,9 @@ fn test_heredoc() -> Result<(), SyntaxError> {
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::LeftBrace,
         TokenKind::Variable,
@@ -803,9 +815,10 @@ fn test_heredoc() -> Result<(), SyntaxError> {
         TokenKind::RightBrace,
         TokenKind::RightBrace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::DollarLeftBrace,
-        TokenKind::Identifier,
+        TokenKind::StringVariableName,
         TokenKind::LeftBracket,
         TokenKind::DollarLeftBrace,
         TokenKind::LiteralString,
@@ -817,33 +830,44 @@ fn test_heredoc() -> Result<(), SyntaxError> {
         TokenKind::RightBrace,
         TokenKind::RightBrace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::Variable,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::Variable,
         TokenKind::MinusGreaterThan,
         TokenKind::Identifier,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::Variable,
         TokenKind::QuestionMinusGreaterThan,
         TokenKind::Identifier,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
         TokenKind::Variable,
         TokenKind::LeftBracket,
-        TokenKind::LiteralInteger,
+        TokenKind::OffsetNumber,
         TokenKind::Plus,
-        TokenKind::LiteralInteger,
+        TokenKind::OffsetNumber,
         TokenKind::RightBracket,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -852,6 +876,26 @@ fn test_heredoc() -> Result<(), SyntaxError> {
     test_lexer(code, expected).map_err(|err| {
         panic!("unexpected error: {err}");
     })
+}
+
+#[test]
+fn test_lossless_when_interpolation_runs_across_nested_heredoc_content() {
+    let code = b"<?php\n\ndeclare(strict_types1=);\n\n/** @param non-empty-string $s */\nfuncti\n    echo $s;\n}\n\nfunction probe(string $name): void\n{\n    $message = <<<EOT\nHello, {$void\n{\n    $message = <<<EOT\nHello, {$name}!\nEOT;\n\n    takes_non_empty($message);\n}\n";
+
+    let input = Input::new(FileId::zero(), code);
+    let mut lexer = Lexer::new(input, LexerSettings::default());
+    let mut reconstructed = Vec::with_capacity(code.len());
+
+    while let Some(result) = lexer.advance() {
+        let token = match result {
+            Ok(token) => token,
+            Err(err) => panic!("unexpected lexer error: {err}"),
+        };
+
+        reconstructed.extend_from_slice(token.value);
+    }
+
+    assert_eq!(code, reconstructed.as_slice());
 }
 
 #[test]
@@ -901,7 +945,7 @@ fn test_double_quote_string() -> Result<(), SyntaxError> {
         TokenKind::RightBrace,
         TokenKind::StringPart,
         TokenKind::DollarLeftBrace,
-        TokenKind::Identifier,
+        TokenKind::StringVariableName,
         TokenKind::LeftBracket,
         TokenKind::DollarLeftBrace,
         TokenKind::LiteralString,
@@ -925,9 +969,9 @@ fn test_double_quote_string() -> Result<(), SyntaxError> {
         TokenKind::StringPart,
         TokenKind::Variable,
         TokenKind::LeftBracket,
-        TokenKind::LiteralInteger,
+        TokenKind::OffsetNumber,
         TokenKind::Plus,
-        TokenKind::LiteralInteger,
+        TokenKind::OffsetNumber,
         TokenKind::RightBracket,
         TokenKind::StringPart,
         TokenKind::DoubleQuote,
@@ -1245,6 +1289,7 @@ fn test_binary_string_prefix_heredoc() -> Result<(), SyntaxError> {
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
     ];
@@ -1262,6 +1307,7 @@ fn test_binary_string_prefix_nowdoc() -> Result<(), SyntaxError> {
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Nowdoc),
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
     ];
@@ -1279,6 +1325,7 @@ fn test_binary_string_prefix_heredoc_double_quoted() -> Result<(), SyntaxError> 
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
         TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
     ];
@@ -1487,11 +1534,11 @@ fn test_heredoc_escaped_backslash_before_braced_interpolation() -> Result<(), Sy
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\
+        TokenKind::StringPart,
         TokenKind::LeftBrace,
         TokenKind::Variable,
         TokenKind::RightBrace,
-        TokenKind::StringPart, // \n
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1533,9 +1580,10 @@ fn test_heredoc_single_backslash_escapes_brace() -> Result<(), SyntaxError> {
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \{
-        TokenKind::Variable,   // $string
-        TokenKind::StringPart, // }
+        TokenKind::StringPart,
+        TokenKind::Variable,
+        TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1576,9 +1624,10 @@ fn test_heredoc_triple_backslash_before_braced_interpolation() -> Result<(), Syn
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\\{
-        TokenKind::Variable,   // $string
-        TokenKind::StringPart, // }
+        TokenKind::StringPart,
+        TokenKind::Variable,
+        TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1600,11 +1649,11 @@ fn test_heredoc_quadruple_backslash_before_braced_interpolation() -> Result<(), 
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\\\
+        TokenKind::StringPart,
         TokenKind::LeftBrace,
         TokenKind::Variable,
         TokenKind::RightBrace,
-        TokenKind::StringPart, // \n
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1665,9 +1714,9 @@ fn test_heredoc_escaped_backslash_before_dollar_interpolation() -> Result<(), Sy
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\
-        TokenKind::Variable,   // $string
-        TokenKind::StringPart, // \n
+        TokenKind::StringPart,
+        TokenKind::Variable,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1707,7 +1756,8 @@ fn test_heredoc_no_interpolation_without_dollar() -> Result<(), SyntaxError> {
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\{foo}\n
+        TokenKind::StringPart,
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,
@@ -1729,11 +1779,11 @@ fn test_heredoc_escaped_backslash_before_dollar_brace_interpolation() -> Result<
         TokenKind::Equal,
         TokenKind::Whitespace,
         TokenKind::DocumentStart(DocumentKind::Heredoc),
-        TokenKind::StringPart, // \\
+        TokenKind::StringPart,
         TokenKind::DollarLeftBrace,
-        TokenKind::Identifier,
+        TokenKind::StringVariableName,
         TokenKind::RightBrace,
-        TokenKind::StringPart, // \n
+        TokenKind::Whitespace,
         TokenKind::DocumentEnd,
         TokenKind::Semicolon,
         TokenKind::Whitespace,

@@ -6,30 +6,30 @@ use mago_allocator::vec::Vec;
 
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Access;
-use mago_syntax::ast::Argument;
-use mago_syntax::ast::ArrayAccess;
-use mago_syntax::ast::ArrayElement;
-use mago_syntax::ast::Attribute;
-use mago_syntax::ast::AttributeList;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::CompositeString;
-use mago_syntax::ast::ConstantAccess;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::Identifier;
-use mago_syntax::ast::Instantiation;
-use mago_syntax::ast::Keyword;
-use mago_syntax::ast::Literal;
-use mago_syntax::ast::Modifier;
-use mago_syntax::ast::ModifierSequenceExt;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::Sequence;
-use mago_syntax::ast::Statement;
-use mago_syntax::ast::StringPart;
-use mago_syntax::ast::Terminator;
-use mago_syntax::ast::UnaryPrefixOperator;
-use mago_syntax::ast::Variable;
-use mago_syntax::ast::Yield;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
+use mago_syntax::cst::ArrayAccess;
+use mago_syntax::cst::ArrayElement;
+use mago_syntax::cst::Attribute;
+use mago_syntax::cst::AttributeList;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::Identifier;
+use mago_syntax::cst::Instantiation;
+use mago_syntax::cst::Keyword;
+use mago_syntax::cst::Literal;
+use mago_syntax::cst::Modifier;
+use mago_syntax::cst::ModifierSequenceExt;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::Sequence;
+use mago_syntax::cst::Statement;
+use mago_syntax::cst::StringPart;
+use mago_syntax::cst::Terminator;
+use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
+use mago_syntax::cst::Yield;
 
 use crate::document::BreakMode;
 use crate::document::Document;
@@ -40,6 +40,7 @@ use crate::document::Separator;
 use crate::internal::FormatterState;
 use crate::internal::comment::CommentFlags;
 use crate::internal::format::Format;
+use crate::internal::format::call_arguments::promote_argument_list_to_partial;
 use crate::internal::format::call_arguments::should_break_all_arguments;
 use crate::internal::format::format_token;
 use crate::internal::format::member_access::collect_member_access_chain;
@@ -260,13 +261,13 @@ where
     }
 
     if let Expression::Instantiation(Instantiation { argument_list: Some(args), .. }) = node
-        && should_break_all_arguments(f, args, false)
+        && should_break_all_arguments(f, promote_argument_list_to_partial(f.arena, args), false)
     {
         return true;
     }
 
     if let Expression::Call(call) = node
-        && should_break_all_arguments(f, call.get_argument_list(), false)
+        && should_break_all_arguments(f, promote_argument_list_to_partial(f.arena, call.get_argument_list()), false)
     {
         return true;
     }
@@ -566,7 +567,7 @@ fn is_simple_composite_string_argument(composite_string: &CompositeString<'_>, d
     }
 
     composite_string.parts().iter().all(|part| match part {
-        StringPart::Literal(literal) => !literal.value.contains(&b'\n') && !literal.value.contains(&b'\r'),
+        StringPart::Literal(literal) => !literal.raw.contains(&b'\n') && !literal.raw.contains(&b'\r'),
         StringPart::Expression(expression) => is_simple_call_argument(expression, depth),
         StringPart::BracedExpression(braced) => is_simple_call_argument(braced.expression, depth),
     })

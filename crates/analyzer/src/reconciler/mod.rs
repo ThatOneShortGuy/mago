@@ -96,8 +96,9 @@ pub fn reconcile_keyed_types<'ctx, A>(
         for (reference, referenced) in &block_context.references_in_scope {
             reference_graph.entry(*reference).or_default().insert(*referenced);
 
-            let referenced_graph = reference_graph.get(referenced).cloned().unwrap_or_default();
-            for existing_referenced in referenced_graph {
+            for existing_referenced in
+                reference_graph.get(referenced).map(|s| s.iter().copied().collect::<Vec<_>>()).unwrap_or_default()
+            {
                 reference_graph.entry(existing_referenced).or_default().insert(*reference);
                 reference_graph.entry(*reference).or_default().insert(existing_referenced);
             }
@@ -149,10 +150,11 @@ pub fn reconcile_keyed_types<'ctx, A>(
             }
         }
 
-        let did_type_exist = block_context.locals.contains_key(key);
+        let existing = block_context.locals.get(key);
+        let did_type_exist = existing.is_some();
         let mut has_object_array_access = false;
 
-        let mut result_type = block_context.locals.get(key).map(|t| t.as_ref().clone()).or_else(|| {
+        let mut result_type = existing.map(|t| t.as_ref().clone()).or_else(|| {
             get_value_for_key(
                 context,
                 *key,
@@ -256,12 +258,14 @@ pub fn reconcile_keyed_types<'ctx, A>(
 
                     if is_real && !new_types.contains_key(&new_key) && var_has_root(new_key, *key) {
                         if let Some(references_map) = reference_graph.get(&new_key) {
-                            let references_to_fix = references_map.iter().copied().collect::<Vec<_>>();
-
-                            match references_to_fix.len() {
+                            let ref_count = references_map.len();
+                            match ref_count {
                                 0 => {}
                                 1 => {
-                                    let reference_to_fix = references_to_fix[0];
+                                    let Some(reference_to_fix) = references_map.iter().next().copied() else {
+                                        continue;
+                                    };
+
                                     reference_graph.remove(&reference_to_fix);
                                     if block_context.references_in_scope.contains_key(&reference_to_fix) {
                                         block_context.decrement_reference_count(reference_to_fix.as_bytes());
@@ -269,6 +273,7 @@ pub fn reconcile_keyed_types<'ctx, A>(
                                     }
                                 }
                                 _ => {
+                                    let references_to_fix = references_map.iter().copied().collect::<Vec<_>>();
                                     for reference in &references_to_fix {
                                         if let Some(inner_set) = reference_graph.get_mut(reference) {
                                             inner_set.remove(&new_key);
@@ -751,7 +756,7 @@ fn add_nested_assertions(
 
                     let entry = new_types.entry(base_key_atom).or_default();
 
-                    let new_key = if array_key.starts_with(b"'") {
+                    let new_key = if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
                         Some(ArrayKey::String(word(&array_key[1..(array_key.len() - 1)])))
                     } else if array_key.starts_with(b"$") {
                         None
@@ -1020,9 +1025,10 @@ where
 
             let array_key_type = if let Some(array_key_offset) = array_key_offset {
                 ArrayKey::Integer(array_key_offset as i64)
+            } else if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
+                ArrayKey::String(word(&array_key[1..(array_key.len() - 1)]))
             } else {
-                let unquoted: Vec<u8> = array_key.iter().copied().filter(|&b| b != b'\'').collect();
-                ArrayKey::String(word(&unquoted))
+                ArrayKey::String(word(&array_key))
             };
 
             let mut new_base_key = base_key.clone();

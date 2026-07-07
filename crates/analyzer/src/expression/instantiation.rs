@@ -1,4 +1,6 @@
 use mago_allocator::Arena;
+use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_syntax::cst::PartialArgumentList;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -31,8 +33,8 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::ArgumentList;
-use mago_syntax::ast::Instantiation;
+use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::Instantiation;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -505,6 +507,7 @@ where
     let constraint_object = TAtomic::Object(TObject::Named(TNamedObject {
         name: metadata.original_name,
         type_parameters,
+        variances: None,
         is_static: classname.is_static() || (classname.is_self() && metadata.flags.is_final()),
         is_this: false,
         intersection_types: None,
@@ -539,8 +542,8 @@ pub fn analyze_anonymous_class_constructor<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    class_like_metadata: &'ctx mago_codex::metadata::class_like::ClassLikeMetadata,
-    argument_list: Option<&mago_syntax::ast::ArgumentList<'arena>>,
+    class_like_metadata: &'ctx ClassLikeMetadata,
+    argument_list: Option<&PartialArgumentList<'arena>>,
     instantiation_span: Span,
 ) -> Result<(), AnalysisError>
 where
@@ -572,7 +575,7 @@ where
                 span: instantiation_span,
             },
             arguments_source: match argument_list {
-                Some(arg_list) => InvocationArgumentsSource::ArgumentList(arg_list),
+                Some(arg_list) => InvocationArgumentsSource::PartialArgumentList(arg_list),
                 None => InvocationArgumentsSource::None(instantiation_span),
             },
             span: instantiation_span,

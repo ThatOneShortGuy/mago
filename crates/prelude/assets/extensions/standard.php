@@ -818,7 +818,6 @@ const PASSWORD_ARGON2_PROVIDER = 'standard';
  *   'options': array{'salt'?: int, 'cost'?: int, 'memory_cost'?: int, 'time_cost'?: int, 'threads'?: int, ...},
  * }
  *
- * @no-named-arguments
  * @pure
  */
 function password_get_info(string $hash): array {}
@@ -828,7 +827,6 @@ function password_get_info(string $hash): array {}
  *
  * @return non-empty-string
  *
- * @no-named-arguments
  * @pure
  */
 function password_hash(string $password, string|int|null $algo, array $options = []): string {}
@@ -836,13 +834,11 @@ function password_hash(string $password, string|int|null $algo, array $options =
 /**
  * @param array{'salt'?:int, 'cost'?: int, 'memory_cost'?: int, 'time_cost'?: int, 'threads'?: int, ...} $options
  *
- * @no-named-arguments
  * @pure
  */
 function password_needs_rehash(string $hash, string|int|null $algo, array $options = []): bool {}
 
 /**
- * @no-named-arguments
  * @pure
  */
 function password_verify(string $password, string $hash): bool {}
@@ -850,7 +846,6 @@ function password_verify(string $password, string $hash): bool {}
 /**
  * @return list<non-empty-string>
  *
- * @no-named-arguments
  * @pure
  */
 function password_algos(): array {}
@@ -1399,16 +1394,22 @@ function quotemeta(string $string): string {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : string)
  */
 function ucfirst(string $string): string {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : string)
  */
 function lcfirst(string $string): string {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : string)
  */
 function ucwords(string $string, string $separators = " \t\r\n\f\v"): string {}
 
@@ -1421,11 +1422,15 @@ function strtr(string $string, string|array $from, string $to = ''): string {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : string)
  */
 function addslashes(string $string): string {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : string)
  */
 function addcslashes(string $string, string $characters): string {}
 
@@ -1472,11 +1477,20 @@ function str_ireplace(
 
 /**
  * @pure
+ *
+ * @param non-negative-int $times
+ * @return (
+ *   $string is non-empty-string
+ *     ? ($times is positive-int ? non-empty-string : string)
+ *     : string
+ * )
  */
 function str_repeat(string $string, int $times): string {}
 
 /**
  * @pure
+ *
+ * @return non-empty-list<non-negative-int>
  */
 function count_chars(string $string, int $mode = 0): array|string {}
 
@@ -1968,6 +1982,8 @@ function base64_decode(string $string, bool $strict = false): string|false {}
 
 /**
  * @pure
+ *
+ * @return ($string is non-empty-string ? non-empty-string : '')
  */
 function base64_encode(string $string): string {}
 
@@ -2978,7 +2994,7 @@ function dns_get_record(
  *
  * @return false|int<0, max>
  */
-function stream_select(?array &$read, ?array &$write, ?array &$except, ?int $seconds, ?int $microseconds): int|false {}
+function stream_select(?array &$read, ?array &$write, ?array &$except, ?int $seconds, ?int $microseconds = null): int|false {}
 
 /**
  * @return resource
@@ -3021,7 +3037,7 @@ function stream_context_get_options($stream_or_context): array {}
 /**
  * @return resource
  */
-function stream_context_get_default(?array $options) {}
+function stream_context_get_default(?array $options = null) {}
 
 /**
  * @return resource
@@ -3099,7 +3115,7 @@ function stream_socket_get_name($socket, bool $remote): string|false {}
  *
  * @param-out string $address
  */
-function stream_socket_recvfrom($socket, int $length, int $flags = 0, &$address): string|false {}
+function stream_socket_recvfrom($socket, int $length, int $flags = 0, &$address = null): string|false {}
 
 /**
  * @param resource $socket
@@ -3131,7 +3147,7 @@ function stream_socket_pair(int $domain, int $type, int $protocol): array|false 
  * @param resource $from
  * @param resource $to
  */
-function stream_copy_to_stream($from, $to, ?int $length, int $offset = 0): int|false {}
+function stream_copy_to_stream($from, $to, ?int $length = null, int $offset = 0): int|false {}
 
 /**
  * @param resource $stream
@@ -3377,16 +3393,16 @@ function chroot(string $directory): bool {}
 function getcwd(): string|false {}
 
 /**
- * @param resource $dir_handle
+ * @param resource|null $dir_handle
  */
-function rewinddir($dir_handle): void {}
+function rewinddir($dir_handle = null): void {}
 
 /**
- * @param resource $dir_handle
+ * @param resource|null $dir_handle
  *
  * @return non-empty-string|false
  */
-function readdir($dir_handle): string|false {}
+function readdir($dir_handle = null): string|false {}
 
 /**
  * @param null|resource $context
@@ -3597,7 +3613,6 @@ function array_replace_recursive(array $array, array ...$replacements): array {}
  *
  * @return ($array is non-empty-array|non-empty-list ? non-empty-list<K> : list<K>)
  *
- * @no-named-arguments
  * @pure
  */
 function array_keys(array $array, mixed $filter_value = null, bool $strict = false): array {}
@@ -3610,7 +3625,6 @@ function array_keys(array $array, mixed $filter_value = null, bool $strict = fal
  *
  * @return ($array is non-empty-array|non-empty-list ? non-empty-list<V> : list<V>)
  *
- * @no-named-arguments
  * @pure
  */
 function array_values(array $array): array {}
@@ -3623,7 +3637,6 @@ function array_values(array $array): array {}
  *
  * @return array<V, int>
  *
- * @no-named-arguments
  * @pure
  */
 function array_count_values(array $array): array {}
@@ -3638,7 +3651,6 @@ function array_count_values(array $array): array {}
  *
  * @return array<array-key, V>
  *
- * @no-named-arguments
  * @pure
  */
 function array_column(array $array, string|int|null $column_key, string|int|null $index_key = null): array {}
@@ -3652,7 +3664,6 @@ function array_column(array $array, string|int|null $column_key, string|int|null
  *
  * @return ($array is list<V> ? ($preserve_keys is true ? array<K, V> : list<V>) : array<K, V>)
  *
- * @no-named-arguments
  * @pure
  */
 function array_reverse(array $array, bool $preserve_keys = false): array {}
@@ -4639,6 +4650,8 @@ function array_unshift(array &$array, mixed ...$values): int {}
  *     )
  *   )
  * ) $array
+ *
+ * @return ($array is list<InputValue> ? list<InputValue> : array<InputKey, InputValue>)
  *
  * @pure
  */

@@ -289,6 +289,8 @@ where
             if existing_var_type.is_never() {
                 existing_var_type = get_mixed_maybe_from_loop(inside_loop);
             }
+            existing_var_type.set_possibly_undefined(false, None);
+            existing_var_type.set_possibly_undefined_from_try(false);
             Some(existing_var_type)
         }
         Assertion::InArray(typed_value) => {
@@ -1476,7 +1478,7 @@ where
 
     let mut new_var_type = existing_var_type.clone();
 
-    let existing_var_types = new_var_type.types.to_mut().drain(..).collect::<Vec<_>>();
+    let existing_var_types = std::mem::take(new_var_type.types.to_mut());
 
     let mut acceptable_types = vec![];
 
@@ -2096,7 +2098,7 @@ where
     let mut did_remove_type = existing_var_type.possibly_undefined();
     let mut new_var_type = existing_var_type.clone();
     let mut acceptable_types = vec![];
-    let existing_var_types = new_var_type.types.to_mut().drain(..).collect::<Vec<_>>();
+    let existing_var_types = std::mem::take(new_var_type.types.to_mut());
 
     for mut atomic in existing_var_types {
         match &mut atomic {
@@ -2230,7 +2232,7 @@ where
 {
     let mut new_var_type = existing_var_type.clone();
 
-    let existing_var_types = new_var_type.types.to_mut().drain(..).collect::<Vec<_>>();
+    let existing_var_types = std::mem::take(new_var_type.types.to_mut());
 
     let mut acceptable_types = vec![];
 

@@ -5,17 +5,18 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::resolution::TypeResolutionContext;
 use mago_collector::Collector;
 use mago_database::file::File;
-use mago_docblock::document::Element;
 use mago_names::ResolvedNames;
 use mago_names::scope::NamespaceScope;
+use mago_phpdoc_syntax::PHPDocParser;
+use mago_phpdoc_syntax::cst::Element;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Identifier;
-use mago_syntax::ast::Trivia;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
+use mago_syntax::cst::Identifier;
+use mago_syntax::cst::Trivia;
 
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
@@ -149,34 +150,34 @@ where
     pub fn get_parsed_docblocks(&mut self) -> Vec<Element<'arena>> {
         let mut elements = vec![];
         for trivia in PrecedingDocblocks::new(self.comments, self.statement_span.start.offset) {
-            match mago_docblock::parse_trivia(self.arena, trivia) {
-                Ok(document) => elements.extend(document.elements.iter().cloned()),
-                Err(error) => {
-                    let error_span = error.span();
+            let document = PHPDocParser::parse_with_span(self.arena, trivia.value, trivia.span);
 
-                    let mut issue = Issue::error(error.to_string())
-                        .with_annotation(
-                            Annotation::primary(error_span)
-                                .with_message("This part of the docblock has a syntax error"),
-                        )
-                        .with_note(error.note());
+            for error in document.errors {
+                let error_span = error.span();
 
-                    if trivia.span != error_span {
-                        issue = issue.with_annotation(
-                            Annotation::secondary(trivia.span).with_message("The error is within this docblock"),
-                        );
-                    }
+                let mut issue = Issue::error(error.to_string())
+                    .with_annotation(
+                        Annotation::primary(error_span).with_message("This part of the docblock has a syntax error"),
+                    )
+                    .with_note(error.note());
 
+                if trivia.span != error_span {
                     issue = issue.with_annotation(
-                        Annotation::secondary(self.statement_span)
-                            .with_message("This docblock is associated with the following statement"),
+                        Annotation::secondary(trivia.span).with_message("The error is within this docblock"),
                     );
-
-                    issue = issue.with_help(error.help());
-
-                    self.collector.report_with_code(IssueCode::InvalidDocblock, issue);
                 }
+
+                issue = issue.with_annotation(
+                    Annotation::secondary(self.statement_span)
+                        .with_message("This docblock is associated with the following statement"),
+                );
+
+                issue = issue.with_help(error.help());
+
+                self.collector.report_with_code(IssueCode::InvalidDocblock, issue);
             }
+
+            elements.extend(document.elements.iter().copied());
         }
 
         elements

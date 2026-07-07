@@ -151,6 +151,7 @@ public function bar(
 | `preserve-breaking-attribute-list` | boolean | `false` | Preserve existing line breaks in attribute lists. |
 | `preserve-breaking-conditional-expression` | boolean | `false` | Preserve existing line breaks in ternaries. |
 | `preserve-breaking-condition-expression` | boolean | `false` | Preserve existing line breaks in control-structure conditions. When enabled, each boolean operator goes on its own line. |
+| `preserve-breaking-binary-expression` | boolean | `false` | Preserve existing line breaks before binary operators (`&&`, `\|\|`, `and`, `or`, `??`, `.`, etc.). When enabled, a binary expression that has a newline before an operand in the source is kept broken rather than collapsed onto one line. Useful alongside tools like PHP-CS-Fixer that place each operand on its own line. |
 | `break-promoted-properties-list` | boolean | `true` | Always break parameter lists with promoted properties. |
 | `parameter-attribute-on-new-line` | boolean | `true` | Put parameter attributes on their own line when the parameter list breaks (PER-CS 12.2). |
 | `line-before-binary-operator` | boolean | `true` | When a binary expression breaks, place the operator on the next line. |
@@ -174,7 +175,7 @@ public function bar(
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `sort-uses` | boolean | `true` | Sort `use` statements alphabetically. |
+| `sort-uses` | enum | `"alpha-ascending"` | Control how `use` statements are sorted. Values: `preserve` (aliases `as-is`, `none`, `keep`, `false`), `alphanumeric-ascending` (aliases `alpha-ascending`, `ascending`, `true`), `alphanumeric-descending` (aliases `alpha-descending`, `descending`), `length-ascending`, `length-descending`. Length modes count codepoints in the source spelling of the use statement; ties fall back to ascending alphanumeric for stable output. |
 | `sort-class-methods` | boolean | `false` | Order class methods by visibility and type: constructor first, then static methods, then instance methods by visibility, destructor last. |
 | `separate-use-types` | boolean | `true` | Insert a blank line between different kinds of `use`. |
 | `expand-use-groups` | boolean | `true` | Expand grouped `use` statements into individual ones. |
@@ -218,6 +219,7 @@ public function bar(
 | `opening-tag-on-own-line` | boolean | `true` | Put `<?php` on its own line in pure PHP files (PER-CS 3.0). Templates with inline HTML are unaffected. |
 | `empty-line-after-opening-tag` | boolean | `true` | Blank line after `<?php`. |
 | `empty-line-after-declare` | boolean | `true` | Blank line after `declare`. |
+| `combine-opening-tag-and-declare` | boolean | `false` | Combine `<?php` and an immediately following `declare` onto one line (`<?php declare(strict_types=1);`). Takes precedence over `opening-tag-on-own-line` and `empty-line-after-opening-tag` for that pairing. |
 | `empty-line-after-namespace` | boolean | `true` | Blank line after `namespace`. |
 | `empty-line-after-use` | boolean | `true` | Blank line after `use` blocks. |
 | `empty-line-after-symbols` | boolean | `true` | Blank line after top-level symbols. |

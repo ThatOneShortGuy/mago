@@ -16,9 +16,9 @@ use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
-use mago_syntax::ast::Binary;
-use mago_syntax::ast::BinaryOperator;
-use mago_syntax::ast::Expression;
+use mago_syntax::cst::Binary;
+use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Expression;
 use mago_text_edit::Safety;
 use mago_text_edit::TextEdit;
 use mago_word::WordSet;
@@ -156,7 +156,9 @@ where
 
     let result_type: TUnion;
     if lhs_type.is_always_falsy() {
-        report_redundant_logical_operation(context, binary, "always falsy", "not evaluated", "`false`", None);
+        if !block_context.flags.inside_loop_expressions() {
+            report_redundant_logical_operation(context, binary, "always falsy", "not evaluated", "`false`", None);
+        }
 
         result_type = get_false();
         let mut dead_rhs_context = right_block_context.clone();
@@ -174,7 +176,7 @@ where
         };
 
         let left_is_truthy = lhs_type.is_always_truthy();
-        if left_is_truthy {
+        if left_is_truthy && !block_context.flags.inside_loop_expressions() {
             // true && x → x (remove left, keep right)
             report_redundant_logical_operation(
                 context,
@@ -188,19 +190,23 @@ where
 
         if rhs_type.is_always_falsy() {
             // x && false → false (no fix)
-            report_redundant_logical_operation(context, binary, "evaluated", "always falsy", "`false`", None);
+            if !block_context.flags.inside_loop_expressions() {
+                report_redundant_logical_operation(context, binary, "evaluated", "always falsy", "`false`", None);
+            }
 
             result_type = get_false();
         } else if rhs_type.is_always_truthy() {
             // x && true → x (remove right, keep left)
-            report_redundant_logical_operation(
-                context,
-                binary,
-                "evaluated",
-                "always truthy",
-                "the boolean value of the left-hand side",
-                Some(true), // remove right
-            );
+            if !block_context.flags.inside_loop_expressions() {
+                report_redundant_logical_operation(
+                    context,
+                    binary,
+                    "evaluated",
+                    "always truthy",
+                    "the boolean value of the left-hand side",
+                    Some(true), // remove right
+                );
+            }
 
             if left_is_truthy {
                 result_type = get_true();

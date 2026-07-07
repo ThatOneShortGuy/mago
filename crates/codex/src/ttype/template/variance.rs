@@ -1,9 +1,32 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+use mago_phpdoc_syntax::cst::TemplateTagValueVariance;
+use mago_phpdoc_syntax::cst::r#type::GenericParameterVariance;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Variance {
     Invariant,
     Covariant,
     Contravariant,
+    Bivariant,
+}
+
+impl From<GenericParameterVariance<'_>> for Variance {
+    fn from(variance: GenericParameterVariance<'_>) -> Self {
+        match variance {
+            GenericParameterVariance::Covariant(_) => Variance::Covariant,
+            GenericParameterVariance::Contravariant(_) => Variance::Contravariant,
+        }
+    }
+}
+
+impl From<TemplateTagValueVariance> for Variance {
+    fn from(variance: TemplateTagValueVariance) -> Self {
+        match variance {
+            TemplateTagValueVariance::Invariant => Variance::Invariant,
+            TemplateTagValueVariance::Covariant => Variance::Covariant,
+            TemplateTagValueVariance::Contravariant => Variance::Contravariant,
+        }
+    }
 }
 
 impl Variance {
@@ -23,6 +46,22 @@ impl Variance {
     #[must_use]
     pub const fn is_contravariant(&self) -> bool {
         matches!(self, Variance::Contravariant)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_bivariant(&self) -> bool {
+        matches!(self, Variance::Bivariant)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn flip(self) -> Self {
+        match self {
+            Variance::Covariant => Variance::Contravariant,
+            Variance::Contravariant => Variance::Covariant,
+            other => other,
+        }
     }
 
     #[inline]
@@ -48,6 +87,7 @@ impl Variance {
     #[must_use]
     pub const fn combine(outer_variance: Self, inner_variance: Self) -> Self {
         match (outer_variance, inner_variance) {
+            (Variance::Bivariant, _) | (_, Variance::Bivariant) => Variance::Bivariant,
             // If either is invariant, the result is invariant
             (Variance::Invariant, _) | (_, Variance::Invariant) => Variance::Invariant,
             // Co + Co = Co
@@ -60,6 +100,30 @@ impl Variance {
             (Variance::Contravariant, Variance::Covariant) => Variance::Contravariant,
         }
     }
+
+    #[inline]
+    #[must_use]
+    pub const fn project(self, polarity: Variance) -> Option<bool> {
+        let reads = matches!(self, Variance::Covariant | Variance::Invariant);
+        let writes = matches!(self, Variance::Contravariant | Variance::Invariant);
+
+        match polarity {
+            Variance::Contravariant => {
+                if writes {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            _ => {
+                if reads {
+                    Some(true)
+                } else {
+                    Some(false)
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Variance {
@@ -68,6 +132,7 @@ impl std::fmt::Display for Variance {
             Variance::Invariant => write!(f, "invariant"),
             Variance::Covariant => write!(f, "covariant"),
             Variance::Contravariant => write!(f, "contravariant"),
+            Variance::Bivariant => write!(f, "*"),
         }
     }
 }

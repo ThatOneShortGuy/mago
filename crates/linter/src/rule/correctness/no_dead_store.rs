@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::NodeKind;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 
 use crate::category::Category;
 use crate::context::LintContext;
@@ -384,6 +384,209 @@ mod tests {
                 global $v;
                 $v = 1;
                 return $v;
+            }
+        "#}
+    }
+
+    test_lint_failure! {
+        name = conditional_write_does_not_hide_outer_dead_store,
+        rule = NoDeadStoreRule,
+        count = 2,
+        code = indoc! {r#"
+            <?php
+
+            function getint(): int
+            {
+                return mt_rand(0, max: 1);
+            }
+
+            function test(): int
+            {
+                $x = 42;
+                if (0 === getint()) {
+                    $x = getint();
+                }
+
+                $x = getint();
+                $x += getint();
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_failure! {
+        name = outer_store_dead_across_conditional_overwrite,
+        rule = NoDeadStoreRule,
+        count = 2,
+        code = indoc! {r#"
+            <?php
+
+            function f(bool $cond): int {
+                $x = 1;
+                if ($cond) {
+                    $x = 2;
+                }
+                $x = 3;
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = outer_store_read_inside_branch_is_not_dead,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function f(bool $cond): int {
+                $x = 1;
+                if ($cond) {
+                    echo $x;
+                }
+                $x = 3;
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = conditional_only_store_read_after_branch,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function f(bool $cond): int {
+                $x = 1;
+                if ($cond) {
+                    $x = 2;
+                }
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = write_before_break_is_not_dead,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function test(): bool
+            {
+                $good = 0;
+                while ($val = mt_rand(0, max: 10)) {
+                    if ($good > 0) {
+                        echo 'not unique';
+                        $good = -1;
+                        break;
+                    }
+                    $good = $val;
+                }
+                return $good > 0;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = write_before_continue_is_not_dead,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function test(): bool
+            {
+                $result = 0;
+                while (foo()) {
+                    if ($result > 0) {
+                        $result = -1;
+                        continue;
+                    }
+                    $result = 42;
+                }
+                return $result > 0;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = write_before_return_is_not_dead,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function f(bool $cond): int {
+                if ($cond) {
+                    $x = 1;
+                    return $x;
+                }
+                $x = 2;
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = write_before_throw_is_not_dead,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function f(bool $cond): void {
+                if ($cond) {
+                    $x = 1;
+                    throw new \RuntimeException();
+                }
+                $x = 2;
+                echo $x;
+            }
+        "#}
+    }
+
+    test_lint_failure! {
+        name = write_before_break_is_dead_when_overwritten_in_next_iteration,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function f(): int {
+                $x = 0;
+                while (foo()) {
+                    $x = 1;
+                    $x = 2;
+                    break;
+                }
+                return $x;
+            }
+        "#}
+    }
+
+    test_lint_success! {
+        name = loop_body_write_not_flagged_outside_loop,
+        rule = NoDeadStoreRule,
+        code = indoc! {r#"
+            <?php
+
+            function test(): void
+            {
+                $str = '...';
+                $flag = 0;
+                foreach (['name', 'description'] as $k) {
+                    if ($flag++) {
+                        $str .= ', ';
+                    }
+                    $str .= $k;
+                }
+
+                echo $str;
+
+                $str = '...';
+                $flag = 0;
+                foreach (['name', 'description'] as $k) {
+                    if ($flag++) {
+                        $str .= ', ';
+                    }
+                    $str .= $k;
+                }
             }
         "#}
     }

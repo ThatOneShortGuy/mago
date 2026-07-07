@@ -1,10 +1,10 @@
 use crate::T;
-use crate::ast::ast::AttributeList;
-use crate::ast::ast::Method;
-use crate::ast::ast::MethodAbstractBody;
-use crate::ast::ast::MethodBody;
-use crate::ast::ast::Modifier;
-use crate::ast::sequence::Sequence;
+use crate::cst::cst::AttributeList;
+use crate::cst::cst::Method;
+use crate::cst::cst::MethodAbstractBody;
+use crate::cst::cst::MethodBody;
+use crate::cst::cst::Modifier;
+use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -32,7 +32,7 @@ where
 
     fn parse_method_body(&mut self) -> Result<MethodBody<'arena>, ParseError> {
         Ok(match self.stream.peek_kind(0)? {
-            Some(T![";"]) => MethodBody::Abstract(MethodAbstractBody { semicolon: self.stream.consume_span()? }),
+            Some(T![";" | "?>"]) => MethodBody::Abstract(MethodAbstractBody { terminator: self.parse_terminator()? }),
             _ => MethodBody::Concrete(self.parse_block()?),
         })
     }

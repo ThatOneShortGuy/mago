@@ -2,17 +2,18 @@ use mago_allocator::Arena;
 use mago_allocator::vec_in;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::ArgumentList;
-use mago_syntax::ast::Attribute;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::ClassLikeMemberSelector;
-use mago_syntax::ast::DieConstruct;
-use mago_syntax::ast::ExitConstruct;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::Instantiation;
-use mago_syntax::ast::MethodCall;
-use mago_syntax::ast::StaticMethodCall;
-use mago_syntax::ast::Variable;
+use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::Attribute;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::DieConstruct;
+use mago_syntax::cst::ExitConstruct;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::Instantiation;
+use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::PartialArgumentList;
+use mago_syntax::cst::StaticMethodCall;
+use mago_syntax::cst::Variable;
 
 use crate::document::Document;
 use crate::document::Group;
@@ -23,6 +24,13 @@ use crate::internal::format::call_arguments::print_call_arguments;
 
 use super::member_access::format_access_operator;
 use super::misc;
+
+#[derive(Copy, Clone)]
+pub(super) enum CallLikeArgumentListNode<'arena> {
+    None,
+    ArgumentList(&'arena ArgumentList<'arena>),
+    PartialArgumentList(&'arena PartialArgumentList<'arena>),
+}
 
 #[derive(Copy, Clone)]
 pub(super) enum CallLikeNode<'arena> {
@@ -77,18 +85,34 @@ impl<'arena> CallLikeNode<'arena> {
         matches!(self, CallLikeNode::Attribute(_))
     }
 
-    pub fn arguments(&self) -> Option<&'arena ArgumentList<'arena>> {
+    pub fn arguments(&self) -> CallLikeArgumentListNode<'arena> {
         match self {
-            CallLikeNode::Call(call) => Some(match call {
+            CallLikeNode::Call(call) => CallLikeArgumentListNode::ArgumentList(match call {
                 Call::Function(c) => &c.argument_list,
                 Call::Method(c) => &c.argument_list,
                 Call::NullSafeMethod(c) => &c.argument_list,
                 Call::StaticMethod(c) => &c.argument_list,
             }),
-            CallLikeNode::Instantiation(new) => new.argument_list.as_ref(),
-            CallLikeNode::Attribute(attr) => attr.argument_list.as_ref(),
-            CallLikeNode::DieConstruct(die) => die.arguments.as_ref(),
-            CallLikeNode::ExitConstruct(exit) => exit.arguments.as_ref(),
+            CallLikeNode::Instantiation(new) => new
+                .argument_list
+                .as_ref()
+                .map(CallLikeArgumentListNode::ArgumentList)
+                .unwrap_or(CallLikeArgumentListNode::None),
+            CallLikeNode::DieConstruct(die) => die
+                .arguments
+                .as_ref()
+                .map(CallLikeArgumentListNode::ArgumentList)
+                .unwrap_or(CallLikeArgumentListNode::None),
+            CallLikeNode::ExitConstruct(exit) => exit
+                .arguments
+                .as_ref()
+                .map(CallLikeArgumentListNode::ArgumentList)
+                .unwrap_or(CallLikeArgumentListNode::None),
+            CallLikeNode::Attribute(attr) => attr
+                .argument_list
+                .as_ref()
+                .map(CallLikeArgumentListNode::PartialArgumentList)
+                .unwrap_or(CallLikeArgumentListNode::None),
         }
     }
 }

@@ -85,6 +85,8 @@ pub struct Lexer<'input> {
     mode: LexerMode<'input>,
     interpolating: bool,
     brace_interpolating: bool,
+    var_offset_depth: u32,
+    expect_string_varname: bool,
     /// Buffer for tokens during string interpolation.
     buffer: VecDeque<Token<'input>>,
 }
@@ -112,6 +114,8 @@ impl<'input> Lexer<'input> {
             mode: LexerMode::Inline,
             interpolating: false,
             brace_interpolating: false,
+            var_offset_depth: 0,
+            expect_string_varname: false,
             buffer: VecDeque::with_capacity(Self::BUFFER_INITIAL_CAPACITY),
         }
     }
@@ -134,6 +138,8 @@ impl<'input> Lexer<'input> {
             mode: LexerMode::Script,
             interpolating: false,
             brace_interpolating: false,
+            var_offset_depth: 0,
+            expect_string_varname: false,
             buffer: VecDeque::with_capacity(Self::BUFFER_INITIAL_CAPACITY),
         }
     }
@@ -322,6 +328,16 @@ impl<'input> Lexer<'input> {
             }
             LexerMode::Script => {
                 let start = self.input.current_position();
+
+                if self.expect_string_varname {
+                    self.expect_string_varname = false;
+                    let (length, _) = self.input.scan_identifier(0);
+                    let buffer = self.input.consume(length);
+                    let end = self.input.current_position();
+
+                    return Some(Ok(self.token(TokenKind::StringVariableName, buffer, start, end)));
+                }
+
                 let whitespaces = self.input.consume_whitespaces();
                 if !whitespaces.is_empty() {
                     return Some(Ok(self.token(
@@ -341,6 +357,13 @@ impl<'input> Lexer<'input> {
                     let buffer = self.input.consume(1);
                     let end = self.input.current_position();
                     return Some(Ok(self.token(kind, buffer, start, end)));
+                }
+
+                if self.var_offset_depth > 0 && IDENT_START_TABLE[first_byte as usize] {
+                    let (length, _) = self.input.scan_identifier(0);
+                    let buffer = self.input.consume(length);
+                    let end = self.input.current_position();
+                    return Some(Ok(self.token(TokenKind::OffsetString, buffer, start, end)));
                 }
 
                 if IDENT_START_TABLE[first_byte as usize] {
@@ -564,7 +587,27 @@ impl<'input> Lexer<'input> {
                         (TokenKind::HashComment, 1 + comment_len)
                     }
                     [b'\\', ..] => (TokenKind::NamespaceSeparator, 1),
-                    [b'.', start_of_number!(), ..] => {
+                    [start_of_number!(), ..] if self.var_offset_depth > 0 => {
+                        let mut length = 1;
+                        let base = match self.input.read(2) {
+                            [b'0', b'x' | b'X'] => {
+                                length = 2;
+                                16
+                            }
+                            [b'0', b'b' | b'B'] => {
+                                length = 2;
+                                2
+                            }
+                            [b'0', b'o' | b'O'] => {
+                                length = 2;
+                                8
+                            }
+                            _ => 10,
+                        };
+
+                        (TokenKind::OffsetNumber, read_digits_of_base(&self.input, length, base))
+                    }
+                    [b'.', start_of_number!(), ..] if self.var_offset_depth == 0 => {
                         let mut length = read_digits_of_base(&self.input, 2, 10);
                         if let float_exponent!() = self.input.peek(length, 1) {
                             let mut exp_length = length + 1;
@@ -673,7 +716,11 @@ impl<'input> Lexer<'input> {
                     TokenKind::CloseTag => LexerMode::Inline,
                     TokenKind::HaltCompiler => LexerMode::Halt(HaltStage::LookingForLeftParenthesis),
                     TokenKind::DocumentStart(document_kind) => {
-                        LexerMode::DocumentString(document_kind, document_label, Interpolation::None)
+                        let body_offset = self.input.current_offset() + len;
+                        let interpolated = matches!(document_kind, DocumentKind::Heredoc);
+                        let indent = read_document_indentation(&self.input, body_offset, document_label, interpolated);
+
+                        LexerMode::DocumentString(document_kind, document_label, indent, Interpolation::None)
                     }
                     _ => LexerMode::Script,
                 };
@@ -816,10 +863,20 @@ impl<'input> Lexer<'input> {
                     self.interpolation(*offset, LexerMode::ShellExecuteString(Interpolation::None), true)
                 }
             },
-            LexerMode::DocumentString(kind, label, interpolation) => match &kind {
+            LexerMode::DocumentString(kind, label, indent, interpolation) => match &kind {
                 DocumentKind::Heredoc => match &interpolation {
                     Interpolation::None => {
                         let start = self.input.current_position();
+
+                        if indent > 0 && document_body_at_line_start(&self.input) {
+                            let width = document_leading_indent_width(&self.input, indent);
+                            if width > 0 && !document_line_is_closing_marker(&self.input, width, label) {
+                                let buffer = self.input.consume(width);
+                                let end = self.input.current_position();
+
+                                return Some(Ok(self.token(TokenKind::Whitespace, buffer, start, end)));
+                            }
+                        }
 
                         let mut length = 0;
                         let mut last_was_slash = false;
@@ -828,11 +885,19 @@ impl<'input> Lexer<'input> {
                         loop {
                             match self.input.peek(length, 2) {
                                 [b'\r', b'\n'] => {
+                                    if document_next_line_is_closing_marker(&self.input, length + 2, label) {
+                                        return self.document_segment_before_closing_marker(length, 2, start);
+                                    }
+
                                     length += 2;
 
                                     break;
                                 }
                                 [b'\n' | b'\r', ..] => {
+                                    if document_next_line_is_closing_marker(&self.input, length + 1, label) {
+                                        return self.document_segment_before_closing_marker(length, 1, start);
+                                    }
+
                                     length += 1;
 
                                     break;
@@ -847,6 +912,7 @@ impl<'input> Lexer<'input> {
                                     self.mode = LexerMode::DocumentString(
                                         kind,
                                         label,
+                                        indent,
                                         Interpolation::Until(start.offset + until_offset),
                                     );
 
@@ -858,6 +924,7 @@ impl<'input> Lexer<'input> {
                                     self.mode = LexerMode::DocumentString(
                                         kind,
                                         label,
+                                        indent,
                                         Interpolation::BraceUntil(start.offset + until_offset),
                                     );
 
@@ -902,15 +969,29 @@ impl<'input> Lexer<'input> {
 
                         Some(Ok(self.token(token_kind, buffer, start, end)))
                     }
-                    Interpolation::Until(offset) => {
-                        self.interpolation(*offset, LexerMode::DocumentString(kind, label, Interpolation::None), false)
-                    }
-                    Interpolation::BraceUntil(offset) => {
-                        self.interpolation(*offset, LexerMode::DocumentString(kind, label, Interpolation::None), true)
-                    }
+                    Interpolation::Until(offset) => self.interpolation(
+                        *offset,
+                        LexerMode::DocumentString(kind, label, indent, Interpolation::None),
+                        false,
+                    ),
+                    Interpolation::BraceUntil(offset) => self.interpolation(
+                        *offset,
+                        LexerMode::DocumentString(kind, label, indent, Interpolation::None),
+                        true,
+                    ),
                 },
                 DocumentKind::Nowdoc => {
                     let start = self.input.current_position();
+
+                    if indent > 0 && document_body_at_line_start(&self.input) {
+                        let width = document_leading_indent_width(&self.input, indent);
+                        if width > 0 && !document_line_is_closing_marker(&self.input, width, label) {
+                            let buffer = self.input.consume(width);
+                            let end = self.input.current_position();
+
+                            return Some(Ok(self.token(TokenKind::Whitespace, buffer, start, end)));
+                        }
+                    }
 
                     let mut length = 0;
                     let mut terminated = false;
@@ -919,11 +1000,19 @@ impl<'input> Lexer<'input> {
                     loop {
                         match self.input.peek(length, 2) {
                             [b'\r', b'\n'] => {
+                                if document_next_line_is_closing_marker(&self.input, length + 2, label) {
+                                    return self.document_segment_before_closing_marker(length, 2, start);
+                                }
+
                                 length += 2;
 
                                 break;
                             }
                             [b'\n' | b'\r', ..] => {
+                                if document_next_line_is_closing_marker(&self.input, length + 1, label) {
+                                    return self.document_segment_before_closing_marker(length, 1, start);
+                                }
+
                                 length += 1;
 
                                 break;
@@ -1118,6 +1207,54 @@ impl<'input> Lexer<'input> {
         Token { kind, start, value }
     }
 
+    /// Emits the last body segment before a heredoc/nowdoc closing marker. The
+    /// line terminator immediately preceding the marker is not part of the
+    /// string value, so it is surfaced as `Whitespace` trivia: when there is
+    /// preceding content the terminator is queued to follow the `StringPart`,
+    /// otherwise the terminator is emitted on its own.
+    fn document_segment_before_closing_marker(
+        &mut self,
+        content_length: usize,
+        terminator_length: usize,
+        start: Position,
+    ) -> Option<Result<Token<'input>, SyntaxError>> {
+        if content_length == 0 {
+            let buffer = self.input.consume(terminator_length);
+            let end = self.input.current_position();
+
+            return Some(Ok(self.token(TokenKind::Whitespace, buffer, start, end)));
+        }
+
+        let content = self.input.consume(content_length);
+        let content_end = self.input.current_position();
+        let terminator = self.input.consume(terminator_length);
+        let terminator_end = self.input.current_position();
+
+        if self.interpolating {
+            self.buffer.push_back(self.token(TokenKind::StringPart, content, start, content_end));
+
+            return Some(Ok(self.token(TokenKind::Whitespace, terminator, content_end, terminator_end)));
+        }
+
+        self.buffer.push_back(self.token(TokenKind::Whitespace, terminator, content_end, terminator_end));
+
+        Some(Ok(self.token(TokenKind::StringPart, content, start, content_end)))
+    }
+
+    fn peek_string_varname_label(&self) -> bool {
+        let Some(&first) = self.input.read(1).first() else {
+            return false;
+        };
+
+        if !IDENT_START_TABLE[first as usize] {
+            return false;
+        }
+
+        let (label_length, _) = self.input.scan_identifier(0);
+
+        matches!(self.input.read(label_length + 1).get(label_length), Some(b'[' | b'}'))
+    }
+
     #[inline]
     fn interpolation(
         &mut self,
@@ -1132,6 +1269,10 @@ impl<'input> Lexer<'input> {
         let was_brace_interpolating = self.brace_interpolating;
         // For brace interpolation ({$...}), allow qualified identifiers with backslashes.
         self.brace_interpolating = brace;
+        let was_var_offset_depth = self.var_offset_depth;
+        self.var_offset_depth = 0;
+        let was_expect_string_varname = self.expect_string_varname;
+        self.expect_string_varname = false;
 
         let pending_error = loop {
             match self.advance() {
@@ -1139,6 +1280,20 @@ impl<'input> Lexer<'input> {
                     let token_start = token.start.offset;
                     let token_end = token_start + token.value.len() as u32;
                     let is_final_token = token_start <= end_offset && end_offset <= token_end;
+
+                    if brace {
+                        if token.kind == TokenKind::DollarLeftBrace && self.peek_string_varname_label() {
+                            self.expect_string_varname = true;
+                        }
+                    } else {
+                        match token.kind {
+                            TokenKind::LeftBracket => self.var_offset_depth += 1,
+                            TokenKind::RightBracket => {
+                                self.var_offset_depth = self.var_offset_depth.saturating_sub(1);
+                            }
+                            _ => {}
+                        }
+                    }
 
                     self.buffer.push_back(token);
 
@@ -1154,6 +1309,8 @@ impl<'input> Lexer<'input> {
         self.mode = post_interpolation_mode;
         self.interpolating = was_interpolating;
         self.brace_interpolating = was_brace_interpolating;
+        self.var_offset_depth = was_var_offset_depth;
+        self.expect_string_varname = was_expect_string_varname;
 
         if let Some(error) = pending_error {
             return Some(Err(error));
@@ -1336,6 +1493,124 @@ fn matches_literal_double_quote_string(input: &Input, prefix_len: usize) -> bool
         }
         pos += 1;
     }
+}
+
+/// Measures the indentation of a heredoc/nowdoc closing marker by scanning the
+/// body line by line, starting at `body_offset`, until the first line whose
+/// leading whitespace is followed by the closing `label`. The returned width is
+/// the number of leading space/tab bytes on that line; PHP 7.3 flexible
+/// heredoc/nowdoc strips up to that many columns from every body line.
+fn read_document_indentation(input: &Input, body_offset: usize, label: &[u8], interpolated: bool) -> usize {
+    let total = input.len();
+    let base = input.current_offset();
+    let mut position = body_offset;
+    loop {
+        let mut width = 0;
+        while position < total && matches!(*input.read_at(position), b' ' | b'\t') {
+            width += 1;
+            position += 1;
+        }
+
+        if label_matches_at(input, position, label, total) {
+            return width;
+        }
+
+        let mut last_was_slash = false;
+        while position < total && !matches!(*input.read_at(position), b'\n' | b'\r') {
+            let byte = *input.read_at(position);
+            let next = (position + 1 < total).then(|| *input.read_at(position + 1));
+
+            if interpolated && !last_was_slash {
+                if (byte == b'$' && next == Some(b'{')) || (byte == b'{' && next == Some(b'$')) {
+                    let from = (position - base) + 2;
+                    position = base + read_until_end_of_brace_interpolation(input, from) as usize;
+
+                    continue;
+                }
+
+                if byte == b'$' && next.is_some_and(|c| is_start_of_identifier(&c)) {
+                    let from = (position - base) + 2;
+                    position = base + read_until_end_of_variable_interpolation(input, from) as usize;
+
+                    continue;
+                }
+            }
+
+            last_was_slash = byte == b'\\' && !last_was_slash;
+            position += 1;
+        }
+
+        if position >= total {
+            return 0;
+        }
+
+        if *input.read_at(position) == b'\r' && position + 1 < total && *input.read_at(position + 1) == b'\n' {
+            position += 2;
+        } else {
+            position += 1;
+        }
+    }
+}
+
+/// Whether the closing `label` appears at the absolute `position`, not followed
+/// by an identifier byte (so `EOT` matches but `EOTish` does not).
+fn label_matches_at(input: &Input, position: usize, label: &[u8], total: usize) -> bool {
+    if position + label.len() > total {
+        return false;
+    }
+
+    let mut index = 0;
+    while index < label.len() {
+        if *input.read_at(position + index) != label[index] {
+            return false;
+        }
+        index += 1;
+    }
+
+    let after = position + label.len();
+    after >= total || !is_part_of_identifier(input.read_at(after))
+}
+
+/// Whether the lexer is positioned at the start of a heredoc/nowdoc body line,
+/// i.e. the previous byte is a line terminator.
+#[inline]
+fn document_body_at_line_start(input: &Input) -> bool {
+    let offset = input.current_offset();
+    offset == 0 || matches!(*input.read_at(offset - 1), b'\n' | b'\r')
+}
+
+/// Counts the leading space/tab bytes at the current position, capped at `indent`.
+#[inline]
+fn document_leading_indent_width(input: &Input, indent: usize) -> usize {
+    let mut width = 0;
+    while width < indent && matches!(input.peek(width, 1), [b' ' | b'\t']) {
+        width += 1;
+    }
+
+    width
+}
+
+/// Whether the current line, after `width` leading whitespace bytes, is the
+/// closing marker. The marker's own indentation is left attached to the
+/// `DocumentEnd` token rather than stripped as trivia.
+#[inline]
+fn document_line_is_closing_marker(input: &Input, width: usize, label: &[u8]) -> bool {
+    input.peek(width, label.len()) == label
+        && input.peek(width + label.len(), 1).first().is_none_or(|byte| !is_part_of_identifier(byte))
+}
+
+/// Whether the line beginning at relative `offset` (just past a line terminator)
+/// is the closing marker. Used to recognise the terminator that immediately
+/// precedes the marker, which a heredoc/nowdoc drops from the string value.
+#[inline]
+fn document_next_line_is_closing_marker(input: &Input, offset: usize, label: &[u8]) -> bool {
+    let mut width = 0;
+    while matches!(input.peek(offset + width, 1), [b' ' | b'\t']) {
+        width += 1;
+    }
+
+    input.peek(offset + width, label.len()) == label
+        && input.peek(offset + width + label.len(), 1).first().is_none_or(|byte| !is_part_of_identifier(byte))
 }
 
 #[inline]

@@ -1,14 +1,15 @@
 use indoc::indoc;
 use mago_allocator::Arena;
+use mago_phpdoc_syntax::PHPDocParser;
 use schemars::JsonSchema;
 
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
 use mago_span::HasSpan;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::NodeKind;
-use mago_syntax::ast::TriviaKind;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
+use mago_syntax::cst::TriviaKind;
 
 use crate::category::Category;
 use crate::context::LintContext;
@@ -110,11 +111,12 @@ impl LintRule for ValidDocblockRule {
         };
 
         for trivia in &program.trivia {
-            if trivia.kind == TriviaKind::DocBlockComment {
-                let Err(parse_error) = mago_docblock::parse_trivia(ctx.arena, trivia) else {
-                    continue;
-                };
+            if trivia.kind != TriviaKind::DocBlockComment {
+                continue;
+            }
 
+            let document = PHPDocParser::parse_with_span(ctx.arena, trivia.value, trivia.span);
+            for parse_error in document.errors {
                 let issue = Issue::new(self.cfg.level(), parse_error.to_string())
                     .with_code(self.meta.code)
                     .with_annotation(Annotation::primary(parse_error.span()))

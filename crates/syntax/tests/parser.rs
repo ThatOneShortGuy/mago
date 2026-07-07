@@ -7,7 +7,7 @@ mod runner {
 
     use mago_database::file::File;
 
-    use mago_syntax::ast::*;
+    use mago_syntax::cst::*;
     use mago_syntax::parser::parse_file;
 
     pub fn smoke_test(name: &'static str, code: &'static str) {
@@ -566,7 +566,15 @@ mod parser {
         "($a = (($b instanceof C) && ($d instanceof E)))"
     );
     test_expression!(complex_not_and_instanceof, "$a = !$b instanceof C", "($a = (! ($b instanceof C)))");
+    test_expression!(
+        complex_cast_and_instanceof,
+        "(object) 1 instanceof stdClass",
+        "(((object) 1) instanceof stdClass)"
+    );
+    test_expression!(complex_bitwise_not_and_instanceof, "~$a instanceof C", "((~ $a) instanceof C)");
+    test_expression!(complex_unary_minus_and_instanceof, "-$a instanceof C", "((- $a) instanceof C)");
     test_expression!(complex_clone_and_arrow, "$a = clone $b * $c", "($a = ((clone $b) * $c))");
+    test_expression!(complex_clone_and_assignment, "clone $b = 1", "(clone ($b = 1))");
     test_expression!(complex_error_control_on_ternary, "$a = @$b ? $c : $d - $e", "($a = ( (@ $b) ? $c : ($d - $e) ))");
     test_expression!(
         complex_long_arithmetic_chain,
@@ -1313,4 +1321,393 @@ mod parser {
     smoke_test!(issue_1713_exit_partial_application_variadic, "<?php exit(1, ?, ...);");
     smoke_test!(issue_1713_match_trailing_comma, "<?php $value = match (1) { 0, 1, => 'Foo', default, => 'Bar', };");
     smoke_test!(issue_1713_yield_unary_minus, "<?php function gen() { yield * -1; }");
+
+    test_expression!(clone_paren_property, "clone (new Bar)->z", "(clone ((new Bar)->z))");
+    test_expression!(clone_paren_property_chain, "clone (new Bar)->z->w", "(clone (((new Bar)->z)->w))");
+    test_expression!(clone_paren_method_call, "clone (new Bar)->z()", "(clone ((new Bar)->z()))");
+    test_expression!(clone_paren_nullsafe_property, "clone ($a)?->b", "(clone ($a?->b))");
+    test_expression!(clone_paren_variable_property, "clone ($a)->b", "(clone ($a->b))");
+    test_expression!(clone_property_chain, "clone $a->b->c", "(clone (($a->b)->c))");
+    test_expression!(clone_method_call, "clone $a->b()", "(clone ($a->b()))");
+    test_expression!(clone_paren_then_add, "clone ($a) + 1", "((clone $a) + 1)");
+    test_expression!(clone_bare_then_add, "clone $a + 1", "((clone $a) + 1)");
+    test_expression!(clone_paren_only, "clone ($a)", "(clone $a)");
+
+    smoke_test!(clone_paren_property_smoke, "<?php clone (new Bar())->prop;");
+    smoke_test!(clone_paren_array_access_smoke, "<?php clone ($a)[0];");
+    smoke_test!(clone_paren_static_const_smoke, "<?php clone ($a)::CONST;");
+
+    test_expression!(equality_below_comparison_eq, "$a == $b > $c", "($a == ($b > $c))");
+    test_expression!(equality_below_comparison_neq, "$a != $b < $c", "($a != ($b < $c))");
+    test_expression!(equality_below_comparison_identical, "$a === $b <= $c", "($a === ($b <= $c))");
+    test_expression!(equality_below_comparison_not_identical, "$a !== $b >= $c", "($a !== ($b >= $c))");
+    test_expression!(spaceship_is_equality_tier, "$a <=> $b > $c", "($a <=> ($b > $c))");
+    test_expression!(yield_binds_tighter_than_or, "yield \"a\" or $b", "((yield \"a\") or $b)");
+    test_expression!(yield_binds_tighter_than_and, "yield \"a\" and $b", "((yield \"a\") and $b)");
+    test_expression!(yield_binds_tighter_than_xor, "yield \"a\" xor $b", "((yield \"a\") xor $b)");
+    test_expression!(yield_from_binds_tighter_than_or, "yield from $a or $b", "((yield from $a) or $b)");
+    test_expression!(print_binds_tighter_than_or, "print \"a\" or $b", "((print \"a\") or $b)");
+    test_expression!(print_binds_tighter_than_and, "print \"a\" and $b", "((print \"a\") and $b)");
+    test_expression!(assign_yield_below_and, "$x = yield \"a\" and $b", "(($x = (yield \"a\")) and $b)");
+
+    test_expression!(
+        reference_assignment_operand_keeps_relational_precedence,
+        "$a == $b =& $c > $d",
+        "($a == (($b = (& $c)) > $d))"
+    );
+    smoke_test!(reference_assignment_comparison_chain, "<?php $a[] =& $a == $a =& $b > gc_collect_cycles();");
+}
+
+mod semantics {
+    use std::borrow::Cow;
+
+    use mago_allocator::LocalArena;
+    use mago_database::file::File;
+    use mago_syntax::cst::*;
+    use mago_syntax::parser::parse_file;
+
+    fn with_expression(code: &str, check: impl FnOnce(&Expression<'_>)) {
+        let arena = LocalArena::new();
+        let source = format!("<?php {code};");
+        let file = File::ephemeral(Cow::Borrowed(b"semantics".as_slice()), Cow::Owned(source.into_bytes()));
+        let program = parse_file(&arena, &file);
+
+        assert!(program.errors.is_empty(), "`{code}` failed to parse: {:?}", program.errors);
+
+        let Some(Statement::Expression(statement)) = program.statements.get(1) else {
+            panic!("`{code}` did not produce an expression statement");
+        };
+
+        check(statement.expression);
+    }
+
+    fn with_interpolated_offset(code: &str, check: impl FnOnce(&Expression<'_>)) {
+        with_expression(code, |expression| {
+            let Expression::CompositeString(CompositeString::Interpolated(string)) = expression else {
+                panic!("`{code}` is not an interpolated string: {expression:?}");
+            };
+
+            let access = string.parts.iter().find_map(|part| match part {
+                StringPart::Expression(Expression::ArrayAccess(access)) => Some(access),
+                _ => None,
+            });
+
+            let Some(access) = access else {
+                panic!("`{code}` has no interpolated array access");
+            };
+
+            check(access.index);
+        });
+    }
+
+    fn assert_string_key(expression: &Expression<'_>, expected: &[u8]) {
+        let Expression::Identifier(Identifier::Local(identifier)) = expression else {
+            panic!("expected a local identifier string key, got {expression:?}");
+        };
+
+        assert_eq!(identifier.value, expected, "string key bytes mismatch");
+    }
+
+    #[test]
+    fn dollar_brace_bareword_outside_string_is_constant_access() {
+        with_expression("${foo}", |expression| {
+            let Expression::Variable(Variable::Indirect(indirect)) = expression else {
+                panic!("expected an indirect variable, got {expression:?}");
+            };
+
+            assert!(
+                matches!(indirect.expression, Expression::ConstantAccess(_)),
+                "expected ConstantAccess inside `${{foo}}`, got {:?}",
+                indirect.expression
+            );
+        });
+    }
+
+    #[test]
+    fn dollar_brace_bareword_in_assignment_is_constant_access() {
+        with_expression("$x = ${foo}", |expression| {
+            let Expression::Assignment(assignment) = expression else {
+                panic!("expected an assignment, got {expression:?}");
+            };
+            let Expression::Variable(Variable::Indirect(indirect)) = assignment.rhs else {
+                panic!("expected an indirect variable on the rhs, got {:?}", assignment.rhs);
+            };
+
+            assert!(
+                matches!(indirect.expression, Expression::ConstantAccess(_)),
+                "expected ConstantAccess, got {:?}",
+                indirect.expression
+            );
+        });
+    }
+
+    #[test]
+    fn dollar_brace_bareword_inside_string_is_identifier() {
+        with_expression(r#""${foo}""#, |expression| {
+            let Expression::CompositeString(CompositeString::Interpolated(string)) = expression else {
+                panic!("expected an interpolated string, got {expression:?}");
+            };
+
+            let indirect = string.parts.iter().find_map(|part| match part {
+                StringPart::Expression(Expression::Variable(Variable::Indirect(indirect))) => Some(indirect),
+                _ => None,
+            });
+
+            let Some(indirect) = indirect else {
+                panic!("no indirect variable in `\"${{foo}}\"`");
+            };
+
+            assert!(
+                matches!(indirect.expression, Expression::Identifier(_)),
+                "expected Identifier inside string `${{foo}}`, got {:?}",
+                indirect.expression
+            );
+        });
+    }
+
+    fn with_interpolated_indirect_variable(code: &str, check: impl FnOnce(&Expression<'_>)) {
+        with_expression(code, |expression| {
+            let Expression::CompositeString(CompositeString::Interpolated(string)) = expression else {
+                panic!("`{code}` is not an interpolated string: {expression:?}");
+            };
+
+            let indirect = string.parts.iter().find_map(|part| match part {
+                StringPart::Expression(Expression::Variable(Variable::Indirect(indirect))) => Some(indirect),
+                _ => None,
+            });
+
+            let Some(indirect) = indirect else {
+                panic!("`{code}` has no `${{...}}` indirect variable");
+            };
+
+            check(indirect.expression);
+        });
+    }
+
+    #[test]
+    fn dollar_brace_with_surrounding_whitespace_is_constant_access() {
+        with_interpolated_indirect_variable(r#""${ foo }""#, |inner| {
+            assert!(matches!(inner, Expression::ConstantAccess(_)), "expected ConstantAccess, got {inner:?}");
+        });
+    }
+
+    #[test]
+    fn dollar_brace_with_leading_whitespace_is_constant_access() {
+        with_interpolated_indirect_variable(r#""${ foo}""#, |inner| {
+            assert!(matches!(inner, Expression::ConstantAccess(_)), "expected ConstantAccess, got {inner:?}");
+        });
+    }
+
+    #[test]
+    fn dollar_brace_with_trailing_whitespace_is_constant_access() {
+        with_interpolated_indirect_variable(r#""${foo }""#, |inner| {
+            assert!(matches!(inner, Expression::ConstantAccess(_)), "expected ConstantAccess, got {inner:?}");
+        });
+    }
+
+    #[test]
+    fn dollar_brace_immediate_offset_form_is_identifier() {
+        with_interpolated_indirect_variable(r#""${foo[0]}""#, |inner| {
+            let Expression::ArrayAccess(access) = inner else {
+                panic!("expected an array access, got {inner:?}");
+            };
+
+            assert!(
+                matches!(access.array, Expression::Identifier(_)),
+                "expected Identifier label, got {:?}",
+                access.array
+            );
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_hex_is_string_key() {
+        with_interpolated_offset(r#""$a[0x0]""#, |index| assert_string_key(index, b"0x0"));
+    }
+
+    #[test]
+    fn interpolated_offset_binary_is_string_key() {
+        with_interpolated_offset(r#""$a[0b1]""#, |index| assert_string_key(index, b"0b1"));
+    }
+
+    #[test]
+    fn interpolated_offset_leading_zero_is_string_key() {
+        with_interpolated_offset(r#""$a[00]""#, |index| assert_string_key(index, b"00"));
+    }
+
+    #[test]
+    fn interpolated_offset_octal_like_is_string_key() {
+        with_interpolated_offset(r#""$a[07]""#, |index| assert_string_key(index, b"07"));
+    }
+
+    #[test]
+    fn interpolated_offset_negative_zero_is_string_key() {
+        with_interpolated_offset(r#""$a[-0]""#, |index| assert_string_key(index, b"-0"));
+    }
+
+    #[test]
+    fn interpolated_offset_negative_leading_zero_is_string_key() {
+        with_interpolated_offset(r#""$a[-00]""#, |index| assert_string_key(index, b"-00"));
+    }
+
+    #[test]
+    fn interpolated_offset_negative_hex_is_string_key() {
+        with_interpolated_offset(r#""$a[-0x1]""#, |index| assert_string_key(index, b"-0x1"));
+    }
+
+    #[test]
+    fn interpolated_offset_true_is_string_key() {
+        with_interpolated_offset(r#""$a[true]""#, |index| assert_string_key(index, b"true"));
+    }
+
+    #[test]
+    fn interpolated_offset_false_is_string_key() {
+        with_interpolated_offset(r#""$a[false]""#, |index| assert_string_key(index, b"false"));
+    }
+
+    #[test]
+    fn interpolated_offset_null_is_string_key() {
+        with_interpolated_offset(r#""$a[null]""#, |index| assert_string_key(index, b"null"));
+    }
+
+    fn assert_parse_error(code: &str) {
+        let arena = LocalArena::new();
+        let source = format!("<?php {code};");
+        let file = File::ephemeral(Cow::Borrowed(b"semantics".as_slice()), Cow::Owned(source.into_bytes()));
+        let program = parse_file(&arena, &file);
+
+        assert!(!program.errors.is_empty(), "`{code}` was expected to fail to parse but parsed cleanly");
+    }
+
+    #[test]
+    fn interpolated_float_offset_is_a_parse_error() {
+        assert_parse_error(r#""$a[1.5]""#);
+    }
+
+    #[test]
+    fn interpolated_arithmetic_offset_is_a_parse_error() {
+        assert_parse_error(r#""$a[1+2]""#);
+    }
+
+    #[test]
+    fn interpolated_offset_bareword_is_string_key() {
+        with_interpolated_offset(r#""$a[bar]""#, |index| assert_string_key(index, b"bar"));
+    }
+
+    #[test]
+    fn interpolated_offset_canonical_integer_stays_integer() {
+        with_interpolated_offset(r#""$a[5]""#, |index| {
+            let Expression::Literal(Literal::Integer(integer)) = index else {
+                panic!("expected an integer literal, got {index:?}");
+            };
+
+            assert_eq!(integer.raw, b"5");
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_zero_stays_integer() {
+        with_interpolated_offset(r#""$a[0]""#, |index| {
+            assert!(matches!(index, Expression::Literal(Literal::Integer(_))), "expected integer, got {index:?}");
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_canonical_negative_stays_numeric() {
+        with_interpolated_offset(r#""$a[-5]""#, |index| {
+            let Expression::UnaryPrefix(unary) = index else {
+                panic!("expected a unary prefix, got {index:?}");
+            };
+
+            assert!(
+                matches!(unary.operator, UnaryPrefixOperator::Negation(_)),
+                "expected negation, got {:?}",
+                unary.operator
+            );
+            assert!(
+                matches!(unary.operand, Expression::Literal(Literal::Integer(_))),
+                "expected integer operand, got {:?}",
+                unary.operand
+            );
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_variable_is_untouched() {
+        with_interpolated_offset(r#""$a[$b]""#, |index| {
+            assert!(matches!(index, Expression::Variable(_)), "expected a variable, got {index:?}");
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_i64_min_stays_a_uniform_negation() {
+        with_interpolated_offset(r#""$a[-9223372036854775808]""#, |index| {
+            let Expression::UnaryPrefix(unary) = index else {
+                panic!("expected a unary prefix, got {index:?}");
+            };
+
+            assert!(matches!(unary.operator, UnaryPrefixOperator::Negation(_)), "expected negation");
+            assert!(
+                matches!(unary.operand, Expression::Literal(Literal::Integer(integer)) if integer.value == Some(1u64 << 63)),
+                "expected the magnitude 2^63, got {:?}",
+                unary.operand
+            );
+        });
+    }
+
+    #[test]
+    fn interpolated_offset_below_i64_min_is_a_string_key() {
+        with_interpolated_offset(r#""$a[-9223372036854775809]""#, |index| {
+            assert_string_key(index, b"-9223372036854775809");
+        });
+    }
+
+    fn with_document_string(code: &str, check: impl FnOnce(&DocumentString<'_>)) {
+        let arena = LocalArena::new();
+        let file = File::ephemeral(Cow::Borrowed(b"semantics".as_slice()), Cow::Owned(code.as_bytes().to_vec()));
+        let program = parse_file(&arena, &file);
+
+        assert!(program.errors.is_empty(), "`{code}` failed to parse: {:?}", program.errors);
+
+        let document = program.statements.iter().find_map(|statement| match statement {
+            Statement::Expression(statement) => match statement.expression {
+                Expression::Assignment(assignment) => match assignment.rhs {
+                    Expression::CompositeString(CompositeString::Document(document)) => Some(document),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        });
+
+        let Some(document) = document else {
+            panic!("`{code}` has no heredoc/nowdoc assignment");
+        };
+
+        check(document);
+    }
+
+    #[test]
+    fn nested_same_name_heredoc_measures_outer_indentation() {
+        let code = "<?php\n$y = <<<DOC\n        b\n        ${<<<DOC\n            a\n            DOC}\n         d\n        DOC;\n";
+
+        with_document_string(code, |document| {
+            assert!(
+                matches!(document.indentation, DocumentIndentation::Whitespace(8)),
+                "expected 8-space indentation, got {:?}",
+                document.indentation
+            );
+
+            let last_literal = document.parts.iter().rev().find_map(|part| match part {
+                StringPart::Literal(literal) => Some(literal),
+                _ => None,
+            });
+
+            assert_eq!(
+                last_literal.and_then(|literal| literal.value),
+                Some(b" d".as_slice()),
+                "the ` d` line should keep one leading space"
+            );
+        });
+    }
 }

@@ -41,6 +41,7 @@ pub mod reporter;
 
 pub use color::ColorChoice;
 pub use formatter::ReportingFormat;
+pub use formatter::utils::osc8_hyperlink;
 pub use output::ReportingTarget;
 
 /// Represents an entry in the analyzer's `ignore` configuration.
@@ -648,7 +649,7 @@ impl Issue {
     /// Take the edits from this issue.
     #[must_use]
     pub fn take_edits(&mut self) -> HashMap<FileId, IssueEdits> {
-        std::mem::replace(&mut self.edits, HashMap::with_capacity(0))
+        std::mem::replace(&mut self.edits, HashMap::new())
     }
 }
 

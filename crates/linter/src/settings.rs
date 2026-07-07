@@ -57,6 +57,7 @@ use crate::rule::NoDbSchemaChangeConfig;
 use crate::rule::NoDeadStoreConfig;
 use crate::rule::NoDebugSymbolsConfig;
 use crate::rule::NoDirectDbQueryConfig;
+use crate::rule::NoDuplicateMatchArmConfig;
 use crate::rule::NoElseClauseConfig;
 use crate::rule::NoEmptyCatchClauseConfig;
 use crate::rule::NoEmptyCommentConfig;
@@ -138,6 +139,7 @@ use crate::rule::PreferArrowFunctionConfig;
 use crate::rule::PreferCastsMethodConfig;
 use crate::rule::PreferDedicatedStatusAssertionConfig;
 use crate::rule::PreferEarlyContinueConfig;
+use crate::rule::PreferEarlyReturnConfig;
 use crate::rule::PreferExplodeOverPregSplitConfig;
 use crate::rule::PreferFakeHelperConfig;
 use crate::rule::PreferFirstClassCallableConfig;
@@ -171,6 +173,7 @@ use crate::rule::StrictAssertionsConfig;
 use crate::rule::StrictBehaviorConfig;
 use crate::rule::StrictTypesConfig;
 use crate::rule::StringStyleConfig;
+use crate::rule::SuspiciousExplodeArgumentsConfig;
 use crate::rule::SwitchContinueToBreakConfig;
 use crate::rule::TaggedFixmeConfig;
 use crate::rule::TaggedTodoConfig;
@@ -272,6 +275,7 @@ pub struct RulesSettings {
     pub no_trailing_space: RuleSettings<NoTrailingSpaceConfig>,
     pub no_redundant_write_visibility: RuleSettings<NoRedundantWriteVisibilityConfig>,
     pub no_redundant_string_concat: RuleSettings<NoRedundantStringConcatConfig>,
+    pub no_duplicate_match_arm: RuleSettings<NoDuplicateMatchArmConfig>,
     pub no_redundant_binary_string_prefix: RuleSettings<NoRedundantBinaryStringPrefixConfig>,
     pub no_redundant_parentheses: RuleSettings<NoRedundantParenthesesConfig>,
     pub no_redundant_method_override: RuleSettings<NoRedundantMethodOverrideConfig>,
@@ -328,6 +332,7 @@ pub struct RulesSettings {
     pub no_alias_function: RuleSettings<NoAliasFunctionConfig>,
     pub lowercase_type_hint: RuleSettings<LowercaseTypeHintConfig>,
     pub identity_comparison: RuleSettings<IdentityComparisonConfig>,
+    pub suspicious_explode_arguments: RuleSettings<SuspiciousExplodeArgumentsConfig>,
     pub ineffective_format_ignore_next: RuleSettings<IneffectiveFormatIgnoreNextConfig>,
     pub ineffective_format_ignore_region: RuleSettings<IneffectiveFormatIgnoreRegionConfig>,
     pub inline_variable_return: RuleSettings<InlineVariableReturnConfig>,
@@ -340,6 +345,7 @@ pub struct RulesSettings {
     pub explicit_octal: RuleSettings<ExplicitOctalConfig>,
     pub prefer_arrow_function: RuleSettings<PreferArrowFunctionConfig>,
     pub prefer_early_continue: RuleSettings<PreferEarlyContinueConfig>,
+    pub prefer_early_return: RuleSettings<PreferEarlyReturnConfig>,
     pub prefer_interface: RuleSettings<PreferInterfaceConfig>,
     pub prefer_static_closure: RuleSettings<PreferStaticClosureConfig>,
     pub prefer_test_attribute: RuleSettings<PreferTestAttributeConfig>,

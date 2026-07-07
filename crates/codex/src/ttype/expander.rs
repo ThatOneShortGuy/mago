@@ -45,7 +45,7 @@ use crate::ttype::union::TUnion;
 thread_local! {
     /// Thread-local set for tracking currently expanding aliases (cycle detection).
     /// Uses a HashSet for accurate tracking without false positives from hash collisions.
-    static EXPANDING_ALIASES: RefCell<HashSet<(Word, Word), FixedState>> = const { RefCell::new(HashSet::with_hasher(FixedState::with_seed(0))) };
+    pub(crate) static EXPANDING_ALIASES: RefCell<HashSet<(Word, Word), FixedState>> = const { RefCell::new(HashSet::with_hasher(FixedState::with_seed(0))) };
 
     /// Thread-local set for tracking objects whose type parameters are being expanded (cycle detection).
     static EXPANDING_OBJECT_PARAMS: RefCell<HashSet<Word, FixedState>> = const { RefCell::new(HashSet::with_hasher(FixedState::with_seed(0))) };
@@ -56,27 +56,16 @@ thread_local! {
     static EXPANDING_CONSTANTS: RefCell<HashSet<(Word, Word), FixedState>> = const { RefCell::new(HashSet::with_hasher(FixedState::with_seed(0))) };
 }
 
-/// Resets the thread-local alias expansion state.
-///
-/// This is primarily useful for testing to ensure a clean state between tests.
-/// In normal usage, the RAII guards handle cleanup automatically.
-#[inline]
-pub fn reset_expansion_state() {
-    EXPANDING_ALIASES.with(|set| set.borrow_mut().clear());
-    EXPANDING_OBJECT_PARAMS.with(|set| set.borrow_mut().clear());
-    EXPANDING_CONSTANTS.with(|set| set.borrow_mut().clear());
-}
-
 /// RAII guard to ensure alias expansion state is properly cleaned up.
 /// This guarantees the alias is removed from the set even if the expansion panics.
-struct AliasExpansionGuard {
+pub(crate) struct AliasExpansionGuard {
     class_name: Word,
     alias_name: Word,
 }
 
 impl AliasExpansionGuard {
     #[must_use]
-    fn new(class_name: Word, alias_name: Word) -> Self {
+    pub(crate) fn new(class_name: Word, alias_name: Word) -> Self {
         EXPANDING_ALIASES.with(|set| set.borrow_mut().insert((class_name, alias_name)));
         Self { class_name, alias_name }
     }
@@ -540,6 +529,15 @@ fn expand_global_reference(
 
 fn expand_object(object: &mut TObject, codebase: &CodebaseMetadata, options: &TypeExpansionOptions) {
     resolve_special_class_names(object, codebase, options);
+
+    if let TObject::Named(named) = object
+        && named.intersection_types.is_none()
+        && let Some(class_metadata) = codebase.get_class_like(named.name.as_bytes())
+        && class_metadata.kind.is_enum()
+    {
+        *object = TObject::new_enum(class_metadata.original_name);
+        return;
+    }
 
     let TObject::Named(named) = object else {
         return;
@@ -2263,6 +2261,29 @@ mod tests {
         expand_union(&codebase, &mut actual, &TypeExpansionOptions::default());
 
         assert!(actual.types.iter().any(|t| matches!(t, TAtomic::Alias(_))));
+    }
+
+    #[test]
+    fn test_expand_alias_direct_self_reference() {
+        let code = "<?php
+            /** @psalm-type SelfAlias = SelfAlias */
+            class Foo {}
+        ";
+        let codebase = create_test_codebase(code);
+
+        let alias = TAlias::new(ascii_lowercase_word(b"foo"), word("SelfAlias"));
+        let input = TUnion::from_atomic(TAtomic::Alias(alias));
+
+        let options = TypeExpansionOptions {
+            evaluate_conditional_types: true,
+            expand_generic: true,
+            expand_templates: true,
+            ..Default::default()
+        };
+        let mut actual = input;
+        expand_union(&codebase, &mut actual, &options);
+
+        assert!(!actual.types.is_empty());
     }
 
     #[test]

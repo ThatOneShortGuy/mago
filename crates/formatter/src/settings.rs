@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::str::FromStr;
 
 use crate::presets::FormatterPreset;
@@ -499,6 +500,19 @@ generate_formatter_settings! {
     /// Default: false
     preserve_breaking_condition_expression: bool => "default_false",
 
+    /// Whether to preserve intentional line breaks before binary operators (`&&`, `||`, `and`, `or`, `??`, `.`, etc.).
+    ///
+    /// When enabled, if the original source has a newline before a binary operator's right-hand
+    /// operand, the formatter keeps the expression broken rather than collapsing it onto one line.
+    /// This is useful when integrating Mago alongside tools like PHP-CS-Fixer that intentionally
+    /// place each operand on its own line.
+    ///
+    /// When disabled (the default), the formatter always collapses binary expressions that fit
+    /// within `print-width` onto a single line.
+    ///
+    /// Default: false
+    preserve_breaking_binary_expression: bool => "default_false",
+
     /// Whether to break a parameter list with one or more promoted properties into multiple lines.
     ///
     /// When enabled, parameter lists with promoted properties are always multi-line:
@@ -735,10 +749,27 @@ generate_formatter_settings! {
     /// Default: false
     align_assignment_like: bool => "default_false",
 
-    /// Whether to sort use statements alphabetically.
+    /// Controls how `use` statements are sorted.
     ///
-    /// Default: true
-    sort_uses: bool => "default_true",
+    /// With `alpha-ascending` (or `alphanumeric-ascending` or `true`):
+    /// ```php
+    /// use App\Services;
+    /// use App\Utils;
+    /// ```
+    ///
+    /// With `length-ascending`:
+    /// ```php
+    /// use App\Utils;
+    /// use App\Services;
+    /// ```
+    ///
+    /// Other options include:
+    /// * `alpha-descending` or `alphanumeric-descending`
+    /// * `length-descending`
+    /// * `preserve` or `false`
+    ///
+    /// Default: `alpha-ascending`
+    sort_uses: SortUses => "SortUses::default",
 
     /// Whether to sort class methods by visibility and name.
     ///
@@ -1064,6 +1095,20 @@ generate_formatter_settings! {
     /// Default: true
     empty_line_after_declare: bool => "default_true",
 
+    /// Whether to combine the opening `<?php` tag and an immediately following
+    /// `declare` statement onto a single line.
+    ///
+    /// When enabled, an opening tag directly followed by a `declare` statement is
+    /// rendered as `<?php declare(strict_types=1);`, even if the source has them on
+    /// separate lines. This takes precedence over `opening_tag_on_own_line` and
+    /// `empty_line_after_opening_tag` for this specific pairing.
+    ///
+    /// When disabled (the default), the opening tag and `declare` are laid out
+    /// according to the other opening-tag settings, preserving the current behavior.
+    ///
+    /// Default: false
+    combine_opening_tag_and_declare: bool => "default_false",
+
     /// Whether to add an empty line after namespace.
     ///
     /// Note: if an empty line already exists, it will be preserved regardless of this
@@ -1224,6 +1269,46 @@ pub enum SortOrder {
     LengthDescending,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[serde(from = "SortUsesWire")]
+#[schemars(with = "SortUsesWire")]
+pub struct SortUses(pub SortOrder);
+
+#[derive(JsonSchema)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+#[serde(untagged)]
+#[allow(unused, reason = "This is used for deserialization of SortUses, when the serde feature is enabled.")]
+enum SortUsesWire {
+    Bool(bool),
+    Order(SortOrder),
+}
+
+impl From<SortUsesWire> for SortUses {
+    fn from(wire: SortUsesWire) -> Self {
+        match wire {
+            SortUsesWire::Bool(true) => SortUses(SortOrder::AlphanumericAscending),
+            SortUsesWire::Bool(false) => SortUses(SortOrder::Preserve),
+            SortUsesWire::Order(order) => SortUses(order),
+        }
+    }
+}
+
+// Implement Deref so SortUses automatically coerces into SortOrder
+impl Deref for SortUses {
+    type Target = SortOrder;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Default for SortUses {
+    fn default() -> Self {
+        Self(SortOrder::AlphanumericAscending)
+    }
+}
+
 /// Specifies the style of line endings.
 #[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, JsonSchema)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1359,18 +1444,22 @@ impl NullTypeHint {
     }
 }
 
+#[cfg(feature = "serde")]
 fn default_print_width() -> usize {
     120
 }
 
+#[cfg(feature = "serde")]
 fn default_tab_width() -> usize {
     4
 }
 
+#[cfg(feature = "serde")]
 fn default_false() -> bool {
     false
 }
 
+#[cfg(feature = "serde")]
 fn default_true() -> bool {
     true
 }

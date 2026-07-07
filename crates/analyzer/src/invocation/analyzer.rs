@@ -2,6 +2,7 @@ use mago_allocator::Arena;
 use std::borrow::Cow;
 
 use foldhash::HashMap;
+use foldhash::HashSet;
 
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
@@ -23,7 +24,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
-use mago_syntax::ast::Expression;
+use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::concat_word;
@@ -149,6 +150,8 @@ where
         }
     }
 
+    let has_unpacked_arguments = !unpacked_arguments.is_empty();
+
     let calling_class_like_metadata =
         calling_class_like.and_then(|(id, _)| context.codebase.get_class_like(id.as_bytes()));
     let method_call_context = invocation.target.get_method_context();
@@ -230,8 +233,12 @@ where
                 parameter_type_had_template_types = true;
                 // Store the original type before replacement for inference
                 base_parameter_type_for_inference = Some(base_parameter_type.clone());
-                let mut replaced_type =
-                    inferred_type_replacer::replace(&base_parameter_type, template_result, context.codebase);
+                let mut replaced_type = inferred_type_replacer::replace_with_polarity(
+                    &base_parameter_type,
+                    template_result,
+                    context.codebase,
+                    mago_codex::ttype::template::variance::Variance::Contravariant,
+                );
                 if replaced_type.is_expandable() {
                     expander::expand_union(
                         context.codebase,
@@ -306,10 +313,12 @@ where
 
     let mut assigned_parameters_by_name = HashMap::default();
     let mut assigned_parameters_by_position = HashMap::default();
+    let mut filled_parameter_offsets: HashSet<usize> = HashSet::default();
 
     let target_kind_str = invocation.target.guess_kind();
     let target_name_str = invocation.target.guess_name(context);
     let mut has_too_many_arguments = false;
+    let mut has_named_argument_anomaly = false;
     let mut last_argument_offset: isize = -1;
     let mut non_closure_index = 0;
     let mut closure_index = 0;
@@ -347,9 +356,12 @@ where
 
         let parameter_ref = get_parameter_of_argument(&invocation.target, argument, *argument_offset);
         if let Some((parameter_offset, parameter_ref)) = parameter_ref {
+            filled_parameter_offsets.insert(parameter_offset);
+
             if let Some(named_argument) = argument.get_named_argument() {
                 let named_value_display = BytesDisplay(named_argument.name.value);
                 if let Some(previous_span) = assigned_parameters_by_name.get(&named_argument.name.value) {
+                    has_named_argument_anomaly = true;
                     context.collector.report_with_code(
                         IssueCode::DuplicateNamedArgument,
                         Issue::error(format!(
@@ -366,6 +378,7 @@ where
                         .with_help("Remove one of the duplicate named arguments."),
                     );
                 } else if let Some(previous_span) = assigned_parameters_by_position.get(&parameter_offset) {
+                    has_named_argument_anomaly = true;
                     if parameter_ref.is_variadic() {
                         context.collector.report_with_code(
                             IssueCode::NamedArgumentAfterPositional,
@@ -414,8 +427,12 @@ where
 
             let final_parameter_type =
                 if template_result.has_template_types() || !template_result.lower_bounds.is_empty() {
-                    let mut final_parameter_type =
-                        inferred_type_replacer::replace(&base_parameter_type, template_result, context.codebase);
+                    let mut final_parameter_type = inferred_type_replacer::replace_with_polarity(
+                        &base_parameter_type,
+                        template_result,
+                        context.codebase,
+                        mago_codex::ttype::template::variance::Variance::Contravariant,
+                    );
 
                     expander::expand_union(
                         context.codebase,
@@ -454,6 +471,8 @@ where
                 .is_some_and(|parameter| parameter.is_variadic());
 
             if !has_variadic_parameter {
+                has_named_argument_anomaly = true;
+
                 context.collector.report_with_code(
                     IssueCode::InvalidNamedArgument,
                     Issue::error(format!(
@@ -633,6 +652,14 @@ where
         .target
         .iter_parameters()
         .filter(|parameter| !parameter.has_default() && !parameter.is_variadic())
+        .count();
+    let number_of_satisfied_required_parameters = invocation
+        .target
+        .iter_parameters()
+        .enumerate()
+        .filter(|(offset, parameter)| {
+            !parameter.has_default() && !parameter.is_variadic() && filled_parameter_offsets.contains(offset)
+        })
         .count();
     let mut number_of_provided_parameters = non_closure_arguments.len() + closure_arguments.len();
 
@@ -823,7 +850,10 @@ where
         InvocationArgumentsSource::PartialArgumentList(_) => {
             (non_closure_arguments.len() + closure_arguments.len()) < number_of_required_parameters
         }
-        _ => number_of_provided_parameters < number_of_required_parameters,
+        _ if has_unpacked_arguments || has_named_argument_anomaly => {
+            number_of_provided_parameters < number_of_required_parameters
+        }
+        _ => number_of_satisfied_required_parameters < number_of_required_parameters,
     };
 
     if should_check_argument_count {
@@ -843,8 +873,10 @@ where
                 "Expected at least {number_of_required_parameters} argument(s) for non-optional parameters, but received {}.",
                 if matches!(invocation.arguments_source, InvocationArgumentsSource::PartialArgumentList(_)) {
                     total_positions
-                } else {
+                } else if has_unpacked_arguments || has_named_argument_anomaly {
                     number_of_provided_parameters
+                } else {
+                    number_of_satisfied_required_parameters
                 }
             ));
 

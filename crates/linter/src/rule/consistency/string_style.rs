@@ -7,7 +7,7 @@ use mago_reporting::Issue;
 use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::*;
+use mago_syntax::cst::*;
 use mago_text_edit::TextEdit;
 
 use crate::category::Category;
@@ -251,7 +251,7 @@ impl StringStyleRule {
         let parts: Vec<&StringPart<'arena>> = interpolated_string
             .parts
             .iter()
-            .filter(|part| !matches!(part, StringPart::Literal(literal) if literal.value.is_empty()))
+            .filter(|part| !matches!(part, StringPart::Literal(literal) if literal.raw.is_empty()))
             .collect();
         if parts.is_empty() {
             ctx.collector.report(issue);

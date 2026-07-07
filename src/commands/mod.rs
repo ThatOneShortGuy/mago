@@ -31,7 +31,8 @@
 //! - **`analyze`** ([`AnalyzeCommand`]): Perform static analysis
 //! - **`format`** ([`FormatCommand`]): Format PHP code
 //! - **`guard`** ([`GuardCommand`]): Enforce architectural rules
-//! - **`ast`** ([`AstCommand`]): Display the abstract syntax tree
+//! - **`inspect-baseline`** ([`InspectBaselineCommand`]): Visualize a baseline file
+//! - **`cst`** ([`CstCommand`]): Display the abstract syntax tree
 //! - **`self-update`** ([`SelfUpdateCommand`]): Update Mago to the latest version
 //! - **`generate-completions`** ([`GenerateCompletionsCommand`]): Generate shell completions
 //!
@@ -57,12 +58,13 @@ use clap::builder::styling::Effects;
 use mago_php_version::PHPVersion;
 
 use crate::commands::analyze::AnalyzeCommand;
-use crate::commands::ast::AstCommand;
 use crate::commands::config::ConfigCommand;
+use crate::commands::cst::CstCommand;
 use crate::commands::format::FormatCommand;
 use crate::commands::generate_completions::GenerateCompletionsCommand;
 use crate::commands::guard::GuardCommand;
 use crate::commands::init::InitCommand;
+use crate::commands::inspect_baseline::InspectBaselineCommand;
 use crate::commands::language_server::LanguageServerCommand;
 use crate::commands::lint::LintCommand;
 use crate::commands::list_files::ListFilesCommand;
@@ -72,12 +74,13 @@ use crate::error::Error;
 mod args;
 
 pub mod analyze;
-pub mod ast;
 pub mod config;
+pub mod cst;
 pub mod format;
 pub mod generate_completions;
 pub mod guard;
 pub mod init;
+pub mod inspect_baseline;
 pub mod language_server;
 pub mod lint;
 pub mod list_files;
@@ -164,14 +167,14 @@ pub enum MagoCommand {
     #[command(name = "list-files")]
     ListFiles(ListFilesCommand),
 
-    /// Display the abstract syntax tree (AST) of PHP code.
+    /// Display the abstract syntax tree (CST) of PHP code.
     ///
-    /// Parses PHP code and displays its AST structure, useful for understanding how
+    /// Parses PHP code and displays its CST structure, useful for understanding how
     /// Mago interprets code structure and for debugging parser issues.
     ///
-    /// **Usage**: `mago ast [FILES...]`
-    #[command(name = "ast")]
-    Ast(AstCommand),
+    /// **Usage**: `mago cst [FILES...]`
+    #[command(name = "cst")]
+    Cst(CstCommand),
 
     /// Run linting rules on PHP code.
     ///
@@ -202,6 +205,15 @@ pub enum MagoCommand {
     /// **Usage**: `mago guard [OPTIONS]`
     #[command(name = "guard")]
     Guard(GuardCommand),
+
+    /// Inspect and visualize a baseline file.
+    ///
+    /// Summarizes the issues recorded in a baseline - by code, by file, or drilling into a
+    /// single code or file - so large baselines are easy to navigate and prioritize.
+    ///
+    /// **Usage**: `mago inspect-baseline [BASELINE] [CODE_OR_FILE] [OPTIONS]`
+    #[command(name = "inspect-baseline")]
+    InspectBaseline(InspectBaselineCommand),
 
     /// Format PHP code according to style settings.
     ///
@@ -292,7 +304,7 @@ Features:
 * **Linting:** Identify and fix code style issues and potential bugs.
 * **Formatting:** Format your code consistently and automatically.
 * **Analyzing:** Analyze your code for structure, complexity, and dependencies.
-* **AST Inspection:** Dive deep into the structure of your PHP code with Abstract Syntax Tree (AST) visualization.
+* **CST Inspection:** Dive deep into the structure of your PHP code with Concrete Syntax Tree (CST) visualization.
 
 Get started by exploring the commands below!
 "#

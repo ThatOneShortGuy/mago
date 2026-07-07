@@ -1,98 +1,97 @@
 use mago_allocator::Arena;
 use mago_allocator::vec::Vec as BumpVec;
 use mago_allocator::vec_in;
-use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use mago_allocator::vec::Vec;
 
 use mago_span::HasPosition;
 use mago_span::HasSpan;
-use mago_syntax::ast::Access;
-use mago_syntax::ast::AnonymousClass;
-use mago_syntax::ast::Argument;
-use mago_syntax::ast::Array;
-use mago_syntax::ast::ArrayAccess;
-use mago_syntax::ast::ArrayAppend;
-use mago_syntax::ast::ArrayElement;
-use mago_syntax::ast::ArrowFunction;
-use mago_syntax::ast::Assignment;
-use mago_syntax::ast::AssignmentOperator;
-use mago_syntax::ast::Binary;
-use mago_syntax::ast::BracedExpressionStringPart;
-use mago_syntax::ast::Call;
-use mago_syntax::ast::ClassConstantAccess;
-use mago_syntax::ast::ClassLikeConstantSelector;
-use mago_syntax::ast::ClassLikeMemberExpressionSelector;
-use mago_syntax::ast::ClassLikeMemberSelector;
-use mago_syntax::ast::Clone;
-use mago_syntax::ast::CompositeString;
-use mago_syntax::ast::Conditional;
-use mago_syntax::ast::ConstantAccess;
-use mago_syntax::ast::Construct;
-use mago_syntax::ast::DieConstruct;
-use mago_syntax::ast::DirectVariable;
-use mago_syntax::ast::DocumentIndentation;
-use mago_syntax::ast::DocumentKind;
-use mago_syntax::ast::DocumentString;
-use mago_syntax::ast::EmptyConstruct;
-use mago_syntax::ast::EvalConstruct;
-use mago_syntax::ast::ExitConstruct;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::FunctionPartialApplication;
-use mago_syntax::ast::IncludeConstruct;
-use mago_syntax::ast::IncludeOnceConstruct;
-use mago_syntax::ast::IndirectVariable;
-use mago_syntax::ast::Instantiation;
-use mago_syntax::ast::InterpolatedString;
-use mago_syntax::ast::IssetConstruct;
-use mago_syntax::ast::KeyValueArrayElement;
-use mago_syntax::ast::LegacyArray;
-use mago_syntax::ast::List;
-use mago_syntax::ast::Literal;
-use mago_syntax::ast::LiteralFloat;
-use mago_syntax::ast::LiteralInteger;
-use mago_syntax::ast::LiteralString;
-use mago_syntax::ast::LiteralStringPart;
-use mago_syntax::ast::MagicConstant;
-use mago_syntax::ast::Match;
-use mago_syntax::ast::MatchArm;
-use mago_syntax::ast::MatchDefaultArm;
-use mago_syntax::ast::MatchExpressionArm;
-use mago_syntax::ast::MethodPartialApplication;
-use mago_syntax::ast::MissingArrayElement;
-use mago_syntax::ast::NamedArgument;
-use mago_syntax::ast::NamedPlaceholderArgument;
-use mago_syntax::ast::NestedVariable;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::NullSafePropertyAccess;
-use mago_syntax::ast::PartialApplication;
-use mago_syntax::ast::PartialArgument;
-use mago_syntax::ast::PartialArgumentList;
-use mago_syntax::ast::Pipe;
-use mago_syntax::ast::PlaceholderArgument;
-use mago_syntax::ast::PositionalArgument;
-use mago_syntax::ast::PrintConstruct;
-use mago_syntax::ast::PropertyAccess;
-use mago_syntax::ast::RequireConstruct;
-use mago_syntax::ast::RequireOnceConstruct;
-use mago_syntax::ast::ShellExecuteString;
-use mago_syntax::ast::StaticMethodPartialApplication;
-use mago_syntax::ast::StaticPropertyAccess;
-use mago_syntax::ast::StringPart;
-use mago_syntax::ast::Throw;
-use mago_syntax::ast::UnaryPostfix;
-use mago_syntax::ast::UnaryPostfixOperator;
-use mago_syntax::ast::UnaryPrefix;
-use mago_syntax::ast::UnaryPrefixOperator;
-use mago_syntax::ast::ValueArrayElement;
-use mago_syntax::ast::Variable;
-use mago_syntax::ast::VariadicArrayElement;
-use mago_syntax::ast::VariadicPlaceholderArgument;
-use mago_syntax::ast::Yield;
-use mago_syntax::ast::YieldFrom;
-use mago_syntax::ast::YieldPair;
-use mago_syntax::ast::YieldValue;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::AnonymousClass;
+use mago_syntax::cst::Argument;
+use mago_syntax::cst::Array;
+use mago_syntax::cst::ArrayAccess;
+use mago_syntax::cst::ArrayAppend;
+use mago_syntax::cst::ArrayElement;
+use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::Assignment;
+use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::Binary;
+use mago_syntax::cst::BracedExpressionStringPart;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassConstantAccess;
+use mago_syntax::cst::ClassLikeConstantSelector;
+use mago_syntax::cst::ClassLikeMemberExpressionSelector;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Clone;
+use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::Conditional;
+use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Construct;
+use mago_syntax::cst::DieConstruct;
+use mago_syntax::cst::DirectVariable;
+use mago_syntax::cst::DocumentIndentation;
+use mago_syntax::cst::DocumentKind;
+use mago_syntax::cst::DocumentString;
+use mago_syntax::cst::EmptyConstruct;
+use mago_syntax::cst::EvalConstruct;
+use mago_syntax::cst::ExitConstruct;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::FunctionPartialApplication;
+use mago_syntax::cst::IncludeConstruct;
+use mago_syntax::cst::IncludeOnceConstruct;
+use mago_syntax::cst::IndirectVariable;
+use mago_syntax::cst::Instantiation;
+use mago_syntax::cst::InterpolatedString;
+use mago_syntax::cst::IssetConstruct;
+use mago_syntax::cst::KeyValueArrayElement;
+use mago_syntax::cst::LegacyArray;
+use mago_syntax::cst::List;
+use mago_syntax::cst::Literal;
+use mago_syntax::cst::LiteralFloat;
+use mago_syntax::cst::LiteralInteger;
+use mago_syntax::cst::LiteralString;
+use mago_syntax::cst::LiteralStringPart;
+use mago_syntax::cst::MagicConstant;
+use mago_syntax::cst::Match;
+use mago_syntax::cst::MatchArm;
+use mago_syntax::cst::MatchDefaultArm;
+use mago_syntax::cst::MatchExpressionArm;
+use mago_syntax::cst::MethodPartialApplication;
+use mago_syntax::cst::MissingArrayElement;
+use mago_syntax::cst::NamedArgument;
+use mago_syntax::cst::NamedPlaceholderArgument;
+use mago_syntax::cst::NestedVariable;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NullSafePropertyAccess;
+use mago_syntax::cst::PartialApplication;
+use mago_syntax::cst::PartialArgument;
+use mago_syntax::cst::PartialArgumentList;
+use mago_syntax::cst::Pipe;
+use mago_syntax::cst::PlaceholderArgument;
+use mago_syntax::cst::PositionalArgument;
+use mago_syntax::cst::PrintConstruct;
+use mago_syntax::cst::PropertyAccess;
+use mago_syntax::cst::RequireConstruct;
+use mago_syntax::cst::RequireOnceConstruct;
+use mago_syntax::cst::ShellExecuteString;
+use mago_syntax::cst::StaticMethodPartialApplication;
+use mago_syntax::cst::StaticPropertyAccess;
+use mago_syntax::cst::StringPart;
+use mago_syntax::cst::Throw;
+use mago_syntax::cst::UnaryPostfix;
+use mago_syntax::cst::UnaryPostfixOperator;
+use mago_syntax::cst::UnaryPrefix;
+use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::ValueArrayElement;
+use mago_syntax::cst::Variable;
+use mago_syntax::cst::VariadicArrayElement;
+use mago_syntax::cst::VariadicPlaceholderArgument;
+use mago_syntax::cst::Yield;
+use mago_syntax::cst::YieldFrom;
+use mago_syntax::cst::YieldPair;
+use mago_syntax::cst::YieldValue;
 
 use crate::document::Align;
 use crate::document::BreakMode;
@@ -116,7 +115,6 @@ use crate::internal::format::assignment::print_assignment;
 use crate::internal::format::assignment::print_assignment_with_alignment;
 use crate::internal::format::binaryish;
 use crate::internal::format::binaryish::BinaryishOperator;
-use crate::internal::format::call_arguments::print_argument_list;
 use crate::internal::format::call_arguments::print_partial_argument_list;
 use crate::internal::format::call_node::CallLikeNode;
 use crate::internal::format::call_node::print_call_like_node;
@@ -419,10 +417,24 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, IndirectVariable, {
-            Document::Group(Group::new(
-                vec_in![f.arena; Document::String(b"${"), self.expression.format(f), Document::String(b"}")],
-            ))
+            if indirect_variable_needs_spacing(self.expression) {
+                Document::Group(Group::new(
+                    vec_in![f.arena; Document::String(b"${ "), self.expression.format(f), Document::String(b" }")],
+                ))
+            } else {
+                Document::Group(Group::new(
+                    vec_in![f.arena; Document::String(b"${"), self.expression.format(f), Document::String(b"}")],
+                ))
+            }
         })
+    }
+}
+
+fn indirect_variable_needs_spacing(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::ConstantAccess(_) => true,
+        Expression::ArrayAccess(access) => indirect_variable_needs_spacing(access.array),
+        _ => false,
     }
 }
 
@@ -769,7 +781,7 @@ where
     A: Arena,
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
-        wrap!(f, self, PartialArgumentList, { print_partial_argument_list(f, self) })
+        wrap!(f, self, PartialArgumentList, { print_partial_argument_list(f, self, false) })
     }
 }
 
@@ -1542,6 +1554,13 @@ where
     }
 }
 
+/// The leading run of spaces and tabs of `line`, as a sub-slice (no allocation).
+fn leading_whitespace(line: &[u8]) -> &[u8] {
+    let width = line.iter().take_while(|&&byte| byte == b' ' || byte == b'\t').count();
+
+    &line[..width]
+}
+
 impl<'arena, A> Format<'arena, A> for DocumentString<'arena>
 where
     A: Arena,
@@ -1552,6 +1571,7 @@ where
             if let Some(prefix) = &self.prefix {
                 contents.push(Document::String(prefix.value));
             }
+
             contents.push(Document::String(b"<<<"));
             match self.kind {
                 DocumentKind::Heredoc => {
@@ -1564,32 +1584,18 @@ where
                 }
             }
 
-            let indent = match self.indentation {
-                DocumentIndentation::None => 0,
-                DocumentIndentation::Whitespace(n) => n,
-                DocumentIndentation::Tab(n) => n,
-                DocumentIndentation::Mixed(t, w) => t + w,
-            };
-
             let mut inner = vec_in![f.arena; Document::Line(Line::hard())];
 
             // Track the indentation from the last line of the previous literal part
-            let mut last_part_indentation = Cow::Borrowed("");
+            let mut last_part_indentation: &[u8] = b"";
 
             for part in &self.parts {
                 let formatted = if let StringPart::Literal(l) = part {
-                    let content = l.value;
+                    let content = l.raw;
                     let mut part_contents = vec_in![f.arena;];
-                    let own_line = f.has_newline(l.span.start.offset, true);
                     let lines = f.split_lines(content);
 
                     for line in &lines {
-                        let mut current = *line;
-                        if own_line {
-                            current = FormatterState::<'_, 'arena, A>::skip_leading_whitespace_up_to(current, indent);
-                        }
-                        let line = current;
-
                         let mut line_content = vec_in![f.arena; Document::String(line)];
                         if !line.is_empty() {
                             line_content.push(Document::DoNotTrim);
@@ -1605,82 +1611,46 @@ where
                         part_contents.push(Document::Line(Line::hard()));
                     }
 
-                    // Calculate indentation from the last line of this literal part
-                    // We need to use the stripped line (after removing heredoc indent)
                     if let Some(last_line) = lines.last() {
-                        let stripped_line = if own_line {
-                            FormatterState::<'_, 'arena, A>::skip_leading_whitespace_up_to(last_line, indent)
-                        } else {
-                            *last_line
-                        };
-
-                        let mut tabs = 0;
-                        let mut spaces = 0;
-                        for &b in stripped_line.iter() {
-                            match b {
-                                b'\t' => tabs += 1,
-                                b' ' => spaces += 1,
-                                _ => break,
-                            }
-                        }
-
-                        if tabs > 0 || spaces > 0 {
-                            last_part_indentation = if tabs > 0 {
-                                Cow::Owned(format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces)))
-                            } else {
-                                Cow::Owned(" ".repeat(spaces))
-                            };
-                        } else {
-                            last_part_indentation = Cow::Borrowed("");
-                        }
+                        last_part_indentation = leading_whitespace(last_line);
                     }
 
                     Document::Array(part_contents)
                 } else {
-                    let (base_alignment, adjusted_last_part) = if f.settings.indent_heredoc {
-                        let scope = if f.settings.use_tabs {
-                            Cow::Borrowed("\t")
-                        } else {
-                            Cow::Owned(" ".repeat(f.settings.tab_width))
-                        };
+                    let alignment: &[u8] = if f.settings.indent_heredoc {
+                        let (scope_byte, scope_width) =
+                            if f.settings.use_tabs { (b'\t', 1) } else { (b' ', f.settings.tab_width) };
 
-                        let adjusted = if !last_part_indentation.is_empty() {
-                            Cow::Owned(format!("{scope}{last_part_indentation}"))
+                        if last_part_indentation.is_empty() {
+                            f.arena.alloc_slice_fill_copy(scope_width, scope_byte)
                         } else {
-                            Cow::Borrowed("")
-                        };
-
-                        (scope, adjusted)
+                            f.arena.alloc_slice_fill_iter(
+                                std::iter::repeat_n(scope_byte, scope_width * 2)
+                                    .chain(last_part_indentation.iter().copied()),
+                            )
+                        }
                     } else {
-                        let base = match self.indentation {
-                            DocumentIndentation::None => Cow::Borrowed(""),
-                            DocumentIndentation::Whitespace(n) => Cow::Owned(" ".repeat(n)),
-                            DocumentIndentation::Tab(n) => Cow::Owned("\t".repeat(n)),
-                            DocumentIndentation::Mixed(t, w) => {
-                                Cow::Owned(format!("{}{}", "\t".repeat(t), " ".repeat(w)))
-                            }
+                        let (tabs, spaces) = match self.indentation {
+                            DocumentIndentation::None => (0, 0),
+                            DocumentIndentation::Whitespace(n) => (0, n),
+                            DocumentIndentation::Tab(n) => (n, 0),
+                            DocumentIndentation::Mixed(t, w) => (t, w),
                         };
 
-                        (base, last_part_indentation.clone())
+                        f.arena.alloc_slice_fill_iter(
+                            std::iter::repeat_n(b'\t', tabs)
+                                .chain(std::iter::repeat_n(b' ', spaces))
+                                .chain(last_part_indentation.iter().copied()),
+                        )
                     };
 
-                    let combined_alignment = if !base_alignment.is_empty() || !adjusted_last_part.is_empty() {
-                        Cow::Owned(format!("{base_alignment}{adjusted_last_part}"))
-                    } else {
-                        Cow::Borrowed("")
-                    };
-
-                    Document::Align(Align {
-                        alignment: f.as_str(&combined_alignment),
-                        contents: vec_in![f.arena;
-                            part.format(f)
-                        ],
-                    })
+                    Document::Align(Align { alignment, contents: vec_in![f.arena; part.format(f)] })
                 };
 
                 inner.push(formatted);
             }
 
+            inner.push(Document::Line(Line::hard()));
             inner.push(Document::String(self.label));
 
             if f.settings.indent_heredoc {
@@ -1705,31 +1675,14 @@ where
                 parts.push(Document::String(prefix.value));
             }
             parts.push(Document::String(b"\""));
-            let mut last_part_indentation = Cow::Borrowed("");
+            let mut last_part_indentation: &[u8] = b"";
 
             for part in &self.parts {
                 let formatted = match part {
                     StringPart::Literal(l) => {
-                        let lines = f.split_lines(l.value);
+                        let lines = f.split_lines(l.raw);
                         if let Some(last_line) = lines.last() {
-                            let mut tabs = 0;
-                            let mut spaces = 0;
-                            for &b in last_line.iter() {
-                                match b {
-                                    b'\t' => tabs += 1,
-                                    b' ' => spaces += 1,
-                                    _ => break,
-                                }
-                            }
-                            if tabs > 0 || spaces > 0 {
-                                last_part_indentation = if tabs > 0 {
-                                    Cow::Owned(format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces)))
-                                } else {
-                                    Cow::Owned(" ".repeat(spaces))
-                                };
-                            } else {
-                                last_part_indentation = Cow::Borrowed("");
-                            }
+                            last_part_indentation = leading_whitespace(last_line);
                         }
                         part.format(f)
                     }
@@ -1738,7 +1691,7 @@ where
                             part.format(f)
                         } else {
                             Document::Align(Align {
-                                alignment: f.as_str(&last_part_indentation),
+                                alignment: last_part_indentation,
                                 contents: vec_in![f.arena; part.format(f)],
                             })
                         }
@@ -1761,31 +1714,14 @@ where
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, ShellExecuteString, {
             let mut parts = vec_in![f.arena; Document::String(b"`")];
-            let mut last_part_indentation = Cow::Borrowed("");
+            let mut last_part_indentation: &[u8] = b"";
 
             for part in &self.parts {
                 let formatted = match part {
                     StringPart::Literal(l) => {
-                        let lines = f.split_lines(l.value);
+                        let lines = f.split_lines(l.raw);
                         if let Some(last_line) = lines.last() {
-                            let mut tabs = 0;
-                            let mut spaces = 0;
-                            for &b in last_line.iter() {
-                                match b {
-                                    b'\t' => tabs += 1,
-                                    b' ' => spaces += 1,
-                                    _ => break,
-                                }
-                            }
-                            if tabs > 0 || spaces > 0 {
-                                last_part_indentation = if tabs > 0 {
-                                    Cow::Owned(format!("{}{}", "\t".repeat(tabs), " ".repeat(spaces)))
-                                } else {
-                                    Cow::Owned(" ".repeat(spaces))
-                                };
-                            } else {
-                                last_part_indentation = Cow::Borrowed("");
-                            }
+                            last_part_indentation = leading_whitespace(last_line);
                         }
                         part.format(f)
                     }
@@ -1794,7 +1730,7 @@ where
                             part.format(f)
                         } else {
                             Document::Align(Align {
-                                alignment: f.as_str(&last_part_indentation),
+                                alignment: last_part_indentation,
                                 contents: vec_in![f.arena; part.format(f)],
                             })
                         }
@@ -1832,7 +1768,7 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, LiteralStringPart, {
-            utils::replace_end_of_line(f, Document::String(self.value), Separator::LiteralLine, false)
+            utils::replace_end_of_line(f, Document::String(self.raw), Separator::LiteralLine, false)
         })
     }
 }
@@ -2036,7 +1972,7 @@ where
 
             signature.push(self.class.format(f));
             if let Some(argument_list) = &self.argument_list {
-                signature.push(print_argument_list(f, argument_list, false, false));
+                signature.push(print_partial_argument_list(f, argument_list, false));
             }
 
             if let Some(extends) = &self.extends {

@@ -1,13 +1,13 @@
 use crate::T;
-use crate::ast::ast::Argument;
-use crate::ast::ast::ArgumentList;
-use crate::ast::ast::NamedArgument;
-use crate::ast::ast::NamedPlaceholderArgument;
-use crate::ast::ast::PartialArgument;
-use crate::ast::ast::PartialArgumentList;
-use crate::ast::ast::PlaceholderArgument;
-use crate::ast::ast::PositionalArgument;
-use crate::ast::ast::VariadicPlaceholderArgument;
+use crate::cst::cst::Argument;
+use crate::cst::cst::ArgumentList;
+use crate::cst::cst::NamedArgument;
+use crate::cst::cst::NamedPlaceholderArgument;
+use crate::cst::cst::PartialArgument;
+use crate::cst::cst::PartialArgumentList;
+use crate::cst::cst::PlaceholderArgument;
+use crate::cst::cst::PositionalArgument;
+use crate::cst::cst::VariadicPlaceholderArgument;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::TokenKind;
@@ -41,6 +41,16 @@ where
             ellipsis: if self.stream.is_at(T!["..."])? { Some(self.stream.eat_span(T!["..."])?) } else { None },
             value: self.parse_expression()?,
         }))
+    }
+
+    pub(crate) fn parse_optional_partial_argument_list(
+        &mut self,
+    ) -> Result<Option<PartialArgumentList<'arena>>, ParseError> {
+        if let Some(T!["("]) = self.stream.peek_kind(0)? {
+            Ok(Some(self.parse_partial_argument_list()?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(crate) fn parse_partial_argument_list(&mut self) -> Result<PartialArgumentList<'arena>, ParseError> {

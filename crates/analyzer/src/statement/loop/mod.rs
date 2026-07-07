@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_reporting::IssueCollection;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -39,10 +40,10 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::BinaryOperator;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::Foreach;
-use mago_syntax::ast::Statement;
+use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::Foreach;
+use mago_syntax::cst::Statement;
 use mago_word::Word;
 use mago_word::WordSet;
 use mago_word::word;
@@ -457,6 +458,8 @@ where
 
         (loop_scope, continue_context) = result?;
 
+        let first_iteration_issues = if is_do { recorded_issues.clone() } else { IssueCollection::new() };
+
         if !pre_conditions.is_empty() && loop_scope.truthy_pre_conditions {
             always_enters_loop.set(true);
         }
@@ -643,26 +646,24 @@ where
             continue_context.by_reference_constraints.clone_from(&pre_loop_context.by_reference_constraints);
 
             let (result, new_recorded_issues) = context.record(|context| -> Result<LoopScope, AnalysisError> {
-                if !is_do {
-                    for (condition_offset, pre_condition) in pre_conditions.iter().enumerate() {
-                        apply_pre_condition_to_loop_context(
-                            context,
-                            pre_condition,
-                            unsafe {
-                                // SAFETY: we know the pre_condition_clauses will contain
-                                // the clauses for the pre_condition at condition_offset.
-                                pre_condition_clauses.get_unchecked(condition_offset)
-                            },
-                            &mut continue_context,
-                            loop_parent_context,
-                            artifacts,
-                            is_do,
-                            !pre_conditions_applied,
-                        )?;
-                    }
-
-                    pre_conditions_applied = true;
+                for (condition_offset, pre_condition) in pre_conditions.iter().enumerate() {
+                    apply_pre_condition_to_loop_context(
+                        context,
+                        pre_condition,
+                        unsafe {
+                            // SAFETY: we know the pre_condition_clauses will contain
+                            // the clauses for the pre_condition at condition_offset.
+                            pre_condition_clauses.get_unchecked(condition_offset)
+                        },
+                        &mut continue_context,
+                        loop_parent_context,
+                        artifacts,
+                        is_do,
+                        !pre_conditions_applied,
+                    )?;
                 }
+
+                pre_conditions_applied = true;
 
                 for variable_id in &always_assigned_before_loop_body_variables {
                     let pre_loop_context_type = pre_loop_context.locals.get(variable_id);
@@ -740,6 +741,12 @@ where
             recorded_issues = new_recorded_issues;
 
             i += 1;
+        }
+
+        for issue in first_iteration_issues {
+            if !recorded_issues.iter().any(|existing| existing == &issue) {
+                recorded_issues.push(issue);
+            }
         }
 
         if !recorded_issues.is_empty() {
@@ -1368,7 +1375,7 @@ where
         );
     }
 
-    let mut has_at_least_one_entry = false;
+    let mut always_enters_loop = true;
     let mut key_type = None;
     let mut value_type = None;
     let mut has_valid_iterable_type = false;
@@ -1382,11 +1389,13 @@ where
         };
 
         match iterator_atomic {
-            TAtomic::Null | TAtomic::Scalar(TScalar::Bool(TBool { value: Some(false) })) => {}
+            TAtomic::Null | TAtomic::Scalar(TScalar::Bool(TBool { value: Some(false) })) => {
+                always_enters_loop = false;
+            }
             TAtomic::Array(array) => {
                 has_valid_iterable_type = true;
-                if array.is_non_empty() {
-                    has_at_least_one_entry = true;
+                if !array.is_non_empty() {
+                    always_enters_loop = false;
                 }
 
                 let (k, v) = get_array_parameters(array, context.codebase);
@@ -1396,7 +1405,7 @@ where
             }
             TAtomic::Iterable(iterable) => {
                 has_valid_iterable_type = true;
-                has_at_least_one_entry = false;
+                always_enters_loop = false;
 
                 key_type = Some(add_optional_union_type(
                     iterable.key_type.as_ref().clone(),
@@ -1413,6 +1422,8 @@ where
             TAtomic::Object(object) => {
                 let (obj_key_type, obj_value_type) = match object {
                     TObject::Any | TObject::WithProperties(_) | TObject::HasMethod(_) | TObject::HasProperty(_) => {
+                        always_enters_loop = false;
+
                         context.collector.report_with_code(
                             IssueCode::GenericObjectIteration,
                             Issue::warning("Iterating over a generic `object`. This will iterate its public properties.")
@@ -1424,6 +1435,8 @@ where
                         (get_string(), get_mixed())
                     }
                     TObject::Named(atomic_object) => {
+                        always_enters_loop = false;
+
                         if let Some((k, v)) = get_iterable_parameters(iterator_atomic, context.codebase) {
                             (k, v)
                         } else {
@@ -1448,8 +1461,6 @@ where
                         }
                     }
                     TObject::Enum(enum_instance) => {
-                        has_at_least_one_entry = true;
-
                         let enum_name = enum_instance.get_name();
                         let enum_backing_type = context
                             .codebase
@@ -1562,7 +1573,7 @@ where
     }
     // every atomic in the iterator type is iterable; no diagnostic needed
 
-    Ok((has_at_least_one_entry, key_type.unwrap_or_else(get_mixed), value_type.unwrap_or_else(get_mixed)))
+    Ok((always_enters_loop, key_type.unwrap_or_else(get_mixed), value_type.unwrap_or_else(get_mixed)))
 }
 
 /// Removes generic keyed arrays from a union when their value parameter shape is a

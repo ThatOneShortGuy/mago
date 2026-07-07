@@ -112,6 +112,61 @@ where
                     result.push(b'x');
                 }
             }
+            b'u' if quote_char == Some(b'"') && content.get(i + 2) == Some(&b'{') => {
+                let mut code_point = 0u32;
+                let mut hex_len = 0;
+                let mut overflowed = false;
+                let mut j = i + 3;
+                while j < content.len() {
+                    let c = content[j];
+                    let digit = if c.is_ascii_digit() {
+                        c - b'0'
+                    } else if (b'a'..=b'f').contains(&c) {
+                        c - b'a' + 10
+                    } else if (b'A'..=b'F').contains(&c) {
+                        c - b'A' + 10
+                    } else {
+                        break;
+                    };
+
+                    match code_point.checked_mul(16).and_then(|value| value.checked_add(u32::from(digit))) {
+                        Some(value) => code_point = value,
+                        None => {
+                            overflowed = true;
+                            break;
+                        }
+                    }
+
+                    hex_len += 1;
+                    j += 1;
+                }
+
+                if hex_len > 0 && !overflowed && content.get(j) == Some(&b'}') && code_point <= 0x10_FFFF {
+                    match code_point {
+                        0x0000..=0x007F => result.push(code_point as u8),
+                        0x0080..=0x07FF => {
+                            result.push(0xC0 | (code_point >> 6) as u8);
+                            result.push(0x80 | (code_point & 0x3F) as u8);
+                        }
+                        0x0800..=0xFFFF => {
+                            result.push(0xE0 | (code_point >> 12) as u8);
+                            result.push(0x80 | ((code_point >> 6) & 0x3F) as u8);
+                            result.push(0x80 | (code_point & 0x3F) as u8);
+                        }
+                        _ => {
+                            result.push(0xF0 | (code_point >> 18) as u8);
+                            result.push(0x80 | ((code_point >> 12) & 0x3F) as u8);
+                            result.push(0x80 | ((code_point >> 6) & 0x3F) as u8);
+                            result.push(0x80 | (code_point & 0x3F) as u8);
+                        }
+                    }
+
+                    consumed = (j + 1) - i;
+                } else {
+                    // Invalid `\u{...}` sequence, return None to indicate failure to parse.
+                    return None;
+                }
+            }
             c if quote_char == Some(b'"') && c.is_ascii_digit() => {
                 let mut octal_val = 0u16;
                 let mut octal_len = 0;
@@ -233,6 +288,67 @@ pub fn parse_literal_integer(bytes: &[u8]) -> Option<u64> {
     }
 
     Some(result.min(u64::MAX as u128) as u64)
+}
+
+/// Parses a PHP literal integer's magnitude as an `f64`.
+///
+/// This is how PHP widens an integer literal that overflows the platform `int` into a float: it
+/// reflects the real magnitude rather than clamping at `u64::MAX` like [`parse_literal_integer`].
+/// Supports binary (`0b`), octal (`0o`/legacy `0`), decimal, and hexadecimal (`0x`), matching the
+/// base detection of [`parse_literal_integer`].
+#[inline]
+#[must_use]
+pub fn parse_literal_integer_as_float(bytes: &[u8]) -> Option<f64> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let (radix, start) = match bytes {
+        [b'0', b'x' | b'X', ..] => (16u128, 2),
+        [b'0', b'o' | b'O', ..] => (8u128, 2),
+        [b'0', b'b' | b'B', ..] => (2u128, 2),
+        [b'0', _, ..] if bytes[1..].iter().all(|&b| b == b'_' || (b'0'..=b'7').contains(&b)) => (8u128, 1),
+        _ => (10u128, 0),
+    };
+
+    if radix == 10 {
+        return parse_literal_float(bytes);
+    }
+
+    let mut result: u128 = 0;
+    let mut has_digits = false;
+
+    for &b in &bytes[start..] {
+        if b == b'_' {
+            continue;
+        }
+
+        let digit = if b.is_ascii_digit() {
+            (b - b'0') as u128
+        } else if (b'a'..=b'f').contains(&b) {
+            (b - b'a' + 10) as u128
+        } else if (b'A'..=b'F').contains(&b) {
+            (b - b'A' + 10) as u128
+        } else {
+            return None;
+        };
+
+        if digit >= radix {
+            return None;
+        }
+
+        has_digits = true;
+        result = match result.checked_mul(radix).and_then(|value| value.checked_add(digit)) {
+            Some(value) => value,
+            None => return Some(f64::INFINITY),
+        };
+    }
+
+    if !has_digits {
+        return None;
+    }
+
+    Some(result as f64)
 }
 
 /// Lookup table for identifier start characters (a-z, A-Z, _)
@@ -364,12 +480,32 @@ where
 
 #[cfg(test)]
 mod tests {
+    use mago_allocator::LocalArena;
+
     use super::*;
 
     macro_rules! parse_int {
         ($input:expr, $expected:expr) => {
             assert_eq!(parse_literal_integer($input), $expected);
         };
+    }
+
+    #[test]
+    fn test_unicode_escape_in_double_quoted() {
+        let arena = LocalArena::new();
+
+        assert_eq!(parse_literal_string_in(&arena, b"A\\u{1F600}", Some(b'"'), false), Some(&b"A\xF0\x9F\x98\x80"[..]),);
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{41}", Some(b'"'), false), Some(&b"A"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{E9}", Some(b'"'), false), Some(&b"\xC3\xA9"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{D800}", Some(b'"'), false), Some(&b"\xED\xA0\x80"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{}", Some(b'"'), false), None);
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{12", Some(b'"'), false), None);
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{ZZ}", Some(b'"'), false), None);
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{110000}", Some(b'"'), false), None);
+        assert_eq!(parse_literal_string_in(&arena, b"\\uABC", Some(b'"'), false), Some(&b"\\uABC"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\u{41}", Some(b'\''), false), Some(&b"\\u{41}"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\x", Some(b'"'), false), Some(&b"\\x"[..]));
+        assert_eq!(parse_literal_string_in(&arena, b"\\q", Some(b'"'), false), Some(&b"\\q"[..]));
     }
 
     #[test]
@@ -388,5 +524,22 @@ mod tests {
         parse_int!(b"0xGHI", None);
         parse_int!(b"0b102", None);
         parse_int!(b"0o89", None);
+    }
+
+    #[test]
+    fn test_parse_literal_integer_as_float() {
+        assert_eq!(parse_literal_integer_as_float(b"0"), Some(0.0));
+        assert_eq!(parse_literal_integer_as_float(b"255"), Some(255.0));
+        assert_eq!(parse_literal_integer_as_float(b"0xff"), Some(255.0));
+        assert_eq!(parse_literal_integer_as_float(b"0o17"), Some(15.0));
+        assert_eq!(parse_literal_integer_as_float(b"017"), Some(15.0));
+        assert_eq!(parse_literal_integer_as_float(b"0b101"), Some(5.0));
+        assert_eq!(parse_literal_integer_as_float(b"1_000"), Some(1000.0));
+        assert_eq!(parse_literal_integer_as_float(b"111111111111111111111"), Some(1.111_111_111_111_111_1e20));
+        assert_eq!(parse_literal_integer_as_float(b"0xFFFFFFFFFFFFFFFF0"), Some(2.951_479_051_793_528_3e20));
+        assert_eq!(parse_literal_integer_as_float(&[b'9'; 400]), Some(f64::INFINITY));
+        assert_eq!(parse_literal_integer_as_float(b""), None);
+        assert_eq!(parse_literal_integer_as_float(b"0xGHI"), None);
+        assert_eq!(parse_literal_integer_as_float(b"0b102"), None);
     }
 }

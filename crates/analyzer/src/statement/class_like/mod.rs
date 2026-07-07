@@ -38,16 +38,16 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Class;
-use mago_syntax::ast::ClassLikeMember;
-use mago_syntax::ast::Enum;
-use mago_syntax::ast::EnumCaseItem;
-use mago_syntax::ast::Extends;
-use mago_syntax::ast::Implements;
-use mago_syntax::ast::Interface;
-use mago_syntax::ast::Property;
-use mago_syntax::ast::Trait;
-use mago_syntax::ast::TraitUse;
+use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::Enum;
+use mago_syntax::cst::EnumCaseItem;
+use mago_syntax::cst::Extends;
+use mago_syntax::cst::Implements;
+use mago_syntax::cst::Interface;
+use mago_syntax::cst::Property;
+use mago_syntax::cst::Trait;
+use mago_syntax::cst::TraitUse;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
@@ -2122,6 +2122,9 @@ fn check_abstract_method_signatures<'ctx, A>(
             continue;
         };
 
+        let overridden_declaring_classes: Vec<Word> =
+            overridden_method_ids.values().map(|id| id.get_class_name()).collect();
+
         for (parent_fqcn, parent_declaring_method_id) in overridden_method_ids {
             let parent_fqcn_str = parent_fqcn.as_ref();
 
@@ -2129,6 +2132,13 @@ fn check_abstract_method_signatures<'ctx, A>(
             let declaring_class_name_str = declaring_class_name.as_ref();
 
             if should_skip_same_method(method_fqcn.as_bytes(), parent_fqcn_str) {
+                continue;
+            }
+
+            if overridden_declaring_classes.iter().any(|other| {
+                *other != declaring_class_name
+                    && context.codebase.is_instance_of(other.as_bytes(), declaring_class_name_str)
+            }) {
                 continue;
             }
 
@@ -2369,6 +2379,12 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
 
     let mut class_properties: IndexMap<Word, &PropertyMetadata> = IndexMap::new();
     for (property_name, property_metadata) in class_like_metadata.properties.iter().sorted_by_key(|(k, _)| *k) {
+        // Magic properties (from `@property` docblock tags) are not real declarations and
+        // never participate in PHP's trait composition, so they cannot conflict with a trait property.
+        if property_metadata.flags.is_magic_property() {
+            continue;
+        }
+
         if let Some(declaring_class) = class_like_metadata.declaring_property_ids.get(property_name)
             && declaring_class == &class_like_metadata.name
         {

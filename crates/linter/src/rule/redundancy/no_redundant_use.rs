@@ -1,24 +1,26 @@
-use mago_allocator::Arena;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
 use indoc::indoc;
 use schemars::JsonSchema;
 
+use mago_allocator::Arena;
+use mago_bytes::BytesDisplay;
+use mago_bytes::trim_start_byte;
 use mago_database::file::HasFileId;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Inline;
-use mago_syntax::ast::MixedUseItemList;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::NodeKind;
-use mago_syntax::ast::Program;
-use mago_syntax::ast::Statement;
-use mago_syntax::ast::UseItem;
-use mago_syntax::ast::UseItems;
+use mago_syntax::cst::Inline;
+use mago_syntax::cst::MixedUseItemList;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
+use mago_syntax::cst::Program;
+use mago_syntax::cst::Statement;
+use mago_syntax::cst::UseItem;
+use mago_syntax::cst::UseItems;
 use mago_text_edit::TextEdit;
 use mago_word::starts_with_ignore_case;
 
@@ -30,8 +32,6 @@ use crate::rule::Config;
 use crate::rule::LintRule;
 use crate::rule_meta::RuleMeta;
 use crate::settings::RuleSettings;
-use mago_bytes::BytesDisplay;
-use mago_bytes::trim_start_byte;
 
 #[derive(Debug, Clone)]
 pub struct NoRedundantUseRule {
@@ -130,8 +130,7 @@ impl LintRule for NoRedundantUseRule {
 
         let used_fqns = utils::build_used_fqn_set(ctx, &use_declarations);
         let docblocks = utils::get_docblocks(program);
-        let inline_contents =
-            if check_inline_mentions { utils::get_inline_contents(program) } else { Vec::with_capacity(0) };
+        let inline_contents = if check_inline_mentions { utils::get_inline_contents(program) } else { Vec::new() };
 
         // First, check for same-namespace imports (redundant even if used)
         let mut same_namespace_spans: HashSet<Span> = HashSet::new();

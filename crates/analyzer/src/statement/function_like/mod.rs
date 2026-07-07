@@ -42,9 +42,9 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::Expression;
-use mago_syntax::ast::FunctionLikeParameterList;
-use mago_syntax::ast::Statement;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::FunctionLikeParameterList;
+use mago_syntax::cst::Statement;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -741,6 +741,7 @@ where
     TObject::Named(TNamedObject {
         name: class_like_metadata.original_name,
         type_parameters: if type_parameters.is_empty() { None } else { Some(type_parameters) },
+        variances: None,
         is_static: true,
         is_this: true,
         intersection_types: if intersections.is_empty() { None } else { Some(intersections) },

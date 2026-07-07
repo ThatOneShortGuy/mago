@@ -2,8 +2,8 @@ use mago_allocator::Arena;
 
 use mago_php_version::PHPVersion;
 use mago_reporting::Level;
-use mago_syntax::ast::Node;
-use mago_syntax::ast::NodeKind;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 
 use crate::context::LintContext;
 use crate::integration::IntegrationSet;
@@ -253,6 +253,7 @@ define_rules! {
     NoTrailingSpace(no_trailing_space @ NoTrailingSpaceRule),
     NoRedundantWriteVisibility(no_redundant_write_visibility @ NoRedundantWriteVisibilityRule),
     NoRedundantStringConcat(no_redundant_string_concat @ NoRedundantStringConcatRule),
+    NoDuplicateMatchArm(no_duplicate_match_arm @ NoDuplicateMatchArmRule),
     NoRedundantBinaryStringPrefix(no_redundant_binary_string_prefix @ NoRedundantBinaryStringPrefixRule),
     NoRedundantParentheses(no_redundant_parentheses @ NoRedundantParenthesesRule),
     NoRedundantMethodOverride(no_redundant_method_override @ NoRedundantMethodOverrideRule),
@@ -308,6 +309,7 @@ define_rules! {
     NoAliasFunction(no_alias_function @ NoAliasFunctionRule),
     LowercaseTypeHint(lowercase_type_hint @ LowercaseTypeHintRule),
     IdentityComparison(identity_comparison @ IdentityComparisonRule),
+    SuspiciousExplodeArguments(suspicious_explode_arguments @ SuspiciousExplodeArgumentsRule),
     IneffectiveFormatIgnoreNext(ineffective_format_ignore_next @ IneffectiveFormatIgnoreNextRule),
     InlineVariableReturn(inline_variable_return @ InlineVariableReturnRule),
     IneffectiveFormatIgnoreRegion(ineffective_format_ignore_region @ IneffectiveFormatIgnoreRegionRule),
@@ -322,6 +324,7 @@ define_rules! {
     PreferArrowFunction(prefer_arrow_function @ PreferArrowFunctionRule),
     PreparedSql(prepared_sql @ PreparedSqlRule),
     PreferEarlyContinue(prefer_early_continue @ PreferEarlyContinueRule),
+    PreferEarlyReturn(prefer_early_return @ PreferEarlyReturnRule),
     PreferStaticClosure(prefer_static_closure @ PreferStaticClosureRule),
     PreferTestAttribute(prefer_test_attribute @ PreferTestAttributeRule),
     PreferViewArray(prefer_view_array @ PreferViewArrayRule),

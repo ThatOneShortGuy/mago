@@ -5,8 +5,8 @@ use mago_database::file::FileId;
 use mago_database::file::HasFileId;
 use mago_syntax_core::input::Input;
 
-use crate::ast::Program;
-use crate::ast::sequence::Sequence;
+use crate::cst::Program;
+use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::lexer::Lexer;
 use crate::parser::stream::TokenStream;
@@ -22,7 +22,6 @@ const MAX_RECURSION_DEPTH: u16 = 512;
 
 #[derive(Debug, Default)]
 pub struct State {
-    pub within_indirect_variable: bool,
     pub within_string_interpolation: bool,
     pub recursion_depth: u16,
 }

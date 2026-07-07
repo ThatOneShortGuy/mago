@@ -1,0 +1,272 @@
+//! Shared AST primitives used across every syntax crate.
+
+use std::slice::Iter;
+
+use mago_allocator::prelude::*;
+
+use mago_span::HasPosition;
+use mago_span::HasSpan;
+use mago_span::Span;
+
+/// A sequence of AST nodes allocated in an arena.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[repr(transparent)]
+pub struct Sequence<'arena, T> {
+    pub nodes: &'arena [T],
+}
+
+impl<'arena, T> Sequence<'arena, T> {
+    /// Freezes an arena-allocated vector into a sequence.
+    #[inline]
+    #[must_use]
+    pub fn new<A>(nodes: Vec<'arena, T, A>) -> Self
+    where
+        A: Arena,
+    {
+        Self { nodes: nodes.leak() }
+    }
+
+    /// Wraps an existing arena slice as a sequence.
+    #[inline]
+    #[must_use]
+    pub const fn from_slice(nodes: &'arena [T]) -> Self {
+        Self { nodes }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { nodes: &[] }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.nodes.get(index)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn first(&self) -> Option<&T> {
+        self.nodes.first()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn last(&self) -> Option<&T> {
+        self.nodes.last()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.nodes.iter()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[T] {
+        self.nodes
+    }
+}
+
+impl<T: HasSpan> Sequence<'_, T> {
+    #[inline]
+    #[must_use]
+    pub fn first_span(&self) -> Option<Span> {
+        self.nodes.first().map(HasSpan::span)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn last_span(&self) -> Option<Span> {
+        self.nodes.last().map(HasSpan::span)
+    }
+
+    /// Compute the span covering the sequence, anchored at `from`.
+    ///
+    /// Returns a zero-width span at `from` when the sequence is empty.
+    #[inline]
+    #[must_use]
+    pub fn span(&self, file_id: mago_database::file::FileId, from: mago_span::Position) -> Span {
+        self.last_span().map_or(Span::new(file_id, from, from), |span| Span::new(file_id, from, span.end))
+    }
+}
+
+impl<T> std::ops::Index<usize> for Sequence<'_, T> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, index: usize) -> &T {
+        &self.nodes[index]
+    }
+}
+
+impl<T, Tok> std::ops::Index<usize> for TokenSeparatedSequence<'_, T, Tok> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, index: usize) -> &T {
+        &self.nodes[index]
+    }
+}
+
+impl<'arena, T> IntoIterator for Sequence<'arena, T> {
+    type Item = &'arena T;
+    type IntoIter = Iter<'arena, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.iter()
+    }
+}
+
+impl<'seq, T> IntoIterator for &'seq Sequence<'_, T> {
+    type Item = &'seq T;
+    type IntoIter = Iter<'seq, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// A sequence of AST nodes separated by infix tokens.
+///
+/// The token type is generic so every syntax crate can plug in its own
+/// token definition. Methods that depend on spatial relationships between
+/// nodes and tokens require [`HasPosition`] on the token; that's the
+/// narrowest bound that still supports `has_trailing_token` style
+/// queries, and every sibling crate's token already carries a [`Position`]
+/// start so the impl is trivial.
+///
+/// [`Position`]: mago_span::Position
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct TokenSeparatedSequence<'arena, T, Tok> {
+    pub nodes: &'arena [T],
+    pub tokens: &'arena [Tok],
+}
+
+impl<'arena, T, Tok> TokenSeparatedSequence<'arena, T, Tok> {
+    /// Freezes arena-allocated node and token vectors into a separated sequence.
+    #[inline]
+    #[must_use]
+    pub fn new<A>(nodes: Vec<'arena, T, A>, tokens: Vec<'arena, Tok, A>) -> Self
+    where
+        A: Arena,
+    {
+        Self { nodes: nodes.leak(), tokens: tokens.leak() }
+    }
+
+    /// Wraps existing arena slices as a separated sequence.
+    #[inline]
+    #[must_use]
+    pub const fn from_slices(nodes: &'arena [T], tokens: &'arena [Tok]) -> Self {
+        Self { nodes, tokens }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { nodes: &[], tokens: &[] }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.nodes.get(index)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn first(&self) -> Option<&T> {
+        self.nodes.first()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn last(&self) -> Option<&T> {
+        self.nodes.last()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.nodes.iter()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[T] {
+        self.nodes
+    }
+
+    /// Iterate yielding `(index, node, optional trailing token)` tuples.
+    ///
+    /// The token is `None` only for the last element if it has no trailing
+    /// separator.
+    #[inline]
+    pub fn iter_with_tokens(&self) -> impl Iterator<Item = (usize, &T, Option<&Tok>)> {
+        self.nodes.iter().enumerate().map(move |(i, item)| (i, item, self.tokens.get(i)))
+    }
+}
+
+impl<T, Tok> TokenSeparatedSequence<'_, T, Tok>
+where
+    T: HasSpan,
+    Tok: HasPosition,
+{
+    /// Whether the sequence ends with a trailing separator token.
+    #[inline]
+    #[must_use]
+    pub fn has_trailing_token(&self) -> bool {
+        self.tokens.last().is_some_and(|t| t.offset() >= self.nodes.last().map_or(0, |n| n.span().end.offset))
+    }
+
+    /// Return the trailing separator token, if any.
+    #[inline]
+    #[must_use]
+    pub fn get_trailing_token(&self) -> Option<&Tok> {
+        self.tokens.last().filter(|t| t.offset() >= self.nodes.last().map_or(0, |n| n.span().end.offset))
+    }
+}
+
+impl<'arena, T, Tok> IntoIterator for TokenSeparatedSequence<'arena, T, Tok> {
+    type Item = &'arena T;
+    type IntoIter = Iter<'arena, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.iter()
+    }
+}
+
+impl<'seq, T, Tok> IntoIterator for &'seq TokenSeparatedSequence<'_, T, Tok> {
+    type Item = &'seq T;
+    type IntoIter = Iter<'seq, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}

@@ -4,23 +4,25 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::ast::AnonymousClass;
-use mago_syntax::ast::Class;
-use mago_syntax::ast::ClassLikeMember;
-use mago_syntax::ast::Enum;
-use mago_syntax::ast::EnumBackingTypeHint;
-use mago_syntax::ast::EnumCaseItem;
-use mago_syntax::ast::Hint;
-use mago_syntax::ast::Interface;
-use mago_syntax::ast::MethodBody;
-use mago_syntax::ast::Modifier;
-use mago_syntax::ast::ModifierSequenceExt;
-use mago_syntax::ast::Property;
-use mago_syntax::ast::PropertyHookBody;
-use mago_syntax::ast::PropertyItem;
-use mago_syntax::ast::Sequence;
-use mago_syntax::ast::Trait;
+use mago_syntax::cst::AnonymousClass;
+use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::Enum;
+use mago_syntax::cst::EnumBackingTypeHint;
+use mago_syntax::cst::EnumCaseItem;
+use mago_syntax::cst::Hint;
+use mago_syntax::cst::Interface;
+use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Modifier;
+use mago_syntax::cst::ModifierSequenceExt;
+use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookBody;
+use mago_syntax::cst::PropertyItem;
+use mago_syntax::cst::Sequence;
+use mago_syntax::cst::Trait;
+use mago_syntax::cst::TraitUseAliasAdaptation;
 
+use crate::internal::checker::partial_application;
 use crate::internal::consts::ANONYMOUS_CLASS_NAME;
 use crate::internal::consts::CONSTRUCTOR_MAGIC_METHOD;
 use crate::internal::consts::MAGIC_METHODS;
@@ -37,6 +39,37 @@ mod constant;
 mod inheritance;
 mod method;
 mod property;
+
+#[inline]
+pub fn check_trait_use_alias_adaptation<'ast, 'arena>(
+    adaptation: &'ast TraitUseAliasAdaptation<'arena>,
+    context: &mut Context<'_, 'ast, 'arena>,
+) {
+    let Some(modifier) = &adaptation.modifier else {
+        return;
+    };
+
+    if modifier.is_read_visibility() {
+        return;
+    }
+
+    let modifier_name = BytesDisplay(modifier.get_keyword().value);
+
+    context.report(
+        Issue::error(format!("The `{modifier_name}` modifier is not allowed in a trait `as` adaptation."))
+            .with_annotation(
+                Annotation::primary(modifier.span()).with_message(format!("`{modifier_name}` cannot be used here")),
+            )
+            .with_annotation(
+                Annotation::secondary(adaptation.r#as.span())
+                    .with_message("This `as` adaptation only accepts a visibility modifier."),
+            )
+            .with_note(
+                "Trait `as` adaptations may only change a method's visibility (`public`, `protected`, or `private`) and/or assign an alias.",
+            )
+            .with_help(format!("Remove the `{modifier_name}` modifier.")),
+    );
+}
 
 #[inline]
 pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
@@ -1093,6 +1126,18 @@ pub fn check_anonymous_class<'ast, 'arena>(
             false,
             context,
         );
+    }
+
+    if let Some(argument_list) = &anonymous_class.argument_list {
+        for argument in &argument_list.arguments {
+            partial_application::report_disallowed_partial_argument(
+                argument,
+                "an anonymous class expression",
+                anonymous_class.span(),
+                format!("Anonymous class `{anonymous_class_name}` instantiated here."),
+                context,
+            );
+        }
     }
 
     check_members(

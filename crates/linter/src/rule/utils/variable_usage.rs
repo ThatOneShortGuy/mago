@@ -5,7 +5,7 @@ use foldhash::HashMap;
 use foldhash::HashSet;
 
 use mago_span::Span;
-use mago_syntax::ast::*;
+use mago_syntax::cst::*;
 use mago_syntax::walker::MutWalker;
 
 pub trait Recorder<'arena> {
@@ -19,6 +19,8 @@ pub trait Recorder<'arena> {
     fn enter_arm(&mut self);
     fn exit_arm(&mut self);
     fn bail(&mut self);
+    fn record_terminator(&mut self) {}
+    fn commit_arm_pending(&mut self) {}
     fn is_bailed(&self) -> bool;
     fn is_seen(&self, name: &[u8]) -> bool;
     fn tracked_names(&self) -> Vec<&'arena [u8]>;
@@ -133,7 +135,7 @@ impl<'arena> Recorder<'arena> for RedundantRecorder<'arena> {
 #[derive(Default)]
 pub struct DeadStoreVarInfo {
     pub do_not_flag: bool,
-    pub pending_write: Option<(Span, u32)>,
+    pub pending: Vec<(Span, Box<[u32]>)>,
     pub dead_stores: Vec<Span>,
 }
 
@@ -151,9 +153,13 @@ impl<'arena> DeadStoreRecorder<'arena> {
         self.info.entry(name).or_default()
     }
 
-    fn current_arm(&self) -> u32 {
-        self.arm_stack.last().copied().unwrap_or(0)
+    fn current_path(&self) -> Box<[u32]> {
+        self.arm_stack.iter().copied().collect()
     }
+}
+
+fn write_overwrites(path: &[u32], pending: &[u32]) -> bool {
+    pending.starts_with(path)
 }
 
 impl<'arena> Recorder<'arena> for DeadStoreRecorder<'arena> {
@@ -165,28 +171,39 @@ impl<'arena> Recorder<'arena> for DeadStoreRecorder<'arena> {
         self.record_write(name, span);
         let info = self.entry(name);
         info.do_not_flag = true;
-        info.pending_write = None;
+        info.pending.clear();
     }
 
     fn record_write(&mut self, name: &'arena [u8], span: Span) {
-        let arm = self.current_arm();
+        let path = self.current_path();
         let info = self.entry(name);
-        let prev = info.pending_write.replace((span, arm));
-        if let Some((prev_span, prev_arm)) = prev
-            && prev_arm == arm
-            && !info.do_not_flag
-        {
-            info.dead_stores.push(prev_span);
+        let flag = !info.do_not_flag;
+
+        let mut index = 0;
+        while index < info.pending.len() {
+            if write_overwrites(&path, &info.pending[index].1) {
+                let (dead_span, _) = info.pending.swap_remove(index);
+                if flag {
+                    info.dead_stores.push(dead_span);
+                }
+            } else {
+                index += 1;
+            }
         }
+
+        info.pending.push((span, path));
     }
 
     fn record_read(&mut self, name: &'arena [u8]) {
-        self.entry(name).pending_write = None;
+        self.entry(name).pending.clear();
     }
 
     fn record_read_then_write(&mut self, name: &'arena [u8], span: Span) {
-        let arm = self.current_arm();
-        self.entry(name).pending_write = Some((span, arm));
+        let path = self.current_path();
+        let info = self.entry(name);
+
+        info.pending.clear();
+        info.pending.push((span, path));
     }
 
     fn record_call_argument(&mut self, name: &'arena [u8], span: Span) {
@@ -199,6 +216,20 @@ impl<'arena> Recorder<'arena> for DeadStoreRecorder<'arena> {
 
     fn record_unset(&mut self, name: &'arena [u8]) {
         self.record_read(name);
+    }
+
+    fn record_terminator(&mut self) {
+        let path = self.current_path();
+        for info in self.info.values_mut() {
+            info.pending.retain(|(_, p)| !p.starts_with(&path));
+        }
+    }
+
+    fn commit_arm_pending(&mut self) {
+        let path = self.current_path();
+        for info in self.info.values_mut() {
+            info.pending.retain(|(_, p)| !p.starts_with(&path));
+        }
     }
 
     fn enter_arm(&mut self) {
@@ -541,6 +572,7 @@ impl<'ast, 'arena, R: Recorder<'arena> + Sync + Send> MutWalker<'ast, 'arena, ()
             self.rec.exit_rescan();
         }
 
+        self.rec.commit_arm_pending();
         self.rec.exit_arm();
     }
 
@@ -622,6 +654,7 @@ impl<'ast, 'arena, R: Recorder<'arena> + Sync + Send> MutWalker<'ast, 'arena, ()
             self.rec.exit_rescan();
         }
 
+        self.rec.commit_arm_pending();
         self.rec.exit_arm();
     }
 
@@ -635,6 +668,7 @@ impl<'ast, 'arena, R: Recorder<'arena> + Sync + Send> MutWalker<'ast, 'arena, ()
             self.rec.exit_rescan();
         }
 
+        self.rec.commit_arm_pending();
         self.rec.exit_arm();
         self.walk_expression(d.condition, ctx);
     }
@@ -684,6 +718,7 @@ impl<'ast, 'arena, R: Recorder<'arena> + Sync + Send> MutWalker<'ast, 'arena, ()
             self.rec.exit_rescan();
         }
 
+        self.rec.commit_arm_pending();
         self.rec.exit_arm();
     }
 
@@ -742,6 +777,51 @@ impl<'ast, 'arena, R: Recorder<'arena> + Sync + Send> MutWalker<'ast, 'arena, ()
 
             self.rec.exit_arm();
         }
+    }
+
+    fn walk_break(&mut self, b: &'ast Break<'arena>, ctx: &mut ()) {
+        if self.rec.is_bailed() {
+            return;
+        }
+
+        if let Some(level) = &b.level {
+            self.with_ctx(ExprCtx::Read, |w| w.walk_expression(level, ctx));
+        }
+
+        self.rec.record_terminator();
+    }
+
+    fn walk_continue(&mut self, c: &'ast Continue<'arena>, ctx: &mut ()) {
+        if self.rec.is_bailed() {
+            return;
+        }
+
+        if let Some(level) = &c.level {
+            self.with_ctx(ExprCtx::Read, |w| w.walk_expression(level, ctx));
+        }
+
+        self.rec.record_terminator();
+    }
+
+    fn walk_return(&mut self, r: &'ast Return<'arena>, ctx: &mut ()) {
+        if self.rec.is_bailed() {
+            return;
+        }
+
+        if let Some(value) = &r.value {
+            self.with_ctx(ExprCtx::Read, |w| w.walk_expression(value, ctx));
+        }
+
+        self.rec.record_terminator();
+    }
+
+    fn walk_throw(&mut self, t: &'ast Throw<'arena>, ctx: &mut ()) {
+        if self.rec.is_bailed() {
+            return;
+        }
+
+        self.with_ctx(ExprCtx::Read, |w| w.walk_expression(t.exception, ctx));
+        self.rec.record_terminator();
     }
 
     fn walk_unset(&mut self, u: &'ast Unset<'arena>, ctx: &mut ()) {

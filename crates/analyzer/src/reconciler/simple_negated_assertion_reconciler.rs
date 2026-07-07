@@ -239,7 +239,7 @@ where
             Some(reconcile_falsy_or_empty(context, assertion, existing_var_type, key, negated, span))
         }
         Assertion::IsNotIsset => Some(reconcile_not_isset(context, existing_var_type, key, span)),
-        Assertion::ArrayKeyDoesNotExist => Some(get_never()),
+        Assertion::ArrayKeyDoesNotExist => Some(reconcile_not_isset(context, existing_var_type, key, span)),
         Assertion::DoesNotHaveArrayKey(key_name) => {
             Some(reconcile_no_array_key(context, assertion, existing_var_type, key, span, key_name, negated))
         }
@@ -311,7 +311,7 @@ where
 
     let mut new_var_type = existing_var_type.clone();
 
-    let existing_var_types = new_var_type.types.to_mut().drain(..).collect::<Vec<_>>();
+    let existing_var_types = std::mem::take(new_var_type.types.to_mut());
 
     let mut acceptable_types = vec![];
 

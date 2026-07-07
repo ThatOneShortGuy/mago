@@ -1,15 +1,15 @@
 use crate::T;
-use crate::ast::ast::TraitUse;
-use crate::ast::ast::TraitUseAbsoluteMethodReference;
-use crate::ast::ast::TraitUseAbstractSpecification;
-use crate::ast::ast::TraitUseAdaptation;
-use crate::ast::ast::TraitUseAliasAdaptation;
-use crate::ast::ast::TraitUseConcreteSpecification;
-use crate::ast::ast::TraitUseMethodReference;
-use crate::ast::ast::TraitUsePrecedenceAdaptation;
-use crate::ast::ast::TraitUseSpecification;
-use crate::ast::sequence::Sequence;
-use crate::ast::sequence::TokenSeparatedSequence;
+use crate::cst::cst::TraitUse;
+use crate::cst::cst::TraitUseAbsoluteMethodReference;
+use crate::cst::cst::TraitUseAbstractSpecification;
+use crate::cst::cst::TraitUseAdaptation;
+use crate::cst::cst::TraitUseAliasAdaptation;
+use crate::cst::cst::TraitUseConcreteSpecification;
+use crate::cst::cst::TraitUseMethodReference;
+use crate::cst::cst::TraitUsePrecedenceAdaptation;
+use crate::cst::cst::TraitUseSpecification;
+use crate::cst::sequence::Sequence;
+use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -78,7 +78,7 @@ where
                     T!["as"] => TraitUseAdaptation::Alias(TraitUseAliasAdaptation {
                         method_reference: TraitUseMethodReference::Absolute(reference),
                         r#as: self.expect_keyword(T!["as"])?,
-                        visibility: self.parse_optional_read_visibility_modifier()?,
+                        modifier: self.parse_optional_modifier()?,
                         alias: match self.stream.peek_kind(0)? {
                             Some(T![";" | "?>"]) => None,
                             _ => Some(self.parse_local_identifier()?),
@@ -119,7 +119,7 @@ where
                 TraitUseAdaptation::Alias(TraitUseAliasAdaptation {
                     method_reference,
                     r#as: self.expect_keyword(T!["as"])?,
-                    visibility: self.parse_optional_read_visibility_modifier()?,
+                    modifier: self.parse_optional_modifier()?,
                     alias: match self.stream.peek_kind(0)? {
                         Some(T![";" | "?>"]) => None,
                         _ => Some(self.parse_local_identifier()?),

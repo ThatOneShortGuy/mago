@@ -7,26 +7,26 @@ use mago_allocator::vec::Vec;
 
 use mago_span::HasPosition;
 use mago_span::HasSpan;
-use mago_syntax::ast::ClosingTag;
-use mago_syntax::ast::Constant;
-use mago_syntax::ast::Declare;
-use mago_syntax::ast::DeclareBody;
-use mago_syntax::ast::Echo;
-use mago_syntax::ast::ExpressionStatement;
-use mago_syntax::ast::Global;
-use mago_syntax::ast::Goto;
-use mago_syntax::ast::MaybeTypedUseItem;
-use mago_syntax::ast::Sequence;
-use mago_syntax::ast::Statement;
-use mago_syntax::ast::Static;
-use mago_syntax::ast::Terminator;
-use mago_syntax::ast::Unset;
-use mago_syntax::ast::Use;
-use mago_syntax::ast::UseItem;
-use mago_syntax::ast::UseItems;
-use mago_syntax::ast::UseType;
+use mago_syntax::cst::ClosingTag;
+use mago_syntax::cst::Constant;
+use mago_syntax::cst::Declare;
+use mago_syntax::cst::DeclareBody;
+use mago_syntax::cst::Echo;
+use mago_syntax::cst::ExpressionStatement;
+use mago_syntax::cst::Global;
+use mago_syntax::cst::Goto;
+use mago_syntax::cst::MaybeTypedUseItem;
+use mago_syntax::cst::Sequence;
+use mago_syntax::cst::Statement;
+use mago_syntax::cst::Static;
+use mago_syntax::cst::Terminator;
+use mago_syntax::cst::Unset;
+use mago_syntax::cst::Use;
+use mago_syntax::cst::UseItem;
+use mago_syntax::cst::UseItems;
+use mago_syntax::cst::UseType;
 
-use mago_syntax::ast::Expression;
+use mago_syntax::cst::Expression;
 use mago_syntax::walker::MutWalker;
 
 use crate::document::Align;
@@ -40,8 +40,10 @@ use crate::internal::format::Format;
 use crate::internal::format::alignment::AlignmentWidths;
 use crate::internal::format::alignment::detect_statement_ref_alignment_runs;
 use crate::internal::format::alignment::get_statement_alignment;
+use crate::internal::format::alignment::has_comment_between;
 use crate::internal::format::assignment::AssignmentAlignment;
 use crate::internal::format::misc::has_new_line_in_range;
+use crate::settings::SortOrder;
 
 pub fn print_statement_sequence<'arena, A>(
     f: &mut FormatterState<'_, 'arena, A>,
@@ -423,6 +425,23 @@ where
             DeclareBody::ColonDelimited(_) => true,
         },
         Statement::OpeningTag(_) => {
+            // Opt-in: collapse `<?php` and an immediately following `declare`
+            // statement onto a single line (`<?php declare(strict_types=1);`),
+            // regardless of how the source laid them out. This takes precedence
+            // over `opening_tag_on_own_line` and `empty_line_after_opening_tag`.
+            //
+            // Only collapse when nothing but whitespace separates the two: a
+            // trailing comment on the opening tag, or any comment sitting
+            // between the tag and the `declare`, must keep them apart so the
+            // option never rewrites comment placement.
+            if f.settings.combine_opening_tag_and_declare
+                && let Some(next @ Statement::Declare(_)) = stmts.get(i + 1).copied()
+                && !f.has_comment(stmt.span(), CommentFlags::TRAILING)
+                && !has_comment_between(f, stmt.span(), next.span())
+            {
+                return (false, true);
+            }
+
             if f.settings.opening_tag_on_own_line && !is_inline_php_template(stmts) {
                 return (true, false);
             }
@@ -565,7 +584,26 @@ where
         bytes.leak()
     }
 
-    let should_sort = f.settings.sort_uses;
+    fn compare_case_insensitive_bytes(a: &[u8], b: &[u8]) -> Ordering {
+        let mut a_iter = a.iter().map(u8::to_ascii_lowercase);
+        let mut b_iter = b.iter().map(u8::to_ascii_lowercase);
+
+        loop {
+            match (a_iter.next(), b_iter.next()) {
+                (Some(ac), Some(bc)) => {
+                    let ord = ac.cmp(&bc);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                }
+                (Some(_), None) => return Ordering::Greater,
+                (None, Some(_)) => return Ordering::Less,
+                (None, None) => return Ordering::Equal,
+            }
+        }
+    }
+
+    let sort_uses = *f.settings.sort_uses;
     let should_separate = f.settings.separate_use_types;
     let should_expand = f.settings.expand_use_groups;
 
@@ -574,7 +612,7 @@ where
         all_expanded_items.extend(expand_use(f, use_stmt, should_expand));
     }
 
-    if should_sort {
+    if sort_uses != SortOrder::Preserve {
         all_expanded_items.sort_by(|a, b| {
             let a_type_order = match a.use_type {
                 None => 0,
@@ -605,19 +643,18 @@ where
             let a_full_name = join_item_name(f.arena, a.namespace, a.name);
             let b_full_name = join_item_name(f.arena, b.namespace, b.name);
 
-            let mut a_iter = a_full_name.iter().map(u8::to_ascii_lowercase);
-            let mut b_iter = b_full_name.iter().map(u8::to_ascii_lowercase);
-
-            loop {
-                match (a_iter.next(), b_iter.next()) {
-                    (Some(ac), Some(bc)) => match ac.cmp(&bc) {
-                        Ordering::Equal => {}
-                        other => return other,
-                    },
-                    (None, Some(_)) => return Ordering::Less,
-                    (Some(_), None) => return Ordering::Greater,
-                    (None, None) => return Ordering::Equal,
-                }
+            match sort_uses {
+                SortOrder::AlphanumericAscending => compare_case_insensitive_bytes(a_full_name, b_full_name),
+                SortOrder::AlphanumericDescending => compare_case_insensitive_bytes(b_full_name, a_full_name),
+                SortOrder::LengthAscending => a_full_name
+                    .len()
+                    .cmp(&b_full_name.len())
+                    .then_with(|| compare_case_insensitive_bytes(a_full_name, b_full_name)),
+                SortOrder::LengthDescending => b_full_name
+                    .len()
+                    .cmp(&a_full_name.len())
+                    .then_with(|| compare_case_insensitive_bytes(a_full_name, b_full_name)),
+                _ => unreachable!(),
             }
         });
     }
