@@ -617,9 +617,15 @@ pub(crate) fn can_be_identical(
 
     if let (TAtomic::Object(TObject::Enum(first_enum)), TAtomic::Object(TObject::Enum(second_enum))) =
         (first_part, second_part)
-        && first_enum.name == second_enum.name
     {
-        return true;
+        if !first_enum.name.as_bytes().eq_ignore_ascii_case(second_enum.name.as_bytes()) {
+            return false;
+        }
+
+        return match (first_enum.case, second_enum.case) {
+            (Some(first_case), Some(second_case)) => first_case == second_case,
+            _ => true,
+        };
     }
 
     if (first_part.is_list() && second_part.is_non_empty_list())
@@ -650,7 +656,10 @@ pub(crate) fn can_be_identical(
     | (TAtomic::Array(TArray::List(list)), TAtomic::Array(TArray::Keyed(keyed_array))) = (first_part, second_part)
     {
         if let Some(known_items) = &keyed_array.known_items {
-            for key in known_items.keys() {
+            for (key, (optional, _)) in known_items.iter() {
+                if *optional {
+                    continue;
+                }
                 if key.is_string() {
                     return false;
                 }
