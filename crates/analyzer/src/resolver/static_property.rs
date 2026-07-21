@@ -23,7 +23,7 @@ use crate::error::AnalysisError;
 use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::resolver::property::PropertyResolutionResult;
 use crate::resolver::property::ResolvedProperty;
-use crate::visibility::check_property_read_visibility;
+use crate::visibility::check_static_property_read_visibility;
 
 /// Resolves all possible static properties from a class expression and a member selector.
 pub fn resolve_static_properties<'ctx, 'ast, 'arena, A>(
@@ -195,6 +195,7 @@ where
                     declaring_class_id: Some(required_declaring_id),
                     property_type,
                     is_magic: false,
+                    read_type: None,
                 });
             }
         }
@@ -226,7 +227,7 @@ where
         return None;
     }
 
-    if !check_property_read_visibility(
+    if !check_static_property_read_visibility(
         context,
         block_context,
         declaring_class_id.as_bytes(),
@@ -258,6 +259,7 @@ where
         declaring_class_id: Some(declaring_class_id),
         property_type,
         is_magic: false,
+        read_type: None,
     })
 }
 

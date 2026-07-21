@@ -10,8 +10,10 @@ use mago_word::ascii_lowercase_word;
 
 use crate::identifier::function_like::FunctionLikeIdentifier;
 use crate::metadata::CodebaseMetadata;
+use crate::metadata::class_like::ClassLikeMetadata;
 use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::ttype::TType;
+use crate::ttype::TypeRef;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::alias::TAlias;
 use crate::ttype::atomic::array::TArray;
@@ -23,11 +25,13 @@ use crate::ttype::atomic::derived::TDerived;
 use crate::ttype::atomic::derived::index_access::TIndexAccess;
 use crate::ttype::atomic::derived::int_mask::TIntMask;
 use crate::ttype::atomic::derived::int_mask_of::TIntMaskOf;
+use crate::ttype::atomic::derived::intersection::TDerivedIntersection;
 use crate::ttype::atomic::derived::key_of::TKeyOf;
 use crate::ttype::atomic::derived::new::TNew;
 use crate::ttype::atomic::derived::properties_of::TPropertiesOf;
 use crate::ttype::atomic::derived::template_type::TTemplateType;
 use crate::ttype::atomic::derived::value_of::TValueOf;
+use crate::ttype::atomic::generic::TGenericParameter;
 use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
@@ -153,6 +157,11 @@ pub struct TypeExpansionOptions {
     pub function_is_final: bool,
     pub expand_generic: bool,
     pub expand_templates: bool,
+    /// True when expanding the return type of a method resolved through `@mixin`:
+    /// a pre-bound `static` that reaches the receiver through mixin tags rebinds
+    /// to the receiver. Elsewhere the mixin relationship between two class names
+    /// says nothing about how a value was obtained, so no rebinding happens.
+    pub allow_mixin_static_rebind: bool,
 }
 
 impl Default for TypeExpansionOptions {
@@ -166,6 +175,7 @@ impl Default for TypeExpansionOptions {
             function_is_final: false,
             expand_generic: false,
             expand_templates: true,
+            allow_mixin_static_rebind: false,
         }
     }
 }
@@ -272,6 +282,13 @@ pub(crate) fn expand_atomic(
                     expand_union(codebase, param_type, options);
                 }
             }
+
+            for constraint in &mut signature.constraints {
+                expand_union(codebase, Arc::make_mut(&mut constraint.input_type), options);
+                if !contains_parameter_variable(&constraint.parameter_type) {
+                    expand_union(codebase, Arc::make_mut(&mut constraint.parameter_type), options);
+                }
+            }
         }
         TAtomic::GenericParameter(parameter) => {
             expand_union(codebase, Arc::make_mut(&mut parameter.constraint), options);
@@ -347,6 +364,10 @@ pub(crate) fn expand_atomic(
                 *skip_key = true;
                 new_return_type_parts.extend(expand_template_type(template_type, codebase, options));
             }
+            TDerived::Intersection(intersection) => {
+                *skip_key = true;
+                new_return_type_parts.extend(expand_derived_intersection(intersection, codebase, options));
+            }
         },
         TAtomic::Iterable(iterable) => {
             expand_union(codebase, Arc::make_mut(&mut iterable.key_type), options);
@@ -354,6 +375,35 @@ pub(crate) fn expand_atomic(
         }
         _ => {}
     }
+}
+
+fn expand_derived_intersection(
+    intersection: &TDerivedIntersection,
+    codebase: &CodebaseMetadata,
+    options: &TypeExpansionOptions,
+) -> Vec<TAtomic> {
+    let mut base_type = intersection.get_base_type().clone();
+    expand_union(codebase, &mut base_type, options);
+    let mut results = base_type.types.into_owned();
+
+    for intersection_type in intersection.get_intersection_types().unwrap_or_default() {
+        let mut expanded_intersection = TUnion::from_atomic(intersection_type.clone());
+        expand_union(codebase, &mut expanded_intersection, options);
+
+        let mut next_results = Vec::with_capacity(results.len() * expanded_intersection.types.len());
+        for base in results {
+            for additional in expanded_intersection.types.as_ref() {
+                let mut result = base.clone();
+                if !result.add_intersection_type(additional.clone()) {
+                    return vec![TAtomic::Derived(TDerived::Intersection(intersection.clone()))];
+                }
+                next_results.push(result);
+            }
+        }
+        results = next_results;
+    }
+
+    results
 }
 
 /// Resolves a `ClassLikeConstant` array key to its concrete `Integer` or `String` value.
@@ -627,6 +677,19 @@ fn resolve_special_class_names(object: &mut TObject, codebase: &CodebaseMetadata
         return;
     }
 
+    // A pre-bound `static` type also rebinds to an enum receiver, but only when
+    // the receiver is compatible: an instance of the named class, or reaching it
+    // through `@mixin` tags.
+    if matches!(special, SpecialClassName::None)
+        && named.is_static
+        && let StaticClassType::Object(TObject::Enum(static_enum)) = &options.static_class_type
+        && (codebase.is_instance_of(static_enum.name.as_bytes(), named.name.as_bytes())
+            || (options.allow_mixin_static_rebind && reaches_through_mixins(static_enum.name, named.name, codebase)))
+    {
+        *object = TObject::Enum(static_enum.clone());
+        return;
+    }
+
     let TObject::Named(named) = object else {
         return;
     };
@@ -667,15 +730,35 @@ fn resolve_static_type(
 ) {
     match &options.static_class_type {
         StaticClassType::Object(TObject::Named(static_obj)) => {
-            if check_compatibility && !is_static_type_compatible(named, static_obj, codebase) {
-                return;
+            // When `check_compatibility` is false, `named.name` is the literal
+            // `static`/`$this` keyword rather than a class name, so no
+            // compatibility or mixin-reachability question arises.
+            let mut crosses_mixin = false;
+            if check_compatibility
+                && !codebase.is_instance_of(static_obj.name.as_bytes(), named.name.as_bytes())
+                && !intersection_object_names(static_obj)
+                    .any(|name| codebase.is_instance_of(name.as_bytes(), named.name.as_bytes()))
+            {
+                crosses_mixin = options.allow_mixin_static_rebind
+                    && (reaches_through_mixins(static_obj.name, named.name, codebase)
+                        || intersection_object_names(static_obj)
+                            .any(|name| reaches_through_mixins(name, named.name, codebase)));
+
+                if !crosses_mixin {
+                    return;
+                }
             }
 
             if let Some(intersections) = &static_obj.intersection_types {
                 named.intersection_types.get_or_insert_with(Vec::new).extend(intersections.iter().cloned());
             }
 
-            if static_obj.type_parameters.is_some() && should_use_static_type_params(named, static_obj, codebase) {
+            // When the receiver reaches the declaring class through `@mixin`, the
+            // declaring class's type parameters do not apply to it; the receiver's
+            // own parameters (if any) are the correct ones.
+            if crosses_mixin
+                || (static_obj.type_parameters.is_some() && should_use_static_type_params(named, static_obj, codebase))
+            {
                 named.type_parameters.clone_from(&static_obj.type_parameters);
             }
 
@@ -711,15 +794,67 @@ fn is_effectively_final(class_name: &Word, codebase: &CodebaseMetadata, options:
     codebase.get_class_like(class_name.as_bytes()).is_some_and(|meta| meta.name_span.is_none() || meta.flags.is_final())
 }
 
-/// Checks if the static object type is compatible with a type that has is_this=true.
-fn is_static_type_compatible(named: &TNamedObject, static_obj: &TNamedObject, codebase: &CodebaseMetadata) -> bool {
-    codebase.is_instance_of(static_obj.name.as_bytes(), named.name.as_bytes())
-        || static_obj
-            .intersection_types
-            .iter()
-            .flatten()
-            .filter_map(|t| if let TAtomic::Object(obj) = t { obj.get_name() } else { None })
-            .any(|name| codebase.is_instance_of(name.as_bytes(), named.name.as_bytes()))
+/// Iterates the class names of an object's intersection types.
+fn intersection_object_names(obj: &TNamedObject) -> impl Iterator<Item = Word> {
+    obj.intersection_types
+        .iter()
+        .flatten()
+        .filter_map(|t| if let TAtomic::Object(obj) = t { obj.get_name() } else { None })
+}
+
+/// Checks whether `class_name` reaches `target_name` through a chain of `@mixin`
+/// tags. Methods pulled in via `@mixin` have their `static` return types pre-bound
+/// to the mixin class, so rebinding them to the class carrying the tag must treat
+/// that class as compatible.
+fn reaches_through_mixins(class_name: Word, target_name: Word, codebase: &CodebaseMetadata) -> bool {
+    let Some(metadata) = codebase.get_class_like(class_name.as_bytes()) else {
+        return false;
+    };
+
+    // Direct mixins cover the overwhelmingly common case; the walk only
+    // descends into (and only allocates for) mixins that are chained.
+    let mut visited = HashSet::with_hasher(FixedState::with_seed(0));
+    let mut stack = Vec::new();
+    let mut current = metadata;
+    loop {
+        for (mixin_name, mixin_metadata) in direct_mixins(current, codebase) {
+            if codebase.is_instance_of(mixin_name.as_bytes(), target_name.as_bytes()) {
+                return true;
+            }
+
+            if let Some(mixin_metadata) = mixin_metadata
+                && !mixin_metadata.mixins.is_empty()
+                && visited.insert(mixin_name)
+            {
+                stack.push(mixin_metadata);
+            }
+        }
+
+        let Some(next) = stack.pop() else {
+            return false;
+        };
+        current = next;
+    }
+}
+
+/// Iterates the classes directly named by a class's `@mixin` tags, along with
+/// their metadata if known. A generic-parameter mixin (`@mixin T`) names its
+/// classes through the template constraint.
+fn direct_mixins<'ctx>(
+    metadata: &'ctx ClassLikeMetadata,
+    codebase: &'ctx CodebaseMetadata,
+) -> impl Iterator<Item = (Word, Option<&'ctx ClassLikeMetadata>)> {
+    metadata.mixins.iter().flat_map(|mixin| mixin.types.as_ref().iter()).flat_map(move |mixin_type| {
+        let atomics = match mixin_type {
+            TAtomic::GenericParameter(TGenericParameter { constraint, .. }) => constraint.types.as_ref(),
+            other => std::slice::from_ref(other),
+        };
+
+        atomics.iter().filter_map(move |atomic| {
+            let mixin_name = atomic.get_object_or_enum_name()?;
+            Some((mixin_name, codebase.get_class_like(mixin_name.as_bytes())))
+        })
+    })
 }
 
 /// Returns true if we should use the static object's type parameters instead of the current ones.
@@ -774,32 +909,55 @@ pub fn get_signature_of_function_like_identifier(
     function_like_identifier: &FunctionLikeIdentifier,
     codebase: &CodebaseMetadata,
 ) -> Option<TCallableSignature> {
+    get_signature_of_function_like_identifier_with_options(function_like_identifier, codebase, false)
+}
+
+/// Builds a callable signature without eagerly expanding types that depend on one of its
+/// parameters.
+///
+/// This is used for first-class and partial callables, where the concrete argument is only
+/// available when the resulting callable is invoked.
+#[must_use]
+pub fn get_parameter_dependent_signature_of_function_like_identifier(
+    function_like_identifier: &FunctionLikeIdentifier,
+    codebase: &CodebaseMetadata,
+) -> Option<TCallableSignature> {
+    get_signature_of_function_like_identifier_with_options(function_like_identifier, codebase, true)
+}
+
+fn get_signature_of_function_like_identifier_with_options(
+    function_like_identifier: &FunctionLikeIdentifier,
+    codebase: &CodebaseMetadata,
+    preserve_parameter_dependencies: bool,
+) -> Option<TCallableSignature> {
     Some(match function_like_identifier {
         FunctionLikeIdentifier::Function(name) => {
             let function_like_metadata = codebase.get_function(name.as_bytes())?;
 
-            get_signature_of_function_like_metadata(
+            get_signature_of_function_like_metadata_with_options(
                 function_like_identifier,
                 function_like_metadata,
                 codebase,
                 &TypeExpansionOptions::default(),
+                preserve_parameter_dependencies,
             )
         }
         FunctionLikeIdentifier::Closure(name) => {
             let function_like_metadata = codebase.get_closure(name)?;
 
-            get_signature_of_function_like_metadata(
+            get_signature_of_function_like_metadata_with_options(
                 function_like_identifier,
                 function_like_metadata,
                 codebase,
                 &TypeExpansionOptions::default(),
+                preserve_parameter_dependencies,
             )
         }
         FunctionLikeIdentifier::Method(classlike_name, method_name) => {
             let function_like_metadata =
                 codebase.get_declaring_method(classlike_name.as_bytes(), method_name.as_bytes())?;
 
-            get_signature_of_function_like_metadata(
+            get_signature_of_function_like_metadata_with_options(
                 function_like_identifier,
                 function_like_metadata,
                 codebase,
@@ -808,6 +966,7 @@ pub fn get_signature_of_function_like_identifier(
                     static_class_type: StaticClassType::Name(*classlike_name),
                     ..Default::default()
                 },
+                preserve_parameter_dependencies,
             )
         }
     })
@@ -830,13 +989,31 @@ pub fn get_signature_of_function_like_metadata(
     codebase: &CodebaseMetadata,
     options: &TypeExpansionOptions,
 ) -> TCallableSignature {
+    get_signature_of_function_like_metadata_with_options(
+        function_like_identifier,
+        function_like_metadata,
+        codebase,
+        options,
+        false,
+    )
+}
+
+fn get_signature_of_function_like_metadata_with_options(
+    function_like_identifier: &FunctionLikeIdentifier,
+    function_like_metadata: &FunctionLikeMetadata,
+    codebase: &CodebaseMetadata,
+    options: &TypeExpansionOptions,
+    preserve_parameter_dependencies: bool,
+) -> TCallableSignature {
     let parameters: Vec<_> = function_like_metadata
         .parameters
         .iter()
         .map(|parameter_metadata| {
             let type_signature = if let Some(t) = parameter_metadata.get_type_metadata() {
                 let mut t = t.type_union.clone();
-                expand_union(codebase, &mut t, options);
+                if !preserve_parameter_dependencies || !contains_parameter_variable(&t) {
+                    expand_union(codebase, &mut t, options);
+                }
                 Some(Arc::new(t))
             } else {
                 None
@@ -848,12 +1025,15 @@ pub fn get_signature_of_function_like_metadata(
                 parameter_metadata.flags.is_variadic(),
                 parameter_metadata.flags.has_default(),
             )
+            .with_name(Some(*parameter_metadata.get_name()))
         })
         .collect();
 
     let return_type = if let Some(type_metadata) = function_like_metadata.return_type_metadata.as_ref() {
         let mut return_type = type_metadata.type_union.clone();
-        expand_union(codebase, &mut return_type, options);
+        if !preserve_parameter_dependencies || !contains_parameter_variable(&return_type) {
+            expand_union(codebase, &mut return_type, options);
+        }
         Some(Arc::new(return_type))
     } else {
         None
@@ -864,6 +1044,17 @@ pub fn get_signature_of_function_like_metadata(
         .with_parameters(parameters)
         .with_return_type(return_type)
         .with_source(Some(*function_like_identifier))
+}
+
+#[must_use]
+pub fn contains_parameter_variable(union: &TUnion) -> bool {
+    union.get_all_child_nodes().into_iter().any(|node| {
+        matches!(
+            node,
+            TypeRef::Atomic(TAtomic::Variable(variable))
+                if !variable.as_bytes().eq_ignore_ascii_case(b"$this")
+        )
+    })
 }
 
 #[cold]
@@ -910,7 +1101,8 @@ fn expand_index_access(
     let mut index_type = return_type_index_access.get_index_type().clone();
     expand_union(codebase, &mut index_type, options);
 
-    let Some(new_return_types) = TIndexAccess::get_indexed_access_result(&target_type.types, &index_type.types, false)
+    let Some(new_return_types) =
+        TIndexAccess::get_indexed_access_result(&target_type.types, &index_type.types, codebase, false)
     else {
         return vec![TAtomic::Derived(TDerived::IndexAccess(return_type_index_access.clone()))];
     };
@@ -2646,6 +2838,7 @@ mod tests {
             function_is_final: false,
             expand_generic: false,
             expand_templates: false,
+            allow_mixin_static_rebind: false,
         };
 
         let mut actual = input;

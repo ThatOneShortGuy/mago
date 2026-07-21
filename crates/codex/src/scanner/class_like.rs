@@ -1160,6 +1160,44 @@ where
                 None
             };
 
+            // `@property-read` and `@property-write` tags for the same property combine into
+            // one readable and writable declaration; the later tag must not replace the earlier.
+            if let Some(existing_property) = class_like_metadata.magic_properties.get_mut(&property_name) {
+                let existing_is_write_only = existing_property.flags.is_writeonly();
+                let existing_is_read_only = existing_property.flags.is_readonly();
+
+                if is_read {
+                    existing_property.read_visibility = Visibility::Public;
+                    existing_property.flags.set(MetadataFlags::WRITEONLY, false);
+                    if existing_is_write_only {
+                        // The type slot holds the write-only tag's type; the read type takes the
+                        // slot (it is what property accesses produce) and the write type moves
+                        // into the dedicated write slot.
+                        if existing_property.write_type_metadata.is_none() {
+                            existing_property.write_type_metadata = existing_property.type_metadata.take();
+                        }
+
+                        existing_property.type_metadata = type_metadata.clone();
+                    } else if existing_property.type_metadata.is_none() {
+                        existing_property.type_metadata = type_metadata.clone();
+                    }
+                }
+
+                if is_write {
+                    existing_property.write_visibility = Visibility::Public;
+                    existing_property.flags.set(MetadataFlags::READONLY, false);
+                    if existing_is_read_only {
+                        if existing_property.write_type_metadata.is_none() {
+                            existing_property.write_type_metadata = type_metadata;
+                        }
+                    } else if existing_property.type_metadata.is_none() {
+                        existing_property.type_metadata = type_metadata;
+                    }
+                }
+
+                continue;
+            }
+
             let mut new_property = PropertyMetadata::new(VariableIdentifier(property_name), MetadataFlags::empty());
             if is_read {
                 new_property.read_visibility = Visibility::Public;
@@ -1179,40 +1217,43 @@ where
                 new_property.type_metadata.replace(type_metadata);
             }
 
-            new_property.flags.set(MetadataFlags::MAGIC_PROPERTY, true);
-
-            class_like_metadata.add_property_metadata(new_property);
+            class_like_metadata.magic_properties.insert(property_name, new_property);
+            class_like_metadata.magic_property_ids.insert(property_name, class_like_metadata.name);
         }
     }
 
     for member in members {
-        match member {
-            ClassLikeMember::Constant(constant) => {
-                for constant_metadata in scan_class_like_constants(
-                    &mut class_like_metadata,
-                    constant,
-                    Some(original_name),
-                    &type_context,
-                    context,
-                    scope,
-                ) {
-                    if class_like_metadata.constants.contains_key(&constant_metadata.name) {
-                        continue;
-                    }
+        let ClassLikeMember::Constant(constant) = member else {
+            continue;
+        };
 
-                    class_like_metadata.constants.insert(constant_metadata.name, constant_metadata);
-                }
+        for constant_metadata in scan_class_like_constants(
+            &mut class_like_metadata,
+            constant,
+            Some(original_name),
+            &type_context,
+            context,
+            scope,
+        ) {
+            if class_like_metadata.constants.contains_key(&constant_metadata.name) {
+                continue;
             }
-            ClassLikeMember::EnumCase(enum_case) => {
-                let case_metadata = scan_enum_case(name, enum_case, context, scope);
-                if class_like_metadata.constants.contains_key(&case_metadata.name) {
-                    continue;
-                }
 
-                class_like_metadata.enum_cases.insert(case_metadata.name, case_metadata);
-            }
-            _ => {}
+            class_like_metadata.constants.insert(constant_metadata.name, constant_metadata);
         }
+    }
+
+    for member in members {
+        let ClassLikeMember::EnumCase(enum_case) = member else {
+            continue;
+        };
+
+        let case_metadata = scan_enum_case(name, enum_case, context, scope, &class_like_metadata.constants);
+        if class_like_metadata.constants.contains_key(&case_metadata.name) {
+            continue;
+        }
+
+        class_like_metadata.enum_cases.insert(case_metadata.name, case_metadata);
     }
 
     if class_like_metadata.kind.is_enum()
@@ -1491,15 +1532,7 @@ where
                 let properties =
                     scan_properties(property, &mut class_like_metadata, name, &type_context, context, scope);
 
-                for mut property_metadata in properties {
-                    if let Some(existing_property) = class_like_metadata.properties.get_mut(&property_metadata.name.0) {
-                        property_metadata.read_visibility = existing_property.read_visibility;
-                        property_metadata.write_visibility = existing_property.read_visibility;
-
-                        property_metadata.flags.set(MetadataFlags::VIRTUAL_PROPERTY, false);
-                        property_metadata.flags.set(MetadataFlags::READONLY, existing_property.flags.is_readonly());
-                    }
-
+                for property_metadata in properties {
                     class_like_metadata.add_property_metadata(property_metadata);
                 }
             }

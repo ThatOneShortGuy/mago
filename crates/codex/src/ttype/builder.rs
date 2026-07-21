@@ -8,6 +8,7 @@ use mago_phpdoc_syntax::cst::r#type::*;
 use mago_span::*;
 use mago_word::*;
 
+use crate::misc::VariableIdentifier;
 use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::alias::TAlias;
@@ -23,6 +24,7 @@ use crate::ttype::atomic::derived::TDerived;
 use crate::ttype::atomic::derived::index_access::TIndexAccess;
 use crate::ttype::atomic::derived::int_mask::TIntMask;
 use crate::ttype::atomic::derived::int_mask_of::TIntMaskOf;
+use crate::ttype::atomic::derived::intersection::TDerivedIntersection;
 use crate::ttype::atomic::derived::key_of::TKeyOf;
 use crate::ttype::atomic::derived::new::TNew;
 use crate::ttype::atomic::derived::properties_of::TPropertiesOf;
@@ -150,28 +152,34 @@ pub fn get_union_from_type(
             let right = get_union_from_type(intersection.right, scope, type_context, classname)?;
 
             let left_str = left.get_id();
-            let right_str = right.get_id();
-
             let left_types = left.types.into_owned();
             let right_types = right.types.into_owned();
             let mut intersection_types = vec![];
             for left_type in left_types {
-                if !left_type.can_be_intersected() {
-                    return Err(TypeError::InvalidType(
-                        ttype.to_string(),
-                        format!(
-                            "Type `{}` used in intersection cannot be intersected with another type ( `{}` )",
-                            left_type.get_id(),
-                            right_str,
-                        ),
-                        ttype.span(),
-                    ));
-                }
-
                 for right_type in &right_types {
-                    let mut intersection = left_type.clone();
+                    let (mut intersection, intersected_type) = if left_type.can_be_intersected() {
+                        if !right_type.can_be_intersected()
+                            && let Some(deferred) = create_deferred_intersection(right_type.clone())
+                        {
+                            (deferred, left_type.clone())
+                        } else {
+                            (left_type.clone(), right_type.clone())
+                        }
+                    } else if let Some(deferred) = create_deferred_intersection(left_type.clone()) {
+                        (deferred, right_type.clone())
+                    } else {
+                        return Err(TypeError::InvalidType(
+                            ttype.to_string(),
+                            format!(
+                                "Types `{}` and `{}` cannot be intersected",
+                                left_type.get_id(),
+                                right_type.get_id(),
+                            ),
+                            ttype.span(),
+                        ));
+                    };
 
-                    if !intersection.add_intersection_type(right_type.clone()) {
+                    if !intersection.add_intersection_type(intersected_type) {
                         return Err(TypeError::InvalidType(
                             ttype.to_string(),
                             format!(
@@ -588,6 +596,25 @@ pub fn get_union_from_type(
     })
 }
 
+fn create_deferred_intersection(atomic: TAtomic) -> Option<TAtomic> {
+    if matches!(
+        atomic,
+        TAtomic::Variable(_)
+            | TAtomic::Conditional(_)
+            | TAtomic::Derived(
+                TDerived::IndexAccess(_)
+                    | TDerived::ValueOf(_)
+                    | TDerived::New(_)
+                    | TDerived::TemplateType(_)
+                    | TDerived::Intersection(_)
+            )
+    ) {
+        Some(TAtomic::Derived(TDerived::Intersection(TDerivedIntersection::new(TUnion::from_atomic(atomic)))))
+    } else {
+        None
+    }
+}
+
 #[inline]
 fn get_object_from_type(
     object: &ObjectType<'_>,
@@ -814,12 +841,15 @@ fn get_callable_from_type(
                 get_mixed()
             };
 
-            parameters.push(TCallableParameter::new(
-                Some(Arc::new(parameter_type)),
-                parameter_ast.is_by_reference(),
-                parameter_ast.is_variadic(),
-                parameter_ast.is_optional(),
-            ));
+            parameters.push(
+                TCallableParameter::new(
+                    Some(Arc::new(parameter_type)),
+                    parameter_ast.is_by_reference(),
+                    parameter_ast.is_variadic(),
+                    parameter_ast.is_optional(),
+                )
+                .with_name(parameter_ast.variable.map(|variable| VariableIdentifier(word(variable.value)))),
+            );
         }
 
         if let Some(ret) = specification.return_type.as_ref() {
@@ -1061,7 +1091,16 @@ fn get_class_string_type(
                 match constraint {
                     TAtomic::Object(TObject::Named(_) | TObject::Enum(_) | TObject::HasMethod(_))
                     | TAtomic::Reference(TReference::Symbol { .. })
-                    | TAtomic::Alias(_) => class_strings
+                    | TAtomic::Alias(_)
+                    | TAtomic::Variable(_)
+                    | TAtomic::Conditional(_)
+                    | TAtomic::Derived(
+                        TDerived::IndexAccess(_)
+                        | TDerived::New(_)
+                        | TDerived::TemplateType(_)
+                        | TDerived::ValueOf(_)
+                        | TDerived::Intersection(_),
+                    ) => class_strings
                         .push(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::of_type(kind, constraint)))),
                     TAtomic::GenericParameter(TGenericParameter {
                         parameter_name,

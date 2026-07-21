@@ -9,6 +9,7 @@ use crate::path::SymbolSelector;
 use crate::report::breach::BoundaryBreach;
 use crate::report::breach::BreachReason;
 use crate::report::breach::BreachVector;
+use crate::settings::DependencyRestriction;
 use crate::settings::PermittedDependency;
 use crate::settings::PermittedDependencyKind;
 use crate::settings::Settings;
@@ -47,6 +48,14 @@ fn check_allowed(
     target_fqn: &[u8],
     dependency_kind: PermittedDependencyKind,
 ) -> Option<BreachReason> {
+    if let Some(restriction) =
+        ctx.settings.perimeter.restrictions.iter().find(|restriction| {
+            violates_restriction(restriction, ctx.get_current_namespace(), target_fqn, dependency_kind)
+        })
+    {
+        return Some(BreachReason::ForbiddenByRestriction { dependency: restriction.dependency.clone() });
+    }
+
     let rule = ctx
         .settings
         .perimeter
@@ -72,13 +81,13 @@ fn check_allowed(
         for allowed in &rule.permit {
             match allowed {
                 PermittedDependency::Dependency(path) => {
-                    if is_path_allowed(ctx.codebase, ctx.settings, path, ctx.get_current_namespace(), target_fqn) {
+                    if is_path_allowed(ctx.codebase, ctx.settings, path, &rule.namespace, target_fqn) {
                         return None;
                     }
                 }
                 PermittedDependency::DependencyOfKind { path, kinds } => {
                     if kinds.contains(&dependency_kind)
-                        && is_path_allowed(ctx.codebase, ctx.settings, path, ctx.get_current_namespace(), target_fqn)
+                        && is_path_allowed(ctx.codebase, ctx.settings, path, &rule.namespace, target_fqn)
                     {
                         return None;
                     }
@@ -103,16 +112,52 @@ fn check_allowed(
         }
     }
 
-    if rules.is_empty() {
+    if rules.is_empty() && ctx.settings.perimeter.rules.is_empty() && ctx.settings.perimeter.layering.is_empty() {
+        None
+    } else if rules.is_empty() {
         Some(BreachReason::NoMatchingRule)
     } else {
         Some(BreachReason::ForbiddenByRule { rule_namespaces: rules.iter().map(|r| r.namespace.clone()).collect() })
     }
 }
 
-/// Extracts the root namespace from a fully qualified name.
-fn get_root_namespace(fqn: &[u8]) -> &[u8] {
-    if let Some(pos) = fqn.iter().position(|&b| b == b'\\') { &fqn[..pos] } else { fqn }
+fn matches_source_namespace(namespace: &[u8], pattern: &str) -> bool {
+    if pattern.eq_ignore_ascii_case("@global") {
+        namespace.is_empty()
+    } else {
+        matcher::matches(namespace, pattern.as_bytes(), false, true)
+    }
+}
+
+fn violates_restriction(
+    restriction: &DependencyRestriction,
+    source_namespace: &[u8],
+    target_fqn: &[u8],
+    dependency_kind: PermittedDependencyKind,
+) -> bool {
+    if (!restriction.kinds.is_empty() && !restriction.kinds.contains(&dependency_kind))
+        || !matches_selector(target_fqn, &restriction.dependency)
+    {
+        return false;
+    }
+
+    let explicitly_denied =
+        restriction.deny_from.iter().any(|pattern| matches_source_namespace(source_namespace, pattern));
+    let allowed = restriction.allow_from.is_empty()
+        || restriction.allow_from.iter().any(|pattern| matches_source_namespace(source_namespace, pattern));
+
+    explicitly_denied || !allowed
+}
+
+fn matches_selector(target_fqn: &[u8], selector: &SymbolSelector) -> bool {
+    match selector {
+        SymbolSelector::Namespace(namespace) => match namespace {
+            NamespacePath::Global => !target_fqn.contains(&b'\\'),
+            NamespacePath::Specific(pattern) => matcher::matches(target_fqn, pattern.as_bytes(), false, true),
+        },
+        SymbolSelector::Symbol(symbol) => target_fqn.eq_ignore_ascii_case(symbol.as_bytes()),
+        SymbolSelector::Pattern(pattern) => matcher::matches(target_fqn, pattern.as_bytes(), false, false),
+    }
 }
 
 /// Checks if a fully qualified name is considered native/builtin.
@@ -146,40 +191,21 @@ fn is_path_allowed(
     codebase: &CodebaseMetadata,
     settings: &Settings,
     path: &Path,
-    source_namespace: &[u8],
+    rule_namespace: &NamespacePath,
     target_fqn: &[u8],
 ) -> bool {
     match path {
         Path::All => true,
         Path::Native => is_native(codebase, target_fqn),
-        Path::Self_ => {
-            matcher::matches(target_fqn, source_namespace, false, false)
-                || get_root_namespace(source_namespace).eq_ignore_ascii_case(get_root_namespace(target_fqn))
-        }
+        Path::Self_ => match rule_namespace {
+            NamespacePath::Global => !target_fqn.contains(&b'\\'),
+            NamespacePath::Specific(namespace) => matcher::matches(target_fqn, namespace.as_bytes(), false, true),
+        },
         Path::Layer(layer_name) => settings.perimeter.layers.get(layer_name).is_some_and(|layer_patterns| {
             layer_patterns
                 .iter()
-                .any(|pattern| is_path_allowed(codebase, settings, pattern, source_namespace, target_fqn))
+                .any(|pattern| is_path_allowed(codebase, settings, pattern, rule_namespace, target_fqn))
         }),
-        Path::Selector(selector) => match selector {
-            SymbolSelector::Namespace(ns) => match ns {
-                NamespacePath::Global => !target_fqn.contains(&b'\\'),
-                NamespacePath::Specific(pattern) => matcher::matches(target_fqn, pattern.as_bytes(), false, true),
-            },
-            SymbolSelector::Symbol(sn) => target_fqn.eq_ignore_ascii_case(sn.as_bytes()),
-            SymbolSelector::Pattern(p) => matcher::matches(target_fqn, p.as_bytes(), false, false),
-        },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_root_namespace() {
-        assert_eq!(get_root_namespace(b"Foo\\Bar\\Baz"), b"Foo");
-        assert_eq!(get_root_namespace(b"Foo\\Bar"), b"Foo");
-        assert_eq!(get_root_namespace(b"Foo"), b"Foo");
+        Path::Selector(selector) => matches_selector(target_fqn, selector),
     }
 }

@@ -60,12 +60,14 @@ pub fn is_contained_by(
                 let container_indexed = TIndexAccess::get_indexed_access_result(
                     &index_access_container.get_target_type().types,
                     &index_access_container.get_index_type().types,
+                    codebase,
                     false,
                 );
 
                 let input_indexed = TIndexAccess::get_indexed_access_result(
                     &index_access_input.get_target_type().types,
                     &index_access_input.get_index_type().types,
+                    codebase,
                     false,
                 );
 
@@ -122,11 +124,12 @@ pub fn is_contained_by(
         TDerived::IndexAccess(index_access) => TIndexAccess::get_indexed_access_result(
             &index_access.get_target_type().types,
             &index_access.get_index_type().types,
+            codebase,
             false,
         ),
         TDerived::New(new_type) => TNew::get_new_targets(&new_type.get_target_type().types, codebase),
         TDerived::TemplateType(template_type) => template_type.resolve(codebase),
-        TDerived::PropertiesOf(_) | TDerived::IntMask(_) | TDerived::IntMaskOf(_) => {
+        TDerived::PropertiesOf(_) | TDerived::IntMask(_) | TDerived::IntMaskOf(_) | TDerived::Intersection(_) => {
             return false;
         }
     };

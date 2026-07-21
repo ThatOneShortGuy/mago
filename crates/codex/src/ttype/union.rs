@@ -6,6 +6,7 @@ use std::sync::Arc;
 use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::empty_word;
+use mago_word::join_words;
 use mago_word::word;
 
 use crate::metadata::CodebaseMetadata;
@@ -1180,6 +1181,38 @@ impl TUnion {
         if self.is_single() { self.get_single().get_minimum_int_value() } else { None }
     }
 
+    /// Returns the maximum possible integer value across all types in this union.
+    ///
+    /// Returns `None` when the union is empty, contains a non-integer type, or contains
+    /// an integer type without a known upper bound.
+    #[must_use]
+    pub fn get_maximum_int_value(&self) -> Option<i64> {
+        let mut types = self.types.iter();
+        let mut maximum = types.next()?.get_maximum_int_value()?;
+
+        for atomic in types {
+            maximum = maximum.max(atomic.get_maximum_int_value()?);
+        }
+
+        Some(maximum)
+    }
+
+    /// Returns the minimum possible integer value across all types in this union.
+    ///
+    /// Returns `None` when the union is empty, contains a non-integer type, or contains
+    /// an integer type without a known lower bound.
+    #[must_use]
+    pub fn get_minimum_int_value(&self) -> Option<i64> {
+        let mut types = self.types.iter();
+        let mut minimum = types.next()?.get_minimum_int_value()?;
+
+        for atomic in types {
+            minimum = minimum.min(atomic.get_minimum_int_value()?);
+        }
+
+        Some(minimum)
+    }
+
     #[must_use]
     pub fn get_single_literal_float_value(&self) -> Option<f64> {
         if self.is_single() { self.get_single().get_literal_float_value() } else { None }
@@ -1356,12 +1389,7 @@ impl TType for TUnion {
         }
 
         atomic_ids.sort_unstable();
-        let mut result = atomic_ids[0];
-        for id in &atomic_ids[1..] {
-            result = concat_word!(result.as_bytes(), b"|", id.as_bytes());
-        }
-
-        result
+        join_words(&atomic_ids, b"|")
     }
 
     fn get_pretty_id_with_indent(&self, indent: usize) -> Word {

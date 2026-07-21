@@ -107,6 +107,13 @@ pub struct BlockContext<'ctx> {
     /// Uses union semantics - a property initialized in ANY branch is included.
     pub possibly_initialized_properties: WordSet,
 
+    /// Property expression IDs proven uninitialized by the active control-flow path.
+    ///
+    /// This is populated by negated `isset()` assertions and consumed by readonly
+    /// initialization checks. The declared property type is still consulted so that
+    /// nullable properties are not treated as definitely uninitialized.
+    pub definitely_uninitialized_property_ids: WordSet,
+
     /// Methods called on $this that are DEFINITELY called in ALL code paths.
     /// Uses intersection semantics for tracking transitive initialization.
     pub definitely_called_methods: HashSet<Word>,
@@ -200,6 +207,7 @@ impl<'ctx> BlockContext<'ctx> {
             possibly_thrown_exceptions: WordMap::default(),
             definitely_initialized_properties: WordSet::default(),
             possibly_initialized_properties: WordSet::default(),
+            definitely_uninitialized_property_ids: WordSet::default(),
             definitely_called_methods: HashSet::default(),
             called_methods: HashSet::default(),
             calls_parent_initializer: None,
@@ -245,21 +253,18 @@ impl<'ctx> BlockContext<'ctx> {
     ) -> WordMap<Rc<TUnion>> {
         let mut redefined_vars = WordMap::default();
 
-        let mut var_ids = self.locals.keys().collect::<Vec<_>>();
-        var_ids.extend(new_locals.keys());
-
-        for var_id in var_ids {
-            if let Some(this_type) = self.locals.get(var_id) {
-                if let Some(new_type) = new_locals.get(var_id) {
-                    if new_type != this_type {
-                        redefined_vars.insert(*var_id, Rc::clone(this_type));
-                    }
-                } else if include_new_vars {
+        for (var_id, this_type) in &self.locals {
+            if let Some(new_type) = new_locals.get(var_id) {
+                if new_type != this_type {
                     redefined_vars.insert(*var_id, Rc::clone(this_type));
-                } else {
-                    // variable is missing from new_locals and we aren't tracking newly-introduced ones
                 }
-            } else {
+            } else if include_new_vars {
+                redefined_vars.insert(*var_id, Rc::clone(this_type));
+            }
+        }
+
+        for var_id in new_locals.keys() {
+            if !self.locals.contains_key(var_id) {
                 removed_vars.insert(*var_id);
             }
         }

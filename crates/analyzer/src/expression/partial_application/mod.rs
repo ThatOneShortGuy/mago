@@ -1,16 +1,19 @@
 use mago_allocator::Arena;
 use std::sync::Arc;
 
-use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::misc::VariableIdentifier;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::atomic::callable::TCallableConstraint;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::atomic::callable::parameter::TCallableParameter;
 use mago_codex::ttype::template::TemplateResult;
-use mago_codex::ttype::template::inferred_type_replacer;
+use mago_codex::ttype::union::TUnion;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
+use mago_word::WordMap;
 use mago_word::concat_word;
 use mago_word::word;
 
@@ -19,7 +22,9 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::invocation::Invocation;
 use crate::invocation::InvocationTargetParameter;
+use crate::invocation::resolve_invocation_type;
 
 pub mod function_partial_application;
 pub mod method_partial_application;
@@ -86,13 +91,18 @@ fn find_parameter_index_by_name(
 ///
 /// A `TAtomic::Callable` containing the new closure signature with only placeholder parameters
 /// and all template types replaced with their inferred concrete types
-fn create_closure_from_partial_application(
+fn create_closure_from_partial_application<'ctx, 'arena, A>(
+    context: &Context<'ctx, 'arena, A>,
+    invocation: &Invocation<'ctx, '_, 'arena>,
     callable_signature: &TCallableSignature,
     argument_list: &PartialArgumentList<'_>,
     original_parameters: &[InvocationTargetParameter<'_>],
     template_result: &TemplateResult,
-    codebase: &CodebaseMetadata,
-) -> TAtomic {
+    parameter_types: &WordMap<TUnion>,
+) -> TAtomic
+where
+    A: Arena,
+{
     let parameters = callable_signature.get_parameters();
     let arguments = &argument_list.arguments;
 
@@ -105,16 +115,15 @@ fn create_closure_from_partial_application(
                 if let Some(param) = parameters.get(parameter_offset) {
                     let mut new_param = param.clone();
 
-                    if let Some(type_sig) = new_param.get_type_signature()
-                        && (template_result.has_template_types() || !template_result.lower_bounds.is_empty())
-                    {
-                        let substituted_type = inferred_type_replacer::replace(type_sig, template_result, codebase);
-                        new_param = TCallableParameter::new(
-                            Some(Arc::new(substituted_type)),
-                            new_param.is_by_reference(),
-                            new_param.is_variadic(),
-                            new_param.has_default(),
+                    if let Some(type_signature) = new_param.get_type_signature() {
+                        let resolved_type = resolve_invocation_type(
+                            context,
+                            invocation,
+                            template_result,
+                            parameter_types,
+                            type_signature.clone(),
                         );
+                        new_param = new_param.with_type_signature(Some(Arc::new(resolved_type)));
                     }
 
                     new_parameters.push(new_param);
@@ -130,16 +139,15 @@ fn create_closure_from_partial_application(
                 {
                     let mut new_param = param.clone();
 
-                    if let Some(type_sig) = new_param.get_type_signature()
-                        && (template_result.has_template_types() || !template_result.lower_bounds.is_empty())
-                    {
-                        let substituted_type = inferred_type_replacer::replace(type_sig, template_result, codebase);
-                        new_param = TCallableParameter::new(
-                            Some(Arc::new(substituted_type)),
-                            new_param.is_by_reference(),
-                            new_param.is_variadic(),
-                            new_param.has_default(),
+                    if let Some(type_signature) = new_param.get_type_signature() {
+                        let resolved_type = resolve_invocation_type(
+                            context,
+                            invocation,
+                            template_result,
+                            parameter_types,
+                            type_signature.clone(),
                         );
+                        new_param = new_param.with_type_signature(Some(Arc::new(resolved_type)));
                     }
 
                     new_parameters.push(new_param);
@@ -158,18 +166,18 @@ fn create_closure_from_partial_application(
                             true,
                             false,
                         )
+                        .with_name(last_param.get_name().copied())
                     };
 
-                    if let Some(type_sig) = new_param.get_type_signature()
-                        && (template_result.has_template_types() || !template_result.lower_bounds.is_empty())
-                    {
-                        let substituted_type = inferred_type_replacer::replace(type_sig, template_result, codebase);
-                        new_param = TCallableParameter::new(
-                            Some(Arc::new(substituted_type)),
-                            new_param.is_by_reference(),
-                            new_param.is_variadic(),
-                            new_param.has_default(),
+                    if let Some(type_signature) = new_param.get_type_signature() {
+                        let resolved_type = resolve_invocation_type(
+                            context,
+                            invocation,
+                            template_result,
+                            parameter_types,
+                            type_signature.clone(),
                         );
+                        new_param = new_param.with_type_signature(Some(Arc::new(resolved_type)));
                     }
 
                     new_parameters.push(new_param);
@@ -183,19 +191,61 @@ fn create_closure_from_partial_application(
         }
     }
 
-    let return_type = if let Some(ret_type) = &callable_signature.return_type {
-        if template_result.has_template_types() || !template_result.lower_bounds.is_empty() {
-            Some(Arc::new(inferred_type_replacer::replace(ret_type, template_result, codebase)))
-        } else {
-            Some(Arc::clone(ret_type))
+    let return_type = callable_signature.return_type.as_ref().map(|return_type| {
+        Arc::new(resolve_invocation_type(
+            context,
+            invocation,
+            template_result,
+            parameter_types,
+            (**return_type).clone(),
+        ))
+    });
+
+    let placeholder_names: Vec<_> =
+        new_parameters.iter().filter_map(|parameter| parameter.get_name().map(|name| name.0)).collect();
+    let mut constraints = Vec::new();
+
+    for (index, original_parameter) in original_parameters.iter().enumerate() {
+        let Some(parameter_name) = original_parameter.get_name() else {
+            continue;
+        };
+        if placeholder_names.contains(&parameter_name.0) {
+            continue;
         }
-    } else {
-        None
-    };
+
+        let Some(input_type) = parameter_types.get(&parameter_name.0) else {
+            continue;
+        };
+        let Some(parameter_type) = parameters.get(index).and_then(TCallableParameter::get_type_signature) else {
+            continue;
+        };
+
+        let parameter_type =
+            resolve_invocation_type(context, invocation, template_result, parameter_types, parameter_type.clone());
+        let mut dependent_names: Vec<VariableIdentifier> = Vec::new();
+        for node in parameter_type.get_all_child_nodes() {
+            let mago_codex::ttype::TypeRef::Atomic(TAtomic::Variable(variable)) = node else {
+                continue;
+            };
+            let variable = VariableIdentifier(*variable);
+            if placeholder_names.contains(&variable.0) && !dependent_names.contains(&variable) {
+                dependent_names.push(variable);
+            }
+        }
+
+        if !dependent_names.is_empty() {
+            constraints.push(TCallableConstraint::new(
+                dependent_names,
+                Arc::new(input_type.clone()),
+                Arc::new(parameter_type),
+            ));
+        }
+    }
 
     let new_signature = TCallableSignature::new(callable_signature.is_pure(), true)
         .with_parameters(new_parameters)
-        .with_return_type(return_type);
+        .with_return_type(return_type)
+        .with_constraints(constraints);
 
     TAtomic::Callable(TCallable::Signature(new_signature))
 }

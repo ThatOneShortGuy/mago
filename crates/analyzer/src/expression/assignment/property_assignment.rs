@@ -9,6 +9,7 @@ use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -24,6 +25,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::assignment::PropertyWriteKind;
 use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_property_access_expression_id;
 use crate::utils::get_type_diff;
@@ -36,6 +38,7 @@ pub fn analyze<'ctx, 'arena, A>(
     property_access: &PropertyAccess<'arena>,
     assigned_value_type: &TUnion,
     assigned_value_span: Option<Span>,
+    write_kind: PropertyWriteKind,
 ) -> Result<(), AnalysisError>
 where
     A: Arena,
@@ -64,9 +67,31 @@ where
     block_context.flags.set_inside_assignment(was_inside_assignment);
 
     let mut resolved_property_type = None;
+    let mut readable_type: Option<TUnion> = None;
+    let mut has_read_clamp = false;
     let mut matched_all_properties = true;
     let mut widened_assigned_type: Option<TUnion> = None;
     for resolved_property in resolution_result.properties {
+        has_read_clamp |= resolved_property.read_type.is_some();
+
+        // A magic-governed write goes through `__set()`, never through the real property of the
+        // same name that may exist on the declaring class (e.g. a `readonly` backing property).
+        if !resolved_property.is_magic
+            && let Some(declaring_class_id) = resolved_property.declaring_class_id
+        {
+            crate::readonly::check_property_write(
+                context,
+                block_context,
+                artifacts,
+                declaring_class_id,
+                resolved_property.property_name,
+                property_access_id,
+                property_access.span(),
+                property_access.property.span(),
+                write_kind,
+            );
+        }
+
         let mut union_comparison_result = ComparisonResult::new();
 
         let type_match_found = union_comparator::is_contained_by(
@@ -176,6 +201,14 @@ where
             }
         }
 
+        // The type a read yields for this property: the distinct read type when writes and reads
+        // diverge — a magic property (writes go through `__set`, reads through `__get`) or a hook
+        // property with a wider `set` parameter (writes go through `set`, reads through `get`) —
+        // else the property type itself (writes round-trip).
+        let property_readable_type =
+            resolved_property.read_type.clone().unwrap_or_else(|| resolved_property.property_type.clone());
+        readable_type = Some(add_optional_union_type(property_readable_type, readable_type.as_ref(), context.codebase));
+
         resolved_property_type = Some(add_optional_union_type(
             resolved_property.property_type,
             resolved_property_type.as_ref(),
@@ -207,12 +240,34 @@ where
     if context.settings.memoize_properties
         && let Some(property_access_id) = property_access_id
     {
-        block_context.locals.insert(property_access_id, Rc::clone(&resulting_type));
+        // Memoize the written value so later reads of the same access see it — but only to the
+        // extent it survives a read. When writes and reads diverge — a magic property (read goes
+        // through `__get`, yielding the `@property-read` type) or a hook property with a wider `set`
+        // parameter (read goes through `get`, yielding the property type) — only the part of the
+        // written value that overlaps the read type is observable: intersect with it, and fall back
+        // to the full read type when the write converts (a value that shares nothing with the read
+        // type, e.g. a string coerced to int). Real and dynamic (`stdClass`) properties round-trip
+        // and have no distinct read type, so their written value is memoized as-is.
+        let memoized_type = if has_read_clamp && let Some(readable) = &readable_type {
+            let observable = intersect_union_types(readable, &resulting_type, context.codebase)
+                .filter(|intersection| !intersection.is_never());
+
+            Rc::new(observable.unwrap_or_else(|| readable.clone()))
+        } else {
+            Rc::clone(&resulting_type)
+        };
+
+        block_context.locals.insert(property_access_id, memoized_type);
     }
 
     artifacts.set_rc_expression_type(property_access, resulting_type);
 
-    if block_context.flags.collect_initializations()
+    if let Some(property_access_id) = property_access_id {
+        block_context.definitely_uninitialized_property_ids.remove(&property_access_id);
+    }
+
+    if write_kind != PropertyWriteKind::Mutation
+        && block_context.flags.collect_initializations()
         && let Expression::Variable(Variable::Direct(var)) = property_access.object
         && var.name == b"$this"
         && let ClassLikeMemberSelector::Identifier(ident) = &property_access.property

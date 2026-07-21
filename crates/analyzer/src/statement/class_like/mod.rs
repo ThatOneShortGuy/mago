@@ -115,6 +115,7 @@ fn is_type_compatible(codebase: &CodebaseMetadata, child: &TUnion, parent: &TUni
 /// - When the parent has only a `get` hook, covariance (declaring narrower than parent) is allowed.
 /// - When the parent has only a `set` hook, contravariance (declaring wider than parent) is allowed.
 /// - Otherwise, invariance is required.
+/// - Types incomparable with the parent's are invalid under any variance.
 ///
 /// Returns `true` when the declaring type is incompatible with the parent under these rules.
 #[inline]
@@ -130,8 +131,9 @@ fn is_property_type_variance_invalid(
 
     let declaring_is_narrower = declaring_is_subtype_of_parent && !parent_is_subtype_of_declaring;
     let declaring_is_wider = parent_is_subtype_of_declaring && !declaring_is_subtype_of_parent;
+    let incomparable = !declaring_is_subtype_of_parent && !parent_is_subtype_of_declaring;
 
-    (declaring_is_wider && !parent_only_set) || (declaring_is_narrower && !parent_only_get)
+    incomparable || (declaring_is_wider && !parent_only_set) || (declaring_is_narrower && !parent_only_get)
 }
 
 /// Represents different types of property conflicts between traits
@@ -1143,6 +1145,7 @@ where
     // so we can compare their inferred values
     check_class_like_constants(context, class_like_metadata, members);
 
+    crate::readonly::finalize_class_writes(context, artifacts, class_like_metadata);
     initialization::check_property_initialization(context, artifacts, class_like_metadata, declaration_span, name_span);
 
     Ok(())
@@ -2379,12 +2382,6 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
 
     let mut class_properties: IndexMap<Word, &PropertyMetadata> = IndexMap::new();
     for (property_name, property_metadata) in class_like_metadata.properties.iter().sorted_by_key(|(k, _)| *k) {
-        // Magic properties (from `@property` docblock tags) are not real declarations and
-        // never participate in PHP's trait composition, so they cannot conflict with a trait property.
-        if property_metadata.flags.is_magic_property() {
-            continue;
-        }
-
         if let Some(declaring_class) = class_like_metadata.declaring_property_ids.get(property_name)
             && declaring_class == &class_like_metadata.name
         {
@@ -3005,6 +3002,25 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 )
                 .with_note("Return types must be covariant: child must return equal or narrower types than parent.")
                 .with_help("Change the return type to be compatible with the parent method."),
+            );
+        }
+        SignatureCompatibilityIssue::MissingReturnTypeDeclaration { parent_type } => {
+            context.collector.report_with_code(
+                IssueCode::IncompatibleReturnType,
+                Issue::error(format!(
+                    "`{child_name}::{method_name}()` must declare a return type compatible with `{parent_type}` declared by `{parent_name}::{method_name}()`"
+                ))
+                .with_annotation(Annotation::primary(primary_span).with_message(format!(
+                    "This method has no return type declaration, but the parent declares `{parent_type}`"
+                )))
+                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
+                    "Parent method `{parent_name}::{method_name}()` return type declared here"
+                )))
+                .with_annotation(
+                    Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
+                )
+                .with_note("PHP requires an overriding method to declare a return type when the overridden method declares one.")
+                .with_help(format!("Add a return type declaration compatible with `{parent_type}`.")),
             );
         }
         SignatureCompatibilityIssue::ParameterNameMismatch {

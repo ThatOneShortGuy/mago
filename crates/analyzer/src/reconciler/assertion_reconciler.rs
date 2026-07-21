@@ -32,6 +32,7 @@ use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_mixed_maybe_from_loop;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::get_undefined_null;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
@@ -62,12 +63,11 @@ where
     let is_negation = assertion.is_negation();
 
     let Some(existing_var_type) = existing_var_type else {
-        return get_missing_type(assertion, inside_loop);
+        return get_missing_type(assertion, key, inside_loop);
     };
 
-    let old_var_type_atom = existing_var_type.get_id();
-
     if is_negation {
+        let old_var_type_atom = existing_var_type.get_id();
         return negated_assertion_reconciler::reconcile(
             context,
             assertion,
@@ -82,6 +82,7 @@ where
     if assertion.has_literal_value()
         && let Some(assertion_type) = assertion.get_type()
     {
+        let old_var_type_atom = existing_var_type.get_id();
         return handle_literal_equality(
             context,
             assertion,
@@ -114,10 +115,18 @@ where
         if can_report_issues && let (Some(key), Some(span)) = (key, span) {
             if existing_var_type.types == refined_type.types {
                 if !assertion.has_equality() && !assertion_type.is_mixed() {
-                    trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, true, negated, span);
+                    trigger_issue_for_impossible(
+                        context,
+                        existing_var_type.get_id(),
+                        key,
+                        assertion,
+                        true,
+                        negated,
+                        span,
+                    );
                 }
             } else if refined_type.is_never() {
-                trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, false, negated, span);
+                trigger_issue_for_impossible(context, existing_var_type.get_id(), key, assertion, false, negated, span);
             } else {
                 // refinement narrowed the type without making it never; no impossibility to report
             }
@@ -793,9 +802,20 @@ where
     Some(sub_atomic.clone())
 }
 
-fn get_missing_type(assertion: &Assertion, inside_loop: bool) -> TUnion {
+fn get_missing_type(assertion: &Assertion, key: Option<&[u8]>, inside_loop: bool) -> TUnion {
     if matches!(assertion, Assertion::IsIsset | Assertion::IsEqualIsset) {
         return get_mixed_maybe_from_loop(inside_loop);
+    }
+
+    if matches!(assertion, Assertion::IsNotIsset | Assertion::ArrayKeyDoesNotExist) {
+        if key.is_some_and(|key| key.contains(&b'[') || memchr::memmem::find(key, b"->").is_some()) {
+            let mut mixed = get_mixed();
+            mixed.set_possibly_undefined(true, None);
+
+            return mixed;
+        }
+
+        return get_undefined_null();
     }
 
     if let Assertion::IsIdentical(atomic) | Assertion::IsType(atomic) = assertion {
@@ -901,7 +921,7 @@ where
     let is_loose_equality = matches!(assertion, Assertion::IsEqual(_));
 
     if existing_var_type.has_scalar()
-        || existing_var_type.has_numeric()
+        || existing_var_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Scalar(TScalar::Numeric)))
         || existing_var_type.has_array_key()
         || existing_var_type.has_mixed()
     {
@@ -925,8 +945,11 @@ where
 
                 acceptable_types.push(literal_asserted_type.clone());
             }
-            TAtomic::Scalar(TScalar::Integer(_)) => {
+            TAtomic::Scalar(TScalar::Integer(integer)) if integer.contains(TInteger::Literal(assertion_integer)) => {
                 acceptable_types.push(literal_asserted_type.clone());
+            }
+            TAtomic::Scalar(TScalar::Integer(_)) => {
+                did_remove_type = true;
             }
             TAtomic::Scalar(TScalar::Float(TFloat::Literal(float_value)))
                 if is_loose_equality && (*float_value == assertion_integer as f64) =>
