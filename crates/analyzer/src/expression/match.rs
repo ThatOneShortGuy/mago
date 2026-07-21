@@ -8,6 +8,9 @@ use mago_algebra::clause::Clause;
 use mago_algebra::saturate_clauses;
 use mago_allocator::Arena;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::atomic::object::r#enum::TEnum;
 use mago_codex::ttype::combine_optional_union_types;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_mixed;
@@ -17,6 +20,8 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_text_edit::Safety;
+use mago_text_edit::TextEdit;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Match;
 use mago_syntax::cst::MatchArm;
@@ -585,28 +590,115 @@ where
     }
 
     fn report_non_exhaustive(&mut self, subject_type: &TUnion, unhandled_type: &TUnion) {
-        self.context.collector.report_with_code(
-            IssueCode::MatchNotExhaustive,
-            Issue::error(format!(
-                "Non-exhaustive `match` expression: subject of type `{}` is not fully handled.",
-                subject_type.get_id()
-            ))
-            .with_annotation(Annotation::primary(self.stmt.expression.span()).with_message(format!(
-                "Unhandled portion of subject: `{}`",
-                unhandled_type.get_id()
-            )))
-            .with_annotation(
-                Annotation::secondary(self.stmt.span()).with_message(
-                    "The `match` arms here do not cover all possible types and lack a `default` arm.",
-                ),
-            )
-            .with_note(
-                "If the subject expression evaluates to one of the unhandled types at runtime, PHP will throw an `UnhandledMatchError`.",
-            )
-            .with_help(format!(
-                "Add conditional arms to cover type(s) `{}` or include a `default` arm to handle all other possibilities.",
-                unhandled_type.get_id()
-            )),
-        );
+        let mut issue = Issue::error(format!(
+            "Non-exhaustive `match` expression: subject of type `{}` is not fully handled.",
+            subject_type.get_id()
+        ))
+        .with_annotation(Annotation::primary(self.stmt.expression.span()).with_message(format!(
+            "Unhandled portion of subject: `{}`",
+            unhandled_type.get_id()
+        )))
+        .with_annotation(
+            Annotation::secondary(self.stmt.span())
+                .with_message("The `match` arms here do not cover all possible types and lack a `default` arm."),
+        )
+        .with_note(
+            "If the subject expression evaluates to one of the unhandled types at runtime, PHP will throw an `UnhandledMatchError`.",
+        )
+        .with_help(format!(
+            "Add conditional arms to cover type(s) `{}` or include a `default` arm to handle all other possibilities.",
+            unhandled_type.get_id()
+        ));
+
+        // When the unhandled portion is a set of concrete enum cases, offer a
+        // quickfix that scaffolds the missing arms so the match becomes
+        // exhaustive. The stubbed body preserves the current runtime behavior
+        // (an `UnhandledMatchError`) while surfacing each case for the author
+        // to fill in.
+        if let Some(edit) = self.build_fill_arms_edit(unhandled_type) {
+            issue = issue.with_edit(self.stmt.right_brace.file_id, edit);
+        }
+
+        self.context.collector.report_with_code(IssueCode::MatchNotExhaustive, issue);
     }
+
+    /// Build a quickfix edit that inserts one arm per unhandled enum case just
+    /// before the match's closing brace.
+    ///
+    /// Returns `None` unless every unhandled atomic is a concrete enum case
+    /// (so the missing arms can be enumerated) and the closing brace sits on
+    /// its own line (so whole arm lines can be inserted without mangling a
+    /// single-line match).
+    fn build_fill_arms_edit(&self, unhandled_type: &TUnion) -> Option<TextEdit> {
+        let mut missing_cases: Vec<(Word, Word)> = Vec::new();
+        for atomic in unhandled_type.types.iter() {
+            match atomic {
+                TAtomic::Object(TObject::Enum(TEnum { name, case: Some(case) })) => {
+                    missing_cases.push((*name, *case));
+                }
+                _ => return None,
+            }
+        }
+
+        if missing_cases.is_empty() {
+            return None;
+        }
+
+        let file = self.context.source_file;
+
+        // The closing brace must start its own line for line-wise insertion.
+        let brace_offset = self.stmt.right_brace.start.offset;
+        let brace_line = file.line_number(brace_offset);
+        let brace_line_start = file.get_line_start_offset(brace_line)?;
+        let before_brace = &file.contents[brace_line_start as usize..brace_offset as usize];
+        if !before_brace.iter().all(|b| matches!(b, b' ' | b'\t')) {
+            return None;
+        }
+
+        // Mirror the indentation of the first existing arm; otherwise indent
+        // one level (four spaces) past the closing brace.
+        let arm_indent = match self.stmt.arms.first() {
+            Some(first_arm) => {
+                let arm_offset = first_arm.span().start.offset;
+                let arm_line = file.line_number(arm_offset);
+                let arm_line_start = file.get_line_start_offset(arm_line).unwrap_or(arm_offset);
+                leading_whitespace(&file.contents[arm_line_start as usize..arm_offset as usize])
+            }
+            None => {
+                let mut indent = leading_whitespace(before_brace);
+                indent.push_str("    ");
+                indent
+            }
+        };
+
+        let current_class = self.block_context.scope.get_class_like_name();
+
+        let mut new_text = String::new();
+        for (enum_name, case) in &missing_cases {
+            // Class names are case-insensitive; the scope stores a case-folded
+            // name while the enum type keeps its original casing.
+            let is_current_class =
+                current_class.is_some_and(|class| class.as_bytes().eq_ignore_ascii_case(enum_name.as_bytes()));
+
+            let prefix = if is_current_class {
+                "self".to_string()
+            } else {
+                let bytes = enum_name.as_bytes();
+                let short = bytes.rsplit(|b| *b == b'\\').next().unwrap_or(bytes);
+                String::from_utf8_lossy(short).into_owned()
+            };
+
+            new_text.push_str(&arm_indent);
+            new_text.push_str(&prefix);
+            new_text.push_str("::");
+            new_text.push_str(&case.as_str_lossy());
+            new_text.push_str(" => throw new \\UnhandledMatchError(),\n");
+        }
+
+        Some(TextEdit::insert(brace_line_start, new_text.into_bytes()).with_safety(Safety::PotentiallyUnsafe))
+    }
+}
+
+fn leading_whitespace(bytes: &[u8]) -> String {
+    bytes.iter().take_while(|b| matches!(b, b' ' | b'\t')).map(|b| *b as char).collect()
 }

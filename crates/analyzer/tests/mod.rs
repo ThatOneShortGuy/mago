@@ -2613,6 +2613,64 @@ test_case!(issue_2087);
 test_case!(issue_2096);
 test_case!(issue_2111);
 
+/// A non-exhaustive `match` over an enum subject must not only be diagnosed but
+/// also carry a quickfix edit that scaffolds the missing case arms. This guards
+/// against the fix silently disappearing (e.g. through a bad merge).
+#[test]
+fn match_not_exhaustive_enum_offers_fill_fix() {
+    const SOURCE: &[u8] = br#"<?php
+
+enum Suit: string
+{
+    case Hearts = 'H';
+    case Diamonds = 'D';
+    case Clubs = 'C';
+    case Spades = 'S';
+
+    public function color(): string
+    {
+        return match ($this) {
+            self::Hearts => 'Red',
+            self::Diamonds => 'Red',
+            self::Clubs => 'Black',
+        };
+    }
+}
+"#;
+
+    let issues = crate::framework::collect_issues("match_fill_fix", SOURCE, None);
+
+    let issue = issues
+        .iter()
+        .find(|issue| issue.code.as_deref() == Some("match-not-exhaustive"))
+        .expect("expected a `match-not-exhaustive` issue");
+
+    assert!(!issue.edits.is_empty(), "the `match-not-exhaustive` issue must carry a fix edit");
+
+    let mut editor = mago_text_edit::TextEditor::new(SOURCE);
+    for edits in issue.edits.values() {
+        for edit in edits {
+            let result = editor.apply::<fn(&[u8]) -> bool>(edit.clone(), None);
+            assert_eq!(result, mago_text_edit::ApplyResult::Applied, "fix edit should apply cleanly");
+        }
+    }
+
+    let fixed = String::from_utf8(editor.finish()).expect("fixed source should be valid UTF-8");
+
+    assert!(
+        fixed.contains("self::Spades => throw new \\UnhandledMatchError(),"),
+        "the fix should scaffold the missing `self::Spades` arm; got:\n{fixed}"
+    );
+
+    // The scaffolded arm makes the match exhaustive, so re-analyzing the fixed
+    // source must no longer report the issue.
+    let post_fix_issues = crate::framework::collect_issues("match_fill_fix_applied", fixed.as_bytes(), None);
+    assert!(
+        !post_fix_issues.iter().any(|issue| issue.code.as_deref() == Some("match-not-exhaustive")),
+        "applying the fix should make the match exhaustive"
+    );
+}
+
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_all_test_cases_are_ran() {

@@ -97,6 +97,26 @@ pub fn check_missing_type_hints_settings() -> Settings {
 }
 
 fn run_test_case_inner(config: TestCase) {
+    let (analysis_result, metadata) = analyze_case(&config);
+    verify_reported_issues(config.name, analysis_result, metadata);
+}
+
+/// Run the full analysis pipeline for a case and return the collected issues.
+///
+/// Unlike [`TestCase::run`], this does not assert on issue counts; it hands the
+/// raw issues back so tests can inspect richer details such as attached fix
+/// edits.
+#[must_use]
+pub fn collect_issues(name: &str, content: &[u8], settings: Option<Settings>) -> Vec<mago_reporting::Issue> {
+    let config = TestCase { name, content, settings };
+    let (mut analysis_result, mut metadata) = analyze_case(&config);
+
+    let mut issues = std::mem::take(&mut analysis_result.issues).into_iter().collect::<Vec<_>>();
+    issues.extend(metadata.take_issues(true));
+    issues
+}
+
+fn analyze_case(config: &TestCase) -> (AnalysisResult, CodebaseMetadata) {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
 
     let file = File::ephemeral(Cow::Owned(config.name.as_bytes().to_vec()), Cow::Owned(config.content.to_vec()));
@@ -110,7 +130,7 @@ fn run_test_case_inner(config: TestCase) {
     let resolver = NameResolver::new(&arena);
     let resolved_names = resolver.resolve(program);
 
-    let settings = config.settings.unwrap_or_else(default_test_settings);
+    let settings = config.settings.clone().unwrap_or_else(default_test_settings);
 
     metadata.extend(scan_program(&arena, source_file, program, &resolved_names, settings.version));
 
@@ -125,7 +145,7 @@ fn run_test_case_inner(config: TestCase) {
         panic!("Test '{}': Expected analysis to succeed, but it failed with an error: {}", config.name, err);
     }
 
-    verify_reported_issues(config.name, analysis_result, metadata);
+    (analysis_result, metadata)
 }
 
 fn verify_reported_issues(test_name: &str, mut analysis_result: AnalysisResult, mut codebase: CodebaseMetadata) {
