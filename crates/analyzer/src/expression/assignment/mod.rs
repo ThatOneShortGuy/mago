@@ -664,6 +664,11 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
 
     block_context.locals.retain(|var_id, _| !var_references_dynamic(*var_id, variable_id));
 
+    // Record the resolved type against the assignment-target variable's own span
+    // so consumers of `expression_types` (e.g. the language server's hover) can
+    // report the variable's type at the assignment site, mirroring read sites.
+    artifacts.set_rc_expression_type(&variable_span, Rc::clone(&assigned_type));
+
     block_context.locals.insert(variable_id, assigned_type);
     block_context.variables_possibly_in_scope.insert(variable_id);
 }

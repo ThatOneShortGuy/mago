@@ -60,6 +60,19 @@ async fn hover_variable_shows_type() {
 }
 
 #[tokio::test]
+async fn hover_assigned_local_shows_inferred_type() {
+    // Hovering the assignment target of an inferred local (not a declared
+    // param) should still surface the variable's type.
+    let code = "<?php\nnamespace App\\Models;\nclass Warehouse {\n    public static function nearest(): Warehouse { return new Warehouse(); }\n}\n$nearestWarehouse = Warehouse::nearest();\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h.at("textDocument/hover", "a.php", 5, 2).await;
+    let value = result["contents"]["value"].as_str().unwrap_or("");
+    assert!(value.contains("Warehouse") && value.contains("$nearestWarehouse"), "got {value:?}");
+}
+
+#[tokio::test]
 async fn goto_definition() {
     let code = "<?php\nclass Greeter {}\n\n$g = new Greeter();\n";
     let mut h = Harness::start(&[("a.php", code)]).await;
