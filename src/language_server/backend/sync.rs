@@ -34,6 +34,15 @@ use crate::language_server::workspace::logical_name_for;
 
 use super::Backend;
 
+/// How long to wait after the last `didChange` in a burst before running the
+/// (expensive) incremental analysis. Short enough to feel immediate on a pause,
+/// long enough to coalesce a run of keystrokes into one analysis.
+const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// The publishable result of an incremental analysis: `(changed_file_count,
+/// URIs whose diagnostics went stale, per-URI diagnostics that changed)`.
+type DiagnosticsOutcome = (usize, Vec<Uri>, Vec<(Uri, Vec<Diagnostic>)>);
+
 impl Backend {
     pub(super) async fn bootstrap(&self, roots: Vec<PathBuf>, progress_supported: bool) {
         let started = Instant::now();
@@ -130,7 +139,7 @@ impl Backend {
 
         let started = Instant::now();
         let state = Arc::clone(&self.state);
-        let outcome = task::spawn_blocking(move || -> Result<_, ServerError> {
+        let outcome = task::spawn_blocking(move || -> Result<Option<DiagnosticsOutcome>, ServerError> {
             let Some(path) = uri.to_file_path() else {
                 return Ok(None);
             };
@@ -148,46 +157,87 @@ impl Backend {
                 return Ok(None);
             }
 
-            let mut result = workspace.server.analyze_incremental(&changed)?;
-
-            let ignore_set = CompiledIgnoreSet::compile(
-                &workspace.configuration.analyzer.ignore,
-                workspace.configuration.source.glob.to_database_settings(),
-            );
-
-            result.issues.filter_out_ignored(&ignore_set, |file_id| {
-                workspace.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
-            });
-
-            workspace.invalidate_artifacts(&changed);
-            lookup::invalidate(&changed);
-
-            if workspace.features.linter {
-                workspace.refresh_analyses(&changed);
-            }
-
-            let lint_issues = workspace.server.lint_issues();
-            let diagnostics = build_diagnostics(workspace.database(), &result, lint_issues);
-
-            // Diff against this workspace's last-published set so we only emit
-            // changed URIs and clear ones that went quiet.
-            let stale: Vec<Uri> =
-                workspace.last_diagnostics.keys().filter(|url| !diagnostics.contains_key(*url)).cloned().collect();
-            let changed_diags: Vec<(Uri, Vec<Diagnostic>)> = diagnostics
-                .into_iter()
-                .filter(|(url, diags)| workspace.last_diagnostics.get(url) != Some(diags))
-                .collect();
-            for url in &stale {
-                workspace.last_diagnostics.remove(url);
-            }
-            for (url, diags) in &changed_diags {
-                workspace.last_diagnostics.insert(url.clone(), diags.clone());
-            }
-
-            Ok(Some((changed.len(), stale, changed_diags)))
+            Ok(Some(analyze_and_collect(workspace, &changed)?))
         })
         .await;
 
+        self.publish_outcome(started, outcome).await;
+    }
+
+    /// Apply a database mutation immediately (no analysis) and eagerly drop the
+    /// changed files' per-file caches, so content-hash-keyed capabilities
+    /// (hover/completion) recompute against fresh text right away. Returns the
+    /// changed file ids. Pairs with [`analyze_and_publish`](Self::analyze_and_publish)
+    /// for the debounced change path.
+    pub(super) async fn mutate_only<F>(&self, uri: Uri, mutate: F) -> Vec<FileId>
+    where
+        F: FnOnce(&mut WorkspaceState) -> Vec<FileId> + Send + 'static,
+    {
+        self.ensure_ready().await;
+
+        let state = Arc::clone(&self.state);
+        let changed = task::spawn_blocking(move || -> Vec<FileId> {
+            let Some(path) = uri.to_file_path() else {
+                return Vec::new();
+            };
+            let mut guard = state.lock().unwrap();
+            let BackendState::Ready(registry) = &mut *guard else {
+                return Vec::new();
+            };
+            let Some(workspace) = registry.for_path_mut(path.as_ref()) else {
+                return Vec::new();
+            };
+
+            let changed = mutate(workspace);
+            if !changed.is_empty() {
+                workspace.invalidate_artifacts(&changed);
+            }
+            changed
+        })
+        .await
+        .unwrap_or_default();
+
+        if !changed.is_empty() {
+            lookup::invalidate(&changed);
+        }
+        changed
+    }
+
+    /// Run incremental analysis for already-applied changes to `uri` and publish
+    /// the resulting diagnostics. The database mutation is expected to have
+    /// happened already (see [`mutate_only`](Self::mutate_only)).
+    pub(super) async fn analyze_and_publish(&self, uri: Uri, changed: Vec<FileId>) {
+        if changed.is_empty() {
+            return;
+        }
+
+        let started = Instant::now();
+        let state = Arc::clone(&self.state);
+        let outcome = task::spawn_blocking(move || -> Result<Option<DiagnosticsOutcome>, ServerError> {
+            let Some(path) = uri.to_file_path() else {
+                return Ok(None);
+            };
+            let mut guard = state.lock().unwrap();
+            let BackendState::Ready(registry) = &mut *guard else {
+                return Ok(None);
+            };
+            let Some(workspace) = registry.for_path_mut(path.as_ref()) else {
+                return Ok(None);
+            };
+
+            Ok(Some(analyze_and_collect(workspace, &changed)?))
+        })
+        .await;
+
+        self.publish_outcome(started, outcome).await;
+    }
+
+    /// Publish the diagnostics produced by an incremental analysis task.
+    async fn publish_outcome(
+        &self,
+        started: Instant,
+        outcome: Result<Result<Option<DiagnosticsOutcome>, ServerError>, task::JoinError>,
+    ) {
         match outcome {
             Ok(Ok(Some((count, stale, changed_diags)))) => {
                 tracing::debug!(files = count, elapsed = ?started.elapsed(), "incremental analysis");
@@ -243,25 +293,54 @@ impl Backend {
     }
 
     pub(super) async fn apply_buffer_change(&self, uri: Uri, text: String, version: i32) {
-        self.apply_change_atomic(uri.clone(), move |workspace| {
-            let file_id = {
-                let Some(open) = workspace.open_documents.get_mut(&uri) else {
-                    return Vec::new();
+        // Apply the edit to the database right away so content-hash-keyed
+        // capabilities (hover, completion) see fresh text immediately...
+        let mutate_uri = uri.clone();
+        let changed = self
+            .mutate_only(uri.clone(), move |workspace| {
+                let file_id = {
+                    let Some(open) = workspace.open_documents.get_mut(&mutate_uri) else {
+                        return Vec::new();
+                    };
+                    open.version = version;
+                    open.file_id
                 };
-                open.version = version;
-                open.file_id
-            };
 
-            workspace.database_mut().update(file_id, Cow::Owned(text.into_bytes()));
-            vec![file_id]
-        })
-        .await;
+                workspace.database_mut().update(file_id, Cow::Owned(text.into_bytes()));
+                vec![file_id]
+            })
+            .await;
+
+        if changed.is_empty() {
+            return;
+        }
+
+        // ...but debounce the expensive incremental analysis + diagnostics: a
+        // burst of keystrokes coalesces into one analysis of the final text.
+        let key = uri.to_string();
+        self.pending_change_versions.lock().unwrap().insert(key.clone(), version);
+
+        let backend = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CHANGE_DEBOUNCE).await;
+
+            // Only proceed if no newer edit superseded this one in the meantime.
+            let superseded = backend.pending_change_versions.lock().unwrap().get(&key).copied() != Some(version);
+            if superseded {
+                return;
+            }
+            backend.pending_change_versions.lock().unwrap().remove(&key);
+            backend.analyze_and_publish(uri, changed).await;
+        });
     }
 
     pub(super) async fn apply_buffer_close(&self, uri: Uri) {
         let Some(path) = uri.to_file_path() else {
             return;
         };
+
+        // Drop any pending debounced analysis for this document.
+        self.pending_change_versions.lock().unwrap().remove(&uri.to_string());
 
         let path = path.into_owned();
         self.apply_change_atomic(uri.clone(), move |workspace| {
@@ -459,4 +538,49 @@ fn analyze_all_workspace_files(workspace: &mut WorkspaceState) {
     let count = workspace.server.analyses().count();
     let total_issues: usize = workspace.server.lint_issues().map(|issues| issues.len()).sum();
     tracing::info!("mago-server file analysis: {count} files, {total_issues} lint issues");
+}
+
+/// Run incremental analysis for `changed` against `workspace`, refresh lint
+/// state and per-file caches, then diff the resulting diagnostics against the
+/// last-published set. Returns `(changed_file_count, stale_uris, changed_diags)`
+/// ready to publish. Assumes `changed` is non-empty. Shared by the immediate
+/// ([`apply_change_atomic`](Backend::apply_change_atomic)) and debounced
+/// ([`analyze_and_publish`](Backend::analyze_and_publish)) paths.
+fn analyze_and_collect(workspace: &mut WorkspaceState, changed: &[FileId]) -> Result<DiagnosticsOutcome, ServerError> {
+    let mut result = workspace.server.analyze_incremental(changed)?;
+
+    let ignore_set = CompiledIgnoreSet::compile(
+        &workspace.configuration.analyzer.ignore,
+        workspace.configuration.source.glob.to_database_settings(),
+    );
+    result.issues.filter_out_ignored(&ignore_set, |file_id| {
+        workspace.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
+    });
+
+    workspace.invalidate_artifacts(changed);
+    lookup::invalidate(changed);
+
+    if workspace.features.linter {
+        workspace.refresh_analyses(changed);
+    }
+
+    let lint_issues = workspace.server.lint_issues();
+    let diagnostics = build_diagnostics(workspace.database(), &result, lint_issues);
+
+    // Diff against this workspace's last-published set so we only emit changed
+    // URIs and clear ones that went quiet.
+    let stale: Vec<Uri> =
+        workspace.last_diagnostics.keys().filter(|url| !diagnostics.contains_key(*url)).cloned().collect();
+    let changed_diags: Vec<(Uri, Vec<Diagnostic>)> = diagnostics
+        .into_iter()
+        .filter(|(url, diags)| workspace.last_diagnostics.get(url) != Some(diags))
+        .collect();
+    for url in &stale {
+        workspace.last_diagnostics.remove(url);
+    }
+    for (url, diags) in &changed_diags {
+        workspace.last_diagnostics.insert(url.clone(), diags.clone());
+    }
+
+    Ok((changed.len(), stale, changed_diags))
 }

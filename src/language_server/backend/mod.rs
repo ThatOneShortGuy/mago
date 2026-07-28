@@ -3,6 +3,7 @@
 //! workspace-mutation helpers live in [`sync`]; the trait impl below
 //! contains only thin forwarders.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -41,6 +42,10 @@ pub struct Backend {
     /// requests to the client (e.g. `window/workDoneProgress/create`) before
     /// that notification arrives.
     bootstrap_args: Arc<Mutex<Option<(Vec<PathBuf>, bool)>>>,
+    /// Latest `didChange` version seen per document URI. A debounced analysis
+    /// task only runs if its captured version is still the latest here, so a
+    /// burst of edits coalesces into a single analysis of the final text.
+    pending_change_versions: Arc<Mutex<HashMap<String, i32>>>,
 }
 
 impl Backend {
@@ -53,6 +58,7 @@ impl Backend {
             state: Arc::new(Mutex::new(BackendState::Uninitialized)),
             ready_tx,
             bootstrap_args: Arc::new(Mutex::new(None)),
+            pending_change_versions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

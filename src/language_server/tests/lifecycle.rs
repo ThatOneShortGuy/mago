@@ -24,6 +24,21 @@ async fn buffer_changes_reflect_immediately() {
 }
 
 #[tokio::test]
+async fn rapid_changes_coalesce_to_latest() {
+    // Two edits within the debounce window: the DB tracks the latest text and
+    // the (debounced) analysis reflects only the final content.
+    let mut h = Harness::start(&[("h.php", HOLDER)]).await;
+    h.open("h.php", HOLDER).await;
+    h.change_no_settle("h.php", "<?php\nclass First {}\n", 2).await;
+    h.change("h.php", "<?php\nclass Second {}\n", 3).await;
+
+    let names = workspace_symbol_names(&mut h, "").await;
+    assert!(names.iter().any(|n| n.ends_with("Second")), "expected Second, got {names:?}");
+    assert!(!names.iter().any(|n| n.ends_with("First")), "First should have been coalesced away, got {names:?}");
+    assert!(!names.iter().any(|n| n.ends_with("Holder")), "expected Holder gone, got {names:?}");
+}
+
+#[tokio::test]
 async fn close_restores_disk_content() {
     let mut h = Harness::start(&[("h.php", HOLDER)]).await;
     h.open("h.php", HOLDER).await;

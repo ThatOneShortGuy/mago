@@ -111,6 +111,13 @@ impl Harness {
     }
 
     pub async fn change(&mut self, name: &str, contents: &str, version: i32) {
+        self.change_no_settle(name, contents, version).await;
+        self.settle().await;
+    }
+
+    /// Like [`change`](Self::change) but without the trailing settle, for
+    /// exercising rapid successive edits (debounce/coalescing behaviour).
+    pub async fn change_no_settle(&mut self, name: &str, contents: &str, version: i32) {
         self.client
             .send_notification(
                 "textDocument/didChange",
@@ -120,7 +127,6 @@ impl Harness {
                 }),
             )
             .await;
-        self.settle().await;
     }
 
     pub async fn close(&mut self, name: &str) {
