@@ -55,8 +55,13 @@ impl Backend {
     }
 
     /// Mark the initial bootstrap complete, releasing any waiting buffer events.
+    ///
+    /// Uses `send_replace` rather than `send` so the value is stored even when
+    /// no receiver is currently subscribed — otherwise a `signal_ready` that
+    /// races ahead of the first `ensure_ready` would be lost and later waiters
+    /// would block forever.
     pub(super) fn signal_ready(&self) {
-        let _ = self.ready_tx.send(true);
+        self.ready_tx.send_replace(true);
     }
 
     fn tracks(&self, uri: &Uri) -> bool {
@@ -76,6 +81,8 @@ impl LanguageServer for Backend {
         };
         if roots.is_empty() {
             self.client.log_message(MessageType::WARNING, "mago-server: no workspace root provided").await;
+            // Nothing to bootstrap; unblock any buffer events immediately.
+            self.signal_ready();
         } else {
             for root in &roots {
                 self.client
@@ -83,7 +90,14 @@ impl LanguageServer for Backend {
                     .await;
             }
 
-            self.bootstrap(roots).await;
+            // Bootstrap in the background so the client attaches immediately
+            // instead of blocking the `initialize` response on the full-codebase
+            // analysis. Buffer mutations gate on `ensure_ready` until it finishes.
+            let backend = self.clone();
+            tokio::spawn(async move {
+                backend.bootstrap(roots).await;
+                backend.signal_ready();
+            });
         }
 
         Ok(InitializeResult {

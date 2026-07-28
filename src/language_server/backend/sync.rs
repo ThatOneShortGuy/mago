@@ -94,6 +94,10 @@ impl Backend {
     where
         F: FnOnce(&mut WorkspaceState) -> Vec<FileId> + Send + 'static,
     {
+        // Wait out the background bootstrap so an edit that arrives mid-bootstrap
+        // is applied against the ready workspace instead of being dropped.
+        self.ensure_ready().await;
+
         let started = Instant::now();
         let state = Arc::clone(&self.state);
         let outcome = task::spawn_blocking(move || -> Result<_, ServerError> {
