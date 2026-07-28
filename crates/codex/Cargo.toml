@@ -58,3 +58,7 @@ harness = false
 [[bench]]
 name = "comparator"
 harness = false
+
+[[bench]]
+name = "signature_builder"
+harness = false

@@ -145,7 +145,6 @@ where
             }
             // this rewrites $a += 4 and $a ??= 4 to $a = $a + 4 and $a = $a ?? 4 respectively
             Some(assignment_operator) => {
-                let previous_expression_types = artifacts.expression_types.clone();
                 block_context.flags.set_inside_assignment_operation(true);
 
                 let binary_expression = Expression::Binary(Binary {
@@ -172,16 +171,22 @@ where
 
                 binary_expression.analyze(context, block_context, artifacts)?;
                 block_context.flags.set_inside_assignment_operation(false);
-                let assignment_type = if let Some(assignment_span) = assignment_span {
-                    artifacts.get_rc_expression_type(&assignment_span).cloned()
-                } else {
-                    None
-                };
 
-                let new_expression_types =
-                    std::mem::replace(&mut artifacts.expression_types, previous_expression_types);
-                artifacts.expression_types.extend(new_expression_types);
-                if let Some(expression_type) = assignment_type {
+                // The synthetic binary reuses the real operand spans, so analyzing it
+                // has already recorded every sub-expression type in `expression_types`
+                // in place; we only additionally record the operation's result against
+                // the source expression's span.
+                //
+                // This previously snapshotted the entire `expression_types` map, then
+                // restored it and re-applied the post-analysis entries — O(map) work on
+                // every compound assignment, and quadratic across a large scope. Since
+                // expression analysis only ever inserts/overwrites entries (the removals
+                // and full-map restores all live in loop/if/switch *statement* analysis,
+                // which cannot appear inside an assignment's RHS expression), the
+                // snapshot/restore was a no-op and is dropped.
+                if let Some(assignment_span) = assignment_span
+                    && let Some(expression_type) = artifacts.get_rc_expression_type(&assignment_span).cloned()
+                {
                     artifacts.expression_types.insert(get_expression_range(source_expression), expression_type);
                 }
             }

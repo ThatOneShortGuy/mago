@@ -154,6 +154,8 @@ impl AnalysisService {
             self.settings.version,
             Box::new(AnalysisResultReducer),
             self.use_progress_bars,
+            // One-shot analysis never diffs signatures, so don't build them.
+            false,
         );
 
         let plugin_registry = Arc::clone(&self.plugin_registry);

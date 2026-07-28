@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use tokio::sync::watch;
 use tower_lsp_server::Client;
 use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result as JsonRpcResult;
@@ -24,16 +25,38 @@ mod sync;
 use sync::file_for_uri;
 use sync::traced;
 
+#[derive(Clone)]
 pub struct Backend {
     client: Client,
     config: Arc<ServerConfig>,
     state: Arc<Mutex<BackendState>>,
+    /// Flips to `true` once the initial bootstrap finishes (or is skipped for a
+    /// rootless session). Buffer mutations wait on this so events arriving
+    /// during the background bootstrap are applied rather than dropped.
+    ready_tx: watch::Sender<bool>,
 }
 
 impl Backend {
     #[must_use]
     pub fn new(client: Client, config: Arc<ServerConfig>) -> Self {
-        Self { client, config, state: Arc::new(Mutex::new(BackendState::Uninitialized)) }
+        let (ready_tx, _) = watch::channel(false);
+        Self { client, config, state: Arc::new(Mutex::new(BackendState::Uninitialized)), ready_tx }
+    }
+
+    /// Resolve once the initial bootstrap has completed. Returns immediately if
+    /// it already has (or if there is no workspace to bootstrap).
+    pub(super) async fn ensure_ready(&self) {
+        let mut rx = self.ready_tx.subscribe();
+        while !*rx.borrow() {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Mark the initial bootstrap complete, releasing any waiting buffer events.
+    pub(super) fn signal_ready(&self) {
+        let _ = self.ready_tx.send(true);
     }
 
     fn tracks(&self, uri: &Uri) -> bool {

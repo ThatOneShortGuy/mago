@@ -101,6 +101,12 @@ pub struct ParallelPipeline<T, I, R> {
     php_version: PHPVersion,
     reducer: Box<dyn Reducer<I, R> + Send + Sync>,
     should_use_progress_bar: bool,
+    /// Whether to compute per-file [`FileSignature`](mago_codex::signature::FileSignature)s
+    /// during the compile phase. Signatures are only consumed by incremental
+    /// re-analysis and language-server capabilities (e.g. code lenses); a
+    /// one-shot analysis never reads them, so building them for every source
+    /// file (including the whole vendor tree) is pure overhead there.
+    build_signatures: bool,
 }
 
 impl<T, I, R> std::fmt::Debug for ParallelPipeline<T, I, R>
@@ -118,6 +124,7 @@ where
             .field("php_version", &self.php_version)
             .field("reducer", &"<reducer>")
             .field("should_use_progress_bar", &self.should_use_progress_bar)
+            .field("build_signatures", &self.build_signatures)
             .finish()
     }
 }
@@ -153,6 +160,7 @@ where
         php_version: PHPVersion,
         reducer: Box<dyn Reducer<I, R> + Send + Sync>,
         should_use_progress_bar: bool,
+        build_signatures: bool,
     ) -> Self {
         Self {
             task_name,
@@ -164,6 +172,7 @@ where
             php_version,
             reducer,
             should_use_progress_bar,
+            build_signatures,
         }
     }
 
@@ -215,6 +224,7 @@ where
 
         let parser_settings = self.parser_settings;
         let php_version = self.php_version;
+        let build_signatures = self.build_signatures;
         #[cfg(not(target_arch = "wasm32"))]
         let source_count = source_files.len();
 
@@ -237,10 +247,15 @@ where
                     let resolver = NameResolver::new(arena);
                     let resolved_names = resolver.resolve(program);
 
-                    let file_signature = signature_builder::build_file_signature(&file, program, &resolved_names);
-
                     let mut metadata = scan_program(arena, &file, program, &resolved_names, php_version);
-                    metadata.set_file_signature(file.id, file_signature);
+                    // File signatures drive incremental re-analysis and LSP
+                    // capabilities only; skip the extra AST walk + fingerprint in a
+                    // one-shot analysis, where nothing reads them.
+                    if build_signatures {
+                        let file_signature =
+                            signature_builder::build_file_signature(&file, program, &resolved_names);
+                        metadata.set_file_signature(file.id, file_signature);
+                    }
                     if file.file_type.is_patch() {
                         metadata.convert_partial_to_patch();
                     }
