@@ -3,6 +3,7 @@
 //! workspace-mutation helpers live in [`sync`]; the trait impl below
 //! contains only thin forwarders.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -34,13 +35,25 @@ pub struct Backend {
     /// rootless session). Buffer mutations wait on this so events arriving
     /// during the background bootstrap are applied rather than dropped.
     ready_tx: watch::Sender<bool>,
+    /// Bootstrap inputs captured during `initialize` and consumed by
+    /// `initialized`: `(roots, client_supports_work_done_progress)`. The
+    /// bootstrap is deferred to `initialized` because a server must not issue
+    /// requests to the client (e.g. `window/workDoneProgress/create`) before
+    /// that notification arrives.
+    bootstrap_args: Arc<Mutex<Option<(Vec<PathBuf>, bool)>>>,
 }
 
 impl Backend {
     #[must_use]
     pub fn new(client: Client, config: Arc<ServerConfig>) -> Self {
         let (ready_tx, _) = watch::channel(false);
-        Self { client, config, state: Arc::new(Mutex::new(BackendState::Uninitialized)), ready_tx }
+        Self {
+            client,
+            config,
+            state: Arc::new(Mutex::new(BackendState::Uninitialized)),
+            ready_tx,
+            bootstrap_args: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Resolve once the initial bootstrap has completed. Returns immediately if
@@ -79,6 +92,10 @@ impl LanguageServer for Backend {
             Some(root) => vec![root.clone()],
             None => workspace_roots(&params),
         };
+        // Whether the client supports server-initiated work-done progress, so
+        // the bootstrap can show an "indexing" indicator.
+        let progress_supported =
+            params.capabilities.window.as_ref().and_then(|w| w.work_done_progress).unwrap_or(false);
         if roots.is_empty() {
             self.client.log_message(MessageType::WARNING, "mago-server: no workspace root provided").await;
             // Nothing to bootstrap; unblock any buffer events immediately.
@@ -90,14 +107,11 @@ impl LanguageServer for Backend {
                     .await;
             }
 
-            // Bootstrap in the background so the client attaches immediately
-            // instead of blocking the `initialize` response on the full-codebase
-            // analysis. Buffer mutations gate on `ensure_ready` until it finishes.
-            let backend = self.clone();
-            tokio::spawn(async move {
-                backend.bootstrap(roots).await;
-                backend.signal_ready();
-            });
+            // Defer the actual bootstrap to `initialized`: it runs in the
+            // background there so the client attaches immediately, and it may
+            // issue `window/workDoneProgress/create`, which is only valid to
+            // send after `initialized`.
+            *self.bootstrap_args.lock().unwrap() = Some((roots, progress_supported));
         }
 
         Ok(InitializeResult {
@@ -111,6 +125,16 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        // Kick off the deferred background bootstrap now that the client has
+        // signalled it is ready to receive server requests.
+        if let Some((roots, progress_supported)) = self.bootstrap_args.lock().unwrap().take() {
+            let backend = self.clone();
+            tokio::spawn(async move {
+                backend.bootstrap(roots, progress_supported).await;
+                backend.signal_ready();
+            });
+        }
+
         let client = self.client.clone();
         tokio::spawn(async move {
             let registration = Registration {

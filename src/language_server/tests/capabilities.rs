@@ -41,6 +41,28 @@ async fn folding_range() {
 }
 
 #[tokio::test]
+async fn bootstrap_reports_work_done_progress() {
+    // A client that advertises work-done progress should see the bootstrap
+    // report a begin/end progress pair for its indexing token.
+    let mut h =
+        Harness::start_with_capabilities(&[("a.php", SAMPLE)], json!({ "window": { "workDoneProgress": true } })).await;
+
+    // The `end` is emitted right around readiness; drain briefly to catch it.
+    h.client.drain_notifications(1).await;
+
+    let kinds: Vec<String> = h
+        .client
+        .progress_events()
+        .iter()
+        .filter(|e| e["params"]["token"] == json!("mago/indexing"))
+        .filter_map(|e| e["params"]["value"]["kind"].as_str().map(String::from))
+        .collect();
+
+    assert!(kinds.iter().any(|k| k == "begin"), "expected a progress `begin`, got {kinds:?}");
+    assert!(kinds.iter().any(|k| k == "end"), "expected a progress `end`, got {kinds:?}");
+}
+
+#[tokio::test]
 async fn hover_class() {
     let mut h = Harness::start(&[("a.php", SAMPLE)]).await;
     let result = h.at("textDocument/hover", "a.php", 3, 13).await;

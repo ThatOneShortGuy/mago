@@ -121,15 +121,52 @@ impl LspClient {
     pub async fn await_response(&mut self, expected_id: i64, timeout_secs: u64) -> Value {
         loop {
             let msg = self.read_message(timeout_secs).await;
-            if msg.get("id").and_then(|v| v.as_i64()) == Some(expected_id) {
+            let has_method = msg.get("method").is_some();
+            let msg_id = msg.get("id").cloned();
+
+            if !has_method && msg_id.as_ref().and_then(|v| v.as_i64()) == Some(expected_id) {
                 return msg;
             }
-            if msg.get("method").is_some() && msg.get("id").is_none() {
+            if has_method && msg_id.is_none() {
                 // Notification; keep it for later inspection.
                 self.pending_notifications.push(msg);
+                continue;
             }
-            // Other server-to-client requests (e.g. workspace/applyEdit) are
-            // ignored for now; tests don't simulate the editor's reply path.
+            if has_method && msg_id.is_some() {
+                // Server-initiated request (e.g. window/workDoneProgress/create):
+                // reply with a null result so the server's request future
+                // resolves instead of blocking, mirroring a real editor.
+                self.reply_ok(msg_id.unwrap()).await;
+            }
         }
+    }
+
+    /// Reply to a server-initiated request with an empty successful result.
+    async fn reply_ok(&mut self, id: Value) {
+        self.write(json!({ "jsonrpc": "2.0", "id": id, "result": null })).await;
+    }
+
+    /// Read and stash any messages that arrive within `timeout_secs`, replying
+    /// to server-initiated requests, until the stream goes quiet. Used to
+    /// collect trailing notifications (e.g. a `$/progress` end) after a request.
+    pub async fn drain_notifications(&mut self, timeout_secs: u64) {
+        while let Ok(msg) = timeout(Duration::from_secs(timeout_secs), self.read_message(timeout_secs + 1)).await {
+            let has_method = msg.get("method").is_some();
+            let msg_id = msg.get("id").cloned();
+            if has_method && msg_id.is_none() {
+                self.pending_notifications.push(msg);
+            } else if has_method && msg_id.is_some() {
+                self.reply_ok(msg_id.unwrap()).await;
+            }
+        }
+    }
+
+    /// All `$/progress` notifications observed so far.
+    pub fn progress_events(&self) -> Vec<Value> {
+        self.pending_notifications
+            .iter()
+            .filter(|m| m.get("method").and_then(|v| v.as_str()) == Some("$/progress"))
+            .cloned()
+            .collect()
     }
 }

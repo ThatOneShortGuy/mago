@@ -5,12 +5,14 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use tokio::task;
 use tower_lsp_server::jsonrpc::Result as JsonRpcResult;
 use tower_lsp_server::ls_types::Diagnostic;
 use tower_lsp_server::ls_types::MessageType;
+use tower_lsp_server::ls_types::ProgressToken;
 use tower_lsp_server::ls_types::Uri;
 
 use mago_database::DatabaseReader;
@@ -33,12 +35,33 @@ use crate::language_server::workspace::logical_name_for;
 use super::Backend;
 
 impl Backend {
-    pub(super) async fn bootstrap(&self, roots: Vec<PathBuf>) {
+    pub(super) async fn bootstrap(&self, roots: Vec<PathBuf>, progress_supported: bool) {
         let started = Instant::now();
+
+        // Optional work-done progress so the editor shows an "indexing"
+        // indicator while the (background) bootstrap runs. The `create`
+        // handshake is bounded by a short timeout: a client that advertised
+        // support but never answers must not be able to stall the analysis.
+        let progress = if progress_supported {
+            let token = ProgressToken::String("mago/indexing".into());
+            match tokio::time::timeout(Duration::from_secs(2), self.client.create_work_done_progress(token.clone()))
+                .await
+            {
+                Ok(Ok(())) => Some(self.client.progress(token, "Mago").begin().await),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let mut workspaces = Vec::new();
 
         for root in roots {
             tracing::info!(root = %root.display(), "bootstrap starting");
+            if let Some(progress) = &progress {
+                progress.report(format!("Analyzing {}", root.display())).await;
+            }
+
             let config = Arc::clone(&self.config);
             let root_label = root.display().to_string();
             let outcome = task::spawn_blocking(move || build_workspace(root, config)).await;
@@ -53,6 +76,9 @@ impl Backend {
                     );
 
                     if workspace.features.linter {
+                        if let Some(progress) = &progress {
+                            progress.report(format!("Linting {root_label}")).await;
+                        }
                         let lint_started = Instant::now();
                         analyze_all_workspace_files(&mut workspace);
                         tracing::info!(elapsed = ?lint_started.elapsed(), "file analysis pass complete");
@@ -81,6 +107,10 @@ impl Backend {
         let count = workspaces.len();
         *self.state.lock().unwrap() = BackendState::Ready(WorkspaceRegistry::new(workspaces));
         tracing::info!(elapsed = ?started.elapsed(), workspaces = count, "ready");
+
+        if let Some(progress) = progress {
+            progress.finish().await;
+        }
     }
 
     /// Apply a database mutation under the workspace mutex AND immediately

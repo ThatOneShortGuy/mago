@@ -301,7 +301,7 @@ schemars = { workspace = true }
 foldhash = { workspace = true }
 xxhash-rust = { workspace = true }
 memchr = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tower-lsp-server = { workspace = true }
 
 [[test]]

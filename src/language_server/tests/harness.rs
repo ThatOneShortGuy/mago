@@ -32,6 +32,12 @@ impl Harness {
     /// Spin up a workspace populated with `(name, contents)` pairs and
     /// wait for the bootstrap to finish.
     pub async fn start(files: &[(&str, &str)]) -> Self {
+        Self::start_with_capabilities(files, json!({})).await
+    }
+
+    /// Like [`start`](Self::start) but with explicit client `capabilities`
+    /// (e.g. `{"window":{"workDoneProgress":true}}` to exercise progress).
+    pub async fn start_with_capabilities(files: &[(&str, &str)], capabilities: Value) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
         for (name, contents) in files {
@@ -55,7 +61,7 @@ impl Harness {
                 json!({
                     "processId": process::id(),
                     "rootUri": url(&workspace),
-                    "capabilities": {},
+                    "capabilities": capabilities,
                 }),
             )
             .await;
