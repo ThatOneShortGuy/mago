@@ -13,6 +13,8 @@ use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::atomic::callable::TCallableSignature;
+use mago_codex::ttype::atomic::callable::parameter::TCallableParameter;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -29,6 +31,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::WordMap;
@@ -230,9 +233,8 @@ where
         parameter_types.insert(parameter_name.0, argument_type);
     }
 
-    let closure_bind_scope = detect_closure_bind_scope(context, invocation, &analyzed_argument_types);
+    let global_closure_bind_scope = detect_closure_bind_scope(context, invocation, &analyzed_argument_types);
     let previous_bind_scope = artifacts.closure_bind_scope.take();
-    artifacts.closure_bind_scope = closure_bind_scope;
 
     for (argument_offset, argument) in &closure_arguments {
         let Some(argument_expression) = argument.value() else {
@@ -295,6 +297,35 @@ where
         } else {
             None
         };
+
+        // A `@param-closure-this T` parameter binds `$this` to `T` inside the closure literal.
+        // It takes precedence over any global `Closure::bind` scope for this argument.
+        artifacts.closure_bind_scope = parameter
+            .and_then(|(_, p)| p.get_closure_this_type())
+            .and_then(|closure_this_type| {
+                // Resolve `self`/`static` and class-level context, then bind any method templates
+                // (e.g. a trait template `T` mapped to `self<...>` via `@use`).
+                let mut resolved = resolve_type_in_class_context(
+                    context,
+                    closure_this_type.clone(),
+                    base_class_metadata,
+                    calling_class_like_metadata,
+                    calling_instance_type,
+                    method_class_type,
+                );
+
+                if resolved.has_template_types() {
+                    resolved = inferred_type_replacer::replace_with_polarity(
+                        &resolved,
+                        template_result,
+                        context.codebase,
+                        mago_codex::ttype::template::variance::Variance::Invariant,
+                    );
+                }
+
+                closure_this_bind_scope(&resolved)
+            })
+            .or_else(|| global_closure_bind_scope.clone());
 
         analyze_and_store_argument_type(
             context,
@@ -751,6 +782,18 @@ where
         }
     }
 
+    infer_generic_callable_arguments(
+        context,
+        invocation,
+        template_result,
+        parameter_types,
+        &analyzed_argument_types,
+        base_class_metadata,
+        calling_class_like_metadata,
+        calling_instance_type,
+        method_class_type,
+    );
+
     let max_params = invocation.target.parameter_count();
     let number_of_required_parameters = invocation
         .target
@@ -1106,6 +1149,144 @@ where
     Ok(())
 }
 
+/// Instantiates first-class generic callables from the surrounding call's other arguments.
+#[allow(clippy::too_many_arguments)]
+fn infer_generic_callable_arguments<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    invocation: &Invocation<'ctx, '_, 'arena>,
+    template_result: &mut TemplateResult,
+    parameter_types: &WordMap<TUnion>,
+    analyzed_argument_types: &HashMap<usize, (TUnion, Span)>,
+    base_class_metadata: Option<&'ctx ClassLikeMetadata>,
+    calling_class_like_metadata: Option<&'ctx ClassLikeMetadata>,
+    calling_instance_type: Option<&TAtomic>,
+    method_class_type: Option<&StaticClassType>,
+) where
+    A: Arena,
+{
+    for (argument_offset, argument) in invocation.arguments_source.iter_arguments().enumerate() {
+        let Some((argument_type, argument_span)) = analyzed_argument_types.get(&argument_offset) else {
+            continue;
+        };
+
+        if !callable_argument_has_template_parameter(context, argument_type) {
+            continue;
+        }
+
+        let Some((_, parameter)) = get_parameter_of_argument(&invocation.target, &argument, argument_offset) else {
+            continue;
+        };
+
+        let base_parameter_type = get_parameter_type(
+            context,
+            Some(parameter),
+            base_class_metadata,
+            calling_class_like_metadata,
+            calling_instance_type,
+            method_class_type,
+        );
+
+        let mut result_without_callback_bounds = template_result.clone();
+        remove_template_bounds_from_argument(&mut result_without_callback_bounds, argument_offset);
+
+        let expected_parameter_type = resolve_parameter_type_for_invocation(
+            context,
+            invocation,
+            &result_without_callback_bounds,
+            parameter_types,
+            base_class_metadata,
+            base_parameter_type,
+        );
+
+        let expected_signatures = expected_parameter_type.types.iter().filter_map(|atomic| match atomic {
+            TAtomic::Callable(TCallable::Signature(signature)) => Some(Cow::Borrowed(signature)),
+            TAtomic::Callable(TCallable::Alias(identifier)) => {
+                expander::get_signature_of_function_like_identifier(identifier, context.codebase).map(Cow::Owned)
+            }
+            _ => None,
+        });
+
+        for expected_signature in expected_signatures {
+            for argument_atomic in argument_type.types.iter() {
+                let input_signature: Cow<'_, TCallableSignature> = match argument_atomic {
+                    TAtomic::Callable(TCallable::Signature(signature)) if signature.get_source().is_some() => {
+                        Cow::Owned(signature.clone())
+                    }
+                    TAtomic::Callable(TCallable::Alias(identifier)) => {
+                        let Some(signature) =
+                            expander::get_signature_of_function_like_identifier(identifier, context.codebase)
+                        else {
+                            continue;
+                        };
+
+                        Cow::Owned(signature)
+                    }
+                    _ => continue,
+                };
+
+                for (input_parameter, expected_parameter) in
+                    input_signature.get_parameters().iter().zip(expected_signature.get_parameters())
+                {
+                    let Some(input_type) = input_parameter.get_type_signature() else {
+                        continue;
+                    };
+                    let Some(expected_type) = expected_parameter.get_type_signature() else {
+                        continue;
+                    };
+
+                    if !input_type.has_template_types() || expected_type.is_mixed() {
+                        continue;
+                    }
+
+                    infer_parameter_templates_from_argument(
+                        context,
+                        input_type,
+                        expected_type,
+                        template_result,
+                        argument_offset,
+                        *argument_span,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn callable_argument_has_template_parameter<A>(context: &Context<'_, '_, A>, argument_type: &TUnion) -> bool
+where
+    A: Arena,
+{
+    argument_type.types.iter().any(|atomic| match atomic {
+        TAtomic::Callable(TCallable::Signature(signature)) if signature.get_source().is_some() => signature
+            .get_parameters()
+            .iter()
+            .filter_map(TCallableParameter::get_type_signature)
+            .any(TUnion::has_template_types),
+        TAtomic::Callable(TCallable::Alias(identifier)) => {
+            context.codebase.get_function_like(identifier).is_some_and(|metadata| {
+                metadata
+                    .parameters
+                    .iter()
+                    .filter_map(|parameter| parameter.get_type_metadata().map(|metadata| &metadata.type_union))
+                    .any(TUnion::has_template_types)
+            })
+        }
+        _ => false,
+    })
+}
+
+fn remove_template_bounds_from_argument(template_result: &mut TemplateResult, argument_offset: usize) {
+    template_result.lower_bounds.retain(|_, bounds_by_parent| {
+        bounds_by_parent.retain(|_, bounds| {
+            bounds.retain(|bound| bound.argument_offset != Some(argument_offset));
+            !bounds.is_empty()
+        });
+
+        !bounds_by_parent.is_empty()
+    });
+}
+
 /// Gets the effective parameter type, expanding class-relative types based on call context.
 fn get_parameter_type<'ctx, A>(
     context: &Context<'ctx, '_, A>,
@@ -1124,11 +1305,34 @@ where
 
     let parameter_type = invocation_target_parameter.get_type().cloned().unwrap_or_else(get_mixed);
 
-    if contains_parameter_variable(&parameter_type) {
-        return parameter_type;
+    resolve_type_in_class_context(
+        context,
+        parameter_type,
+        base_class_metadata,
+        calling_class_like_metadata,
+        calling_instance_type,
+        method_class_type,
+    )
+}
+
+/// Expands `self`/`static`/`parent` and class-level context in a type declared on a function-like,
+/// relative to the class the invocation is dispatched against.
+fn resolve_type_in_class_context<'ctx, A>(
+    context: &Context<'ctx, '_, A>,
+    ttype: TUnion,
+    base_class_metadata: Option<&'ctx ClassLikeMetadata>,
+    calling_class_like_metadata: Option<&'ctx ClassLikeMetadata>,
+    calling_instance_type: Option<&TAtomic>,
+    method_class_type: Option<&StaticClassType>,
+) -> TUnion
+where
+    A: Arena,
+{
+    if contains_parameter_variable(&ttype) {
+        return ttype;
     }
 
-    let mut resolved_parameter_type = parameter_type;
+    let mut resolved_parameter_type = ttype;
 
     let static_class_type = method_class_type
         .filter(|t| !matches!(t, StaticClassType::None))
@@ -1678,6 +1882,13 @@ where
     }
 
     None
+}
+
+/// Builds the bind scope for a `@param-closure-this` type: `$this` is bound (non-static) to the
+/// extracted class. Returns `None` when no concrete class can be extracted from the type.
+fn closure_this_bind_scope(closure_this_type: &TUnion) -> Option<ClosureBindScope> {
+    extract_class_name_from_type(closure_this_type)
+        .map(|class_name| ClosureBindScope { class_name: Some(class_name), has_this: true })
 }
 
 /// Extracts a class name from a type union (typically for $this type).

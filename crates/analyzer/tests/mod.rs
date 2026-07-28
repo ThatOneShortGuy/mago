@@ -93,6 +93,7 @@ test_case!(arrays_array_intersect);
 test_case!(arrays_array_keys);
 test_case!(arrays_array_map_keyed);
 test_case!(arrays_array_map_list);
+test_case!(arrays_array_map_optional_keys_untyped_closure);
 test_case!(arrays_array_map_multi);
 test_case!(arrays_array_merge_two_lists);
 test_case!(arrays_max_on_possibly_empty);
@@ -930,6 +931,7 @@ test_case!(psl_total_length_range);
 test_case!(psl_proc_open_pipes);
 test_case!(psl_array_filter_nullable);
 test_case!(psl_isset_optional_key);
+test_case!(psl_analysis_false_positives);
 test_case!(wildcard_type);
 test_case!(psl_regressions);
 test_case!(docblock_parameter_narrowing);
@@ -1146,6 +1148,7 @@ test_case!(callables_basic_function_call);
 test_case!(callables_named_arg_unknown_after_positional);
 test_case!(callables_pass_string_to_closure_param);
 test_case!(callables_param_default_int);
+test_case!(callables_param_closure_this);
 test_case!(callables_default_uses_class_constant);
 test_case!(callables_optional_after_required);
 test_case!(callables_too_few_arguments);
@@ -2611,7 +2614,19 @@ test_case!(issue_2078);
 test_case!(issue_2085);
 test_case!(issue_2087);
 test_case!(issue_2096);
+test_case!(issue_2110);
 test_case!(issue_2111);
+test_case!(issue_2116);
+test_case!(issue_2119);
+test_case!(issue_2124, {
+    let mut settings = crate::framework::default_test_settings();
+    settings.check_throws = false;
+    settings
+});
+test_case!(issue_2125);
+test_case!(issue_2127);
+test_case!(issue_2132);
+test_case!(issue_2135);
 
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
 /// also carry a quickfix edit that scaffolds the missing case arms. This guards

@@ -79,13 +79,14 @@ pub(crate) fn is_contained_by(
             continue;
         }
 
+        let forward_inside_assertion = inside_assertion && !specialized_template_type.has_template_types();
         let forward_ok = union_comparator::is_contained_by(
             codebase,
             &specialized_template_type,
             container_type_parameter,
             false,
             specialized_template_type.ignore_falsable_issues(),
-            false,
+            forward_inside_assertion,
             &mut parameter_comparison_result,
         );
 
@@ -122,6 +123,7 @@ pub(crate) fn is_contained_by(
         }
 
         if matches!(variance, Variance::Invariant)
+            && (!inside_assertion || !container_type_parameter.has_template_types())
             && !specialized_template_type.from_template_default()
             && !container_type_parameter.from_template_default()
         {
