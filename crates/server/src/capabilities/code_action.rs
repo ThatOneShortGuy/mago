@@ -29,19 +29,23 @@ struct FileWideFix {
 impl Server {
     /// Quickfix code actions for issues anchored within `[start, end]` of
     /// `file_id`.
+    ///
+    /// Ordered so the most specific actions come first: direct fixes, then
+    /// `@mago-expect` suppressions, then file-wide "fix all" actions.
     #[must_use]
     pub fn get_code_actions(&self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
-        let mut actions = Vec::new();
+        let mut direct_actions = Vec::new();
+        let mut expect_actions = Vec::new();
         let mut file_wide_fixes: HashMap<String, FileWideFix> = HashMap::default();
 
         if let Some(issues) = self.last_issues() {
             for issue in issues.iter() {
                 collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
-                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "analysis") {
-                    actions.push(action);
-                }
                 if let Some(action) = action_for(issue, file_id, start, end) {
-                    actions.push(action);
+                    direct_actions.push(action);
+                }
+                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "analysis") {
+                    expect_actions.push(action);
                 }
             }
         }
@@ -49,20 +53,29 @@ impl Server {
         for analysis in self.analyses() {
             for issue in analysis.lint_issues.iter() {
                 collect_file_wide_fix(issue, file_id, &mut file_wide_fixes);
-                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "lint") {
-                    actions.push(action);
-                }
                 if let Some(action) = action_for(issue, file_id, start, end) {
-                    actions.push(action);
+                    direct_actions.push(action);
+                }
+                if let Some(action) = expect_action_for(self, issue, file_id, start, end, "lint") {
+                    expect_actions.push(action);
                 }
             }
         }
 
-        file_wide_fixes
+        let mut file_wide_fixes: Vec<(String, FileWideFix)> = file_wide_fixes
             .into_iter()
             .filter(|(_, fix)| fix.issue_count > 1 && !fix.edits.is_empty())
-            .map(|(code, fix)| file_action(file_id, format!("Fix all `{code}` issues in file"), fix.edits))
-            .chain(actions)
+            .collect();
+        file_wide_fixes.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        direct_actions
+            .into_iter()
+            .chain(expect_actions)
+            .chain(
+                file_wide_fixes
+                    .into_iter()
+                    .map(|(code, fix)| file_action(file_id, format!("Fix all `{code}` issues in file"), fix.edits)),
+            )
             .collect()
     }
 }

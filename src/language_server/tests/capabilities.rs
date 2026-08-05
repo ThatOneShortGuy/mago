@@ -626,6 +626,40 @@ async fn code_action_fix_all_groups_any_repeated_fixable_issue() {
 }
 
 #[tokio::test]
+async fn code_action_orders_direct_fix_then_expect_then_fix_all() {
+    let code = "<?php\nIF (true) {\n    ECHO \"ok\";\n}\nfinal class Demo {}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 2 } },
+                "context": { "diagnostics": [] }
+            }),
+        )
+        .await;
+
+    let actions = result.as_array().unwrap();
+    let titles: Vec<&str> = actions.iter().map(|action| action["title"].as_str().unwrap_or("")).collect();
+
+    let expect_at = titles.iter().position(|title| title.starts_with("Add @mago-expect"));
+    let fix_all_at = titles.iter().position(|title| title.starts_with("Fix all "));
+    let direct_at = titles
+        .iter()
+        .position(|title| !title.starts_with("Add @mago-expect") && !title.starts_with("Fix all "));
+
+    let direct_at = direct_at.unwrap_or_else(|| panic!("missing direct fix in {titles:?}"));
+    let expect_at = expect_at.unwrap_or_else(|| panic!("missing @mago-expect action in {titles:?}"));
+    let fix_all_at = fix_all_at.unwrap_or_else(|| panic!("missing fix-all action in {titles:?}"));
+
+    assert!(direct_at < expect_at, "direct fix must precede @mago-expect in {titles:?}");
+    assert!(expect_at < fix_all_at, "@mago-expect must precede fix-all in {titles:?}");
+}
+
+#[tokio::test]
 async fn code_action_lowercases_self_keyword() {
     let code = "<?php\nenum InvoiceStatus {\n    case New;\n\n    public function label(): string {\n        return match ($this) {\n            Self::New => 'New',\n        };\n    }\n}\n";
     let mut h = Harness::start(&[("a.php", code)]).await;
