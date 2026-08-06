@@ -87,14 +87,14 @@ pub struct Lexer<'input> {
     brace_interpolating: bool,
     var_offset_depth: u32,
     expect_string_varname: bool,
+    interpolation_depth: u16,
     /// Buffer for tokens during string interpolation.
     buffer: VecDeque<Token<'input>>,
 }
 
 impl<'input> Lexer<'input> {
-    /// Initial capacity for the token buffer used during string interpolation.
-    /// Pre-allocating avoids reallocation during interpolation processing.
-    const BUFFER_INITIAL_CAPACITY: usize = 8;
+    /// Nested interpolations recurse through `advance`; keep enough stack headroom for debug builds.
+    const MAX_INTERPOLATION_DEPTH: u16 = 64;
 
     /// Creates a new `Lexer` instance.
     ///
@@ -116,7 +116,8 @@ impl<'input> Lexer<'input> {
             brace_interpolating: false,
             var_offset_depth: 0,
             expect_string_varname: false,
-            buffer: VecDeque::with_capacity(Self::BUFFER_INITIAL_CAPACITY),
+            interpolation_depth: 0,
+            buffer: VecDeque::new(),
         }
     }
 
@@ -140,7 +141,8 @@ impl<'input> Lexer<'input> {
             brace_interpolating: false,
             var_offset_depth: 0,
             expect_string_varname: false,
-            buffer: VecDeque::with_capacity(Self::BUFFER_INITIAL_CAPACITY),
+            interpolation_depth: 0,
+            buffer: VecDeque::new(),
         }
     }
 
@@ -1142,9 +1144,9 @@ impl<'input> Lexer<'input> {
     /// Returns (TokenKind, length) to allow proper mode switching.
     #[inline]
     fn scan_identifier_or_keyword_info(&self) -> (TokenKind, usize) {
-        let (mut length, ended_with_slash) = self.input.scan_identifier(0);
+        let (length, ended_with_slash) = self.input.scan_identifier(0);
 
-        if !ended_with_slash {
+        if !ended_with_slash && matches!(self.input.peek(length, 1), [b'(']) {
             match length {
                 6 if self.input.is_at(b"public(set)", true) => {
                     return (TokenKind::PublicSet, 11);
@@ -1159,10 +1161,20 @@ impl<'input> Lexer<'input> {
             }
         }
 
-        if !ended_with_slash && let Some(kind) = internal::keyword::lookup_keyword(self.input.read(length)) {
-            return (kind, length);
+        if !ended_with_slash {
+            if let Some(kind) = internal::keyword::lookup_keyword(self.input.read(length)) {
+                return (kind, length);
+            }
+
+            return (TokenKind::Identifier, length);
         }
 
+        self.scan_qualified_identifier_info(length)
+    }
+
+    // Keep qualified-name scanning out of the common identifier/keyword path.
+    #[inline(never)]
+    fn scan_qualified_identifier_info(&self, mut length: usize) -> (TokenKind, usize) {
         let mut slashes = 0;
         let mut last_was_slash = false;
         loop {
@@ -1262,6 +1274,13 @@ impl<'input> Lexer<'input> {
         post_interpolation_mode: LexerMode<'input>,
         brace: bool,
     ) -> Option<Result<Token<'input>, SyntaxError>> {
+        self.interpolation_depth += 1;
+        if self.interpolation_depth > Self::MAX_INTERPOLATION_DEPTH {
+            self.interpolation_depth -= 1;
+
+            return Some(Err(SyntaxError::RecursionLimitExceeded(self.file_id(), self.input.current_position())));
+        }
+
         self.mode = LexerMode::Script;
 
         let was_interpolating = self.interpolating;
@@ -1311,6 +1330,7 @@ impl<'input> Lexer<'input> {
         self.brace_interpolating = was_brace_interpolating;
         self.var_offset_depth = was_var_offset_depth;
         self.expect_string_varname = was_expect_string_varname;
+        self.interpolation_depth -= 1;
 
         if let Some(error) = pending_error {
             return Some(Err(error));

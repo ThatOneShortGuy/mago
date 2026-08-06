@@ -10,6 +10,7 @@ use mago_algebra::assertion_set::Conjunction;
 use mago_algebra::assertion_set::Disjunction;
 use mago_algebra::assertion_set::add_and_assertion;
 use mago_algebra::assertion_set::add_and_clause;
+use mago_algebra::clause::Clause;
 use mago_algebra::find_satisfying_assignments;
 use mago_algebra::saturate_clauses;
 use mago_codex::assertion::Assertion;
@@ -442,6 +443,18 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
     A: Arena,
 {
     let metadata = invocation.target.get_function_like_metadata();
+
+    let preserves_stable_method_results = metadata.is_some_and(|metadata| {
+        (metadata.flags.is_pure() || metadata.flags.is_mutation_free()) && !metadata.flags.suspends_fiber()
+    });
+    if !preserves_stable_method_results {
+        block_context.stable_method_call_assertions.clear();
+        block_context.stable_method_calls.clear();
+        let references_method_call =
+            |clause: &Rc<Clause>| clause.possibilities.keys().any(|key| key.as_bytes().ends_with(b"()"));
+        block_context.clauses.retain(|clause| !references_method_call(clause));
+        block_context.reconciled_expression_clauses.retain(|clause| !references_method_call(clause));
+    }
 
     if let Some(metadata) = metadata
         && (metadata.flags.is_pure() || metadata.flags.is_mutation_free() || metadata.flags.is_external_mutation_free())

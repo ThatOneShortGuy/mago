@@ -388,7 +388,7 @@ where
     if let Some(result) = result
         && !check_method_visibility(
             context,
-            block_context,
+            block_context.scope.get_class_like_name(),
             method_id.get_class_name().as_bytes(),
             method_id.get_method_name().as_bytes(),
             access_span,
@@ -440,6 +440,8 @@ where
         } else {
             StaticClassType::Name(fq_class_id)
         }
+    } else if classname.is_named() || classname.is_from_literal_class_string() {
+        StaticClassType::Exact(fq_class_id)
     } else {
         StaticClassType::Name(fq_class_id)
     };
@@ -820,7 +822,7 @@ where
     // Check visibility
     if !check_method_visibility(
         context,
-        block_context,
+        block_context.scope.get_class_like_name(),
         method_id.get_class_name().as_bytes(),
         method_id.get_method_name().as_bytes(),
         access_span,

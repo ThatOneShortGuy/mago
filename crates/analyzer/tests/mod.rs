@@ -36,6 +36,12 @@ macro_rules! test_case {
 }
 
 test_case!(accessing_undefined_class_constant);
+test_case!(attribute_target_constant);
+test_case!(attribute_target_constant_php84, {
+    let mut settings = default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP84;
+    settings
+});
 test_case!(unavailable_symbols, {
     let mut settings = default_test_settings();
     settings.version = mago_php_version::PHPVersion::PHP85;
@@ -247,6 +253,7 @@ test_case!(arrays_err_sort_int);
 test_case!(arrays_err_widen_array_to_list);
 test_case!(assert_concrete_to_template_type);
 test_case!(assert_generic_array_key_is_array_key);
+test_case!(attribute_self_scope);
 test_case!(bare_identifier_in_array_access);
 test_case!(bin2hex);
 test_case!(break_narrowing);
@@ -717,6 +724,8 @@ test_case!(sealed_class_15_inheritors);
 test_case!(sealed_class_performance);
 test_case!(class_instance);
 test_case!(conditional_return);
+test_case!(conditional_return_void_never_matches_native_void);
+test_case!(conditional_return_void_never_needs_no_return);
 test_case!(literal_int);
 test_case!(calling_interface_methods_from_trait);
 test_case!(parent_class_constant_validation);
@@ -795,6 +804,7 @@ test_case!(interface_assertion);
 test_case!(nullsafe_chain_bug);
 test_case!(class_string_instantiation);
 test_case!(class_string_comparison);
+test_case!(class_string_of_generic_object_inference);
 test_case!(static_var_lazy_init);
 test_case!(static_var_coalesce);
 test_case!(array_coalesce_assign_check);
@@ -863,6 +873,7 @@ test_case!(anonymous_class_constructor_args);
 test_case!(undefined_type_reference);
 test_case!(duplicate_definition);
 test_case!(method_call_assertions);
+test_case!(stable_method_call_narrowing);
 test_case!(invalid_default_values);
 test_case!(class_must_be_final, {
     let mut s = crate::framework::default_test_settings();
@@ -2627,6 +2638,16 @@ test_case!(issue_2125);
 test_case!(issue_2127);
 test_case!(issue_2132);
 test_case!(issue_2135);
+test_case!(issue_2175);
+test_case!(issue_2176);
+test_case!(issue_2177);
+test_case!(issue_2138);
+test_case!(issue_2140);
+test_case!(issue_2145);
+test_case!(issue_2149);
+test_case!(issue_2151);
+test_case!(issue_2161);
+test_case!(issue_2162);
 
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
 /// also carry a quickfix edit that scaffolds the missing case arms. This guards
