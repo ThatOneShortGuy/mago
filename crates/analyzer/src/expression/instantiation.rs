@@ -45,6 +45,7 @@ use crate::error::AnalysisError;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
+use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::analyzer::analyze_invocation;
 use crate::invocation::post_process::post_invocation_process;
@@ -318,7 +319,7 @@ where
 
         artifacts.symbol_references.add_reference_for_method_call(&block_context.scope, &constructor_declraing_id);
 
-        let constructor_call = Invocation {
+        let mut constructor_call = Invocation {
             target: InvocationTarget::FunctionLike {
                 identifier: FunctionLikeIdentifier::Method(
                     constructor_declraing_id.get_class_name(),
@@ -326,10 +327,12 @@ where
                 ),
                 metadata: constructor,
                 inferred_return_type: None,
+                effective_signature: None,
                 method_context: Some(MethodTargetContext {
+                    invocation_kind: MethodInvocationKind::Instance,
                     declaring_method_id: Some(constructor_declraing_id),
                     class_like_metadata: metadata,
-                    class_type: StaticClassType::None,
+                    class_type: StaticClassType::Exact(metadata.original_name),
                     declaring_object_type: None,
                 }),
                 span: instantiation_span,
@@ -346,7 +349,7 @@ where
             context,
             block_context,
             artifacts,
-            &constructor_call,
+            &mut constructor_call,
             Some((metadata.name, None)),
             &mut template_result,
             &mut argument_types,
@@ -426,18 +429,20 @@ where
     } else if let Some(argument_list) = &argument_list
         && !argument_list.arguments.is_empty()
     {
-        context.collector.report_with_code(
-            IssueCode::TooManyArguments,
-            Issue::error(format!(
-                "Class `{classname_str}` has no `__construct` method, but arguments were provided to `new`."
-            ))
-            .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
-            .with_annotation(
-                Annotation::secondary(class_expression_span)
-                    .with_message(format!("For class `{classname_str}` which has no constructor")),
-            )
-            .with_help("Remove the arguments, or define a `__construct` method in the class if arguments are needed for initialization."),
-        );
+        if !metadata.has_incomplete_hierarchy() {
+            context.collector.report_with_code(
+                IssueCode::TooManyArguments,
+                Issue::error(format!(
+                    "Class `{classname_str}` has no `__construct` method, but arguments were provided to `new`."
+                ))
+                .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
+                .with_annotation(
+                    Annotation::secondary(class_expression_span)
+                        .with_message(format!("For class `{classname_str}` which has no constructor")),
+                )
+                .with_help("Remove the arguments, or define a `__construct` method in the class if arguments are needed for initialization."),
+            );
+        }
 
         argument_list.analyze(context, block_context, artifacts)?;
     } else if !metadata.template_types.is_empty() {
@@ -448,8 +453,6 @@ where
                 .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
                 .collect(),
         );
-    } else {
-        // class has no constructor, no extra arguments, and no templates; no type parameters to record
     }
 
     let skip_constructor_warning =
@@ -560,7 +563,7 @@ where
     if let Some(constructor) = context.codebase.get_method_by_id(&constructor_declaring_id) {
         artifacts.symbol_references.add_reference_for_method_call(&block_context.scope, &constructor_declaring_id);
 
-        let constructor_call = Invocation {
+        let mut constructor_call = Invocation {
             target: InvocationTarget::FunctionLike {
                 identifier: FunctionLikeIdentifier::Method(
                     constructor_declaring_id.get_class_name(),
@@ -568,10 +571,12 @@ where
                 ),
                 metadata: constructor,
                 inferred_return_type: None,
+                effective_signature: None,
                 method_context: Some(MethodTargetContext {
+                    invocation_kind: MethodInvocationKind::Instance,
                     declaring_method_id: Some(constructor_declaring_id),
                     class_like_metadata,
-                    class_type: StaticClassType::None,
+                    class_type: StaticClassType::Exact(class_like_metadata.original_name),
                     declaring_object_type: None,
                 }),
                 span: instantiation_span,
@@ -591,7 +596,7 @@ where
             context,
             block_context,
             artifacts,
-            &constructor_call,
+            &mut constructor_call,
             Some((class_like_metadata.name, None)),
             &mut template_result,
             &mut argument_types,
@@ -610,16 +615,16 @@ where
     } else if let Some(argument_list) = argument_list
         && !argument_list.arguments.is_empty()
     {
-        context.collector.report_with_code(
-            IssueCode::TooManyArguments,
-            Issue::error("Anonymous class has no `__construct` method, but arguments were provided.")
-                .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
-                .with_help("Remove the arguments, or define a `__construct` method in the anonymous class."),
-        );
+        if !class_like_metadata.has_incomplete_hierarchy() {
+            context.collector.report_with_code(
+                IssueCode::TooManyArguments,
+                Issue::error("Anonymous class has no `__construct` method, but arguments were provided.")
+                    .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
+                    .with_help("Remove the arguments, or define a `__construct` method in the anonymous class."),
+            );
+        }
 
         argument_list.analyze(context, block_context, artifacts)?;
-    } else {
-        // anonymous class has no constructor and no arguments were provided; nothing to report
     }
 
     Ok(())

@@ -9,17 +9,21 @@ use mago_allocator::Arena;
 
 use mago_codex::context::ScopeContext;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::reference::ReferenceOrigin;
+use mago_codex::reference::SymbolReferences;
 use mago_collector::Collector;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Program;
+use mago_word::word;
 
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::external::ExternalAnalysisSession;
 use crate::plugin::PluginRegistry;
 use crate::plugin::context::HookContext;
 use crate::plugin::hook::HookAction;
@@ -30,6 +34,7 @@ pub mod analysis_result;
 pub mod artifacts;
 pub mod code;
 pub mod error;
+pub mod external;
 pub mod plugin;
 pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,6 +67,9 @@ where
     pub codebase: &'ctx CodebaseMetadata,
     pub settings: Settings,
     pub plugin_registry: &'ctx PluginRegistry,
+    pub external_analysis_session: Option<&'ctx ExternalAnalysisSession>,
+    pub additional_symbol_references: Option<&'ctx SymbolReferences>,
+    defer_pragmas: bool,
 }
 
 impl<'ctx, 'ast, 'arena, A> Analyzer<'ctx, 'ast, 'arena, A>
@@ -76,7 +84,37 @@ where
         plugin_registry: &'ctx PluginRegistry,
         settings: Settings,
     ) -> Self {
-        Self { arena, source_file, resolved_names, codebase, settings, plugin_registry }
+        Self {
+            arena,
+            source_file,
+            resolved_names,
+            codebase,
+            settings,
+            plugin_registry,
+            external_analysis_session: None,
+            additional_symbol_references: None,
+            defer_pragmas: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_external_analysis_session(mut self, session: &'ctx ExternalAnalysisSession) -> Self {
+        self.external_analysis_session = Some(session);
+        self
+    }
+
+    #[must_use]
+    pub fn with_additional_symbol_references(mut self, references: &'ctx SymbolReferences) -> Self {
+        self.additional_symbol_references = Some(references);
+        self
+    }
+
+    /// Defers unused and unfulfilled pragma reporting until external lifecycle
+    /// diagnostics have been collected.
+    #[must_use]
+    pub fn with_deferred_pragmas(mut self) -> Self {
+        self.defer_pragmas = true;
+        self
     }
 
     /// Runs the analyzer over `program` and accumulates findings into `analysis_result`.
@@ -139,9 +177,14 @@ where
             program.trivia.as_slice(),
             collector,
             self.plugin_registry,
+            self.external_analysis_session,
+            self.additional_symbol_references,
         );
 
-        let mut block_context = BlockContext::new(ScopeContext::new(), context.settings.register_super_globals);
+        let mut block_context = BlockContext::new(
+            ScopeContext::new(ReferenceOrigin::File(word(context.source_file.name.as_ref()))),
+            context.settings.register_super_globals,
+        );
         let mut artifacts = AnalysisArtifacts::new();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(start) = setup_start {
@@ -158,7 +201,7 @@ where
                 }
 
                 analysis_result.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
-                context.finish_collector(analysis_result);
+                context.finish_collector(analysis_result, self.defer_pragmas);
 
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -194,7 +237,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let finish_start = trace_enabled.then(std::time::Instant::now);
         analysis_result.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
-        context.finish_collector(analysis_result);
+        context.finish_collector(analysis_result, self.defer_pragmas);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(start) = finish_start {
             telemetry::record_finish(start.elapsed());
@@ -202,8 +245,12 @@ where
 
         // Filter issues through registered issue filter hooks
         if self.plugin_registry.has_issue_filter_hooks() {
-            analysis_result.issues =
-                self.plugin_registry.filter_issues(self.source_file, std::mem::take(&mut analysis_result.issues));
+            analysis_result.issues = self.plugin_registry.filter_issues(
+                self.source_file,
+                std::mem::take(&mut analysis_result.issues),
+                self.codebase,
+                self.external_analysis_session,
+            )?;
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -248,6 +295,7 @@ mod tests {
         content: &'static str,
         settings: Settings,
         expected_issues: Vec<IssueCode>,
+        expected_messages: Vec<&'static str>,
     }
 
     impl TestCase {
@@ -261,6 +309,7 @@ mod tests {
                     ..Default::default()
                 },
                 expected_issues: vec![],
+                expected_messages: vec![],
             }
         }
 
@@ -276,6 +325,11 @@ mod tests {
 
         pub fn expect_issues(mut self, codes: Vec<IssueCode>) -> Self {
             self.expected_issues = codes;
+            self
+        }
+
+        pub fn expect_messages(mut self, messages: Vec<&'static str>) -> Self {
+            self.expected_messages = messages;
             self
         }
 
@@ -311,7 +365,13 @@ mod tests {
             panic!("Test '{}': Expected analysis to succeed, but it failed with an error: {}", config.name, err);
         }
 
-        verify_reported_issues(config.name, analysis_result, codebase, &config.expected_issues);
+        verify_reported_issues(
+            config.name,
+            analysis_result,
+            codebase,
+            &config.expected_issues,
+            &config.expected_messages,
+        );
     }
 
     fn verify_reported_issues(
@@ -319,6 +379,7 @@ mod tests {
         mut analysis_result: AnalysisResult,
         mut codebase: CodebaseMetadata,
         expected_issue_codes: &[IssueCode],
+        expected_messages: &[&str],
     ) {
         let mut actual_issues_collected = std::mem::take(&mut analysis_result.issues);
 
@@ -371,6 +432,13 @@ mod tests {
             panic!("{}", panic_message);
         }
 
+        for expected_message in expected_messages {
+            assert!(
+                actual_issues_collected.iter().any(|issue| issue.message == *expected_message),
+                "Test '{test_name}': Expected issue message {expected_message:?}, but found: {actual_issues_collected:?}",
+            );
+        }
+
         if expected_issue_codes.is_empty() && actual_issues_count != 0 {
             let mut panic_message = format!("Test '{test_name}': Expected no issues, but found:\n");
             for issue in actual_issues_collected {
@@ -384,6 +452,26 @@ mod tests {
 
             panic!("{}", panic_message);
         }
+    }
+
+    #[test]
+    fn unused_method_message_preserves_declaration_casing() {
+        TestCase::new(
+            "unused_method_message_preserves_declaration_casing",
+            "<?php
+
+final class Test
+{
+    private function getRandomString(): string
+    {
+        return 'string';
+    }
+}
+",
+        )
+        .expect_issues(vec![IssueCode::UnusedMethod])
+        .expect_messages(vec!["Method `getRandomString()` is never used."])
+        .run();
     }
 
     #[macro_export]

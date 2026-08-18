@@ -8,6 +8,7 @@ use mago_codex::flags::attribute::AttributeFlags;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_codex::reference::ReferenceOrigin;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::template::TemplateResult;
 use mago_reporting::Annotation;
@@ -27,6 +28,7 @@ use crate::error::AnalysisError;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
+use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::analyzer::analyze_invocation;
 use crate::visibility::check_method_visibility;
@@ -78,7 +80,7 @@ where
         return Ok(());
     }
 
-    let mut scope = ScopeContext::new();
+    let mut scope = ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, mago_word::empty_word())));
     scope.set_class_like(Some(class_like_metadata));
     scope.set_static(true);
 
@@ -273,19 +275,25 @@ where
     let Some(constructor) = context.codebase.get_method_by_id(&declaring_constructor_id) else {
         if let Some(argument_list) = &attribute.argument_list {
             if !argument_list.arguments.is_empty() {
-                let attribute_name = metadata.original_name;
-                context.collector.report_with_code(
-                    IssueCode::TooManyArguments,
-                    Issue::error(format!(
-                        "Attribute class `{attribute_name}` has no `__construct` method, but arguments were provided."
-                    ))
-                    .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
-                    .with_annotation(
-                        Annotation::secondary(attribute.name.span())
-                            .with_message(format!("Attribute class `{attribute_name}` has no constructor")),
-                    )
-                    .with_help("Remove the arguments, or define a public `__construct` method on the attribute class."),
-                );
+                if !metadata.has_incomplete_hierarchy() {
+                    let attribute_name = metadata.original_name;
+                    context.collector.report_with_code(
+                        IssueCode::TooManyArguments,
+                        Issue::error(format!(
+                            "Attribute class `{attribute_name}` has no `__construct` method, but arguments were provided."
+                        ))
+                        .with_annotation(
+                            Annotation::primary(argument_list.span()).with_message("Arguments provided here"),
+                        )
+                        .with_annotation(
+                            Annotation::secondary(attribute.name.span())
+                                .with_message(format!("Attribute class `{attribute_name}` has no constructor")),
+                        )
+                        .with_help(
+                            "Remove the arguments, or define a public `__construct` method on the attribute class.",
+                        ),
+                    );
+                }
             }
 
             argument_list.analyze(context, block_context, artifacts)?;
@@ -296,7 +304,7 @@ where
 
     artifacts.symbol_references.add_reference_for_method_call(&block_context.scope, &declaring_constructor_id);
 
-    let invocation = Invocation {
+    let mut invocation = Invocation {
         target: InvocationTarget::FunctionLike {
             identifier: FunctionLikeIdentifier::Method(
                 declaring_constructor_id.get_class_name(),
@@ -304,10 +312,12 @@ where
             ),
             metadata: constructor,
             inferred_return_type: None,
+            effective_signature: None,
             method_context: Some(MethodTargetContext {
+                invocation_kind: MethodInvocationKind::Instance,
                 declaring_method_id: Some(declaring_constructor_id),
                 class_like_metadata: metadata,
-                class_type: StaticClassType::None,
+                class_type: StaticClassType::Exact(metadata.original_name),
                 declaring_object_type: None,
             }),
             span: attribute.name.span(),
@@ -325,7 +335,7 @@ where
         context,
         block_context,
         artifacts,
-        &invocation,
+        &mut invocation,
         Some((metadata.name, None)),
         &mut template_result,
         &mut argument_types,

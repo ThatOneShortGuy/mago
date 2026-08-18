@@ -26,6 +26,7 @@ use mago_syntax::cst::EnumCase;
 use mago_syntax::cst::EnumCaseBackedItem;
 use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::EnumCaseUnitItem;
+use mago_syntax::cst::Expression;
 use mago_syntax::cst::ExpressionStatement;
 use mago_syntax::cst::Extends;
 use mago_syntax::cst::FullOpeningTag;
@@ -74,6 +75,7 @@ use mago_syntax::cst::StaticAbstractItem;
 use mago_syntax::cst::StaticConcreteItem;
 use mago_syntax::cst::StaticItem;
 use mago_syntax::cst::Terminator;
+use mago_syntax::cst::TokenSeparatedSequence;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
 use mago_syntax::cst::TraitUseAbsoluteMethodReference;
@@ -142,22 +144,50 @@ pub mod return_value;
 pub mod statement;
 pub mod string;
 
+fn print_inheritance_clause<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    keyword: Document<'arena, A>,
+    types: &'arena TokenSeparatedSequence<'arena, Identifier<'arena>>,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    Document::Group(Group::new(vec_in![f.arena;
+        keyword,
+        Document::Indent(vec_in![f.arena; Document::Line(Line::default())]),
+        Document::Indent(Document::join(f.arena, types.iter().map(|v| v.format(f)), Separator::CommaLine)),
+    ]))
+}
+
+fn push_comma_separated_items<'arena, A, T>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    contents: &mut Vec<'arena, Document<'arena, A>, A>,
+    items: &'arena [T],
+) where
+    T: Format<'arena, A>,
+    A: Arena,
+{
+    if items.len() == 1 {
+        contents.push(Document::space());
+        contents.push(items[0].format(f));
+    } else if !items.is_empty() {
+        contents.push(Document::Indent(vec_in![f.arena; Document::Line(Line::default())]));
+
+        contents.push(Document::Indent(Document::join(
+            f.arena,
+            items.iter().map(|v| v.format(f)),
+            Separator::CommaLine,
+        )));
+        contents.push(Document::Line(Line::soft()));
+    }
+}
+
 pub trait Format<'arena, A>
 where
     A: Arena,
 {
     #[must_use]
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A>;
-}
-
-impl<'arena, T, A> Format<'arena, A> for Box<T>
-where
-    T: Format<'arena, A>,
-    A: Arena,
-{
-    fn format(&'arena self, p: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
-        (**self).format(p)
-    }
 }
 
 impl<'arena, T, A> Format<'arena, A> for &'arena T
@@ -347,15 +377,11 @@ where
             let mut contents = vec_in![f.arena; self.declare.format(f)];
 
             contents.push(Document::String(b"("));
-
-            let len = self.items.len();
-            for (i, item) in self.items.iter().enumerate() {
-                contents.push(item.format(f));
-                if i != len - 1 {
-                    contents.push(Document::String(b", "));
-                }
-            }
-
+            contents.extend(Document::join(
+                f.arena,
+                self.items.iter().map(|item| item.format(f)),
+                Separator::CommaSpace,
+            ));
             contents.push(Document::String(b")"));
             contents.push(self.body.format(f));
 
@@ -391,7 +417,7 @@ where
                 DeclareBody::Statement(s) => {
                     let body = s.format(f);
 
-                    misc::adjust_clause(f, s, body, false)
+                    misc::adjust_clause(f, s, body)
                 }
                 DeclareBody::ColonDelimited(b) => b.format(f),
             }
@@ -558,7 +584,7 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, TypedUseItemList, {
-            let mut contents = vec_in![f.arena;
+            let contents = vec_in![f.arena;
                 self.r#type.format(f),
                 Document::space(),
                 self.namespace.format(f),
@@ -566,31 +592,17 @@ where
                 Document::String(b"{"),
             ];
 
-            if !self.items.is_empty() {
-                let mut items: Vec<'arena, _, A> = if *f.settings.sort_uses != SortOrder::Preserve {
-                    Document::join(
-                        f.arena,
-                        statement::sort_use_items(self.items.iter()).into_iter().map(|i| i.format(f)),
-                        Separator::CommaLine,
-                    )
-                } else {
-                    Document::join(f.arena, self.items.iter().map(|i| i.format(f)), Separator::CommaLine)
-                };
-
-                items.insert(0, Document::Line(Line::soft()));
-
-                contents.push(Document::Indent(items));
-            }
-
-            if let Some(comments) = f.print_dangling_comments(self.left_brace.join(self.right_brace), true) {
-                contents.push(comments);
+            let items: Vec<'arena, _, A> = if *f.settings.sort_uses != SortOrder::Preserve {
+                Document::join(
+                    f.arena,
+                    statement::sort_use_items(self.items.iter()).into_iter().map(|i| i.format(f)),
+                    Separator::CommaLine,
+                )
             } else {
-                contents.push(Document::Line(Line::soft()));
-            }
+                Document::join(f.arena, self.items.iter().map(|i| i.format(f)), Separator::CommaLine)
+            };
 
-            contents.push(Document::String(b"}"));
-
-            Document::Group(Group::new(contents))
+            print_braced_use_items(f, contents, items, self.left_brace, self.right_brace)
         })
     }
 }
@@ -601,36 +613,48 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, MixedUseItemList, {
-            let mut contents =
-                vec_in![f.arena; self.namespace.format(f), Document::String(b"\\"), Document::String(b"{")];
+            let contents = vec_in![f.arena; self.namespace.format(f), Document::String(b"\\"), Document::String(b"{")];
 
-            if !self.items.is_empty() {
-                let mut items = if *f.settings.sort_uses != SortOrder::Preserve {
-                    Document::join(
-                        f.arena,
-                        statement::sort_maybe_typed_use_items(self.items.iter()).into_iter().map(|i| i.format(f)),
-                        Separator::CommaLine,
-                    )
-                } else {
-                    Document::join(f.arena, self.items.iter().map(|i| i.format(f)), Separator::CommaLine)
-                };
-
-                items.insert(0, Document::Line(Line::soft()));
-
-                contents.push(Document::Indent(items));
-            }
-
-            if let Some(comments) = f.print_dangling_comments(self.left_brace.join(self.right_brace), true) {
-                contents.push(comments);
+            let items = if *f.settings.sort_uses != SortOrder::Preserve {
+                Document::join(
+                    f.arena,
+                    statement::sort_maybe_typed_use_items(self.items.iter()).into_iter().map(|i| i.format(f)),
+                    Separator::CommaLine,
+                )
             } else {
-                contents.push(Document::Line(Line::soft()));
-            }
+                Document::join(f.arena, self.items.iter().map(|i| i.format(f)), Separator::CommaLine)
+            };
 
-            contents.push(Document::String(b"}"));
-
-            Document::Group(Group::new(contents))
+            print_braced_use_items(f, contents, items, self.left_brace, self.right_brace)
         })
     }
+}
+
+fn print_braced_use_items<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    mut contents: Vec<'arena, Document<'arena, A>, A>,
+    mut items: Vec<'arena, Document<'arena, A>, A>,
+    left_brace: Span,
+    right_brace: Span,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    if !items.is_empty() {
+        items.insert(0, Document::Line(Line::soft()));
+
+        contents.push(Document::Indent(items));
+    }
+
+    if let Some(comments) = f.print_dangling_comments(left_brace.join(right_brace), true) {
+        contents.push(comments);
+    } else {
+        contents.push(Document::Line(Line::soft()));
+    }
+
+    contents.push(Document::String(b"}"));
+
+    Document::Group(Group::new(contents))
 }
 
 impl<'arena, A> Format<'arena, A> for MaybeTypedUseItem<'arena>
@@ -725,14 +749,11 @@ where
             }
 
             let mut contents = vec_in![f.arena; self.r#use.format(f), Document::space()];
-            for (i, trait_name) in self.trait_names.iter().enumerate() {
-                if i != 0 {
-                    contents.push(Document::String(b", "));
-                }
-
-                contents.push(trait_name.format(f));
-            }
-
+            contents.extend(Document::join(
+                f.arena,
+                self.trait_names.iter().map(|trait_name| trait_name.format(f)),
+                Separator::CommaSpace,
+            ));
             contents.push(self.specification.format(f));
 
             Document::Group(Group::new(contents))
@@ -825,14 +846,11 @@ where
         wrap!(f, self, TraitUsePrecedenceAdaptation, {
             let mut contents = vec_in![f.arena; self.method_reference.format(f), Document::space(), self.insteadof.format(f), Document::space()];
 
-            for (i, trait_name) in self.trait_names.iter().enumerate() {
-                if i != 0 {
-                    contents.push(Document::String(b", "));
-                }
-
-                contents.push(trait_name.format(f));
-            }
-
+            contents.extend(Document::join(
+                f.arena,
+                self.trait_names.iter().map(|trait_name| trait_name.format(f)),
+                Separator::CommaSpace,
+            ));
             contents.push(self.terminator.format(f));
 
             Document::Group(Group::new(contents))
@@ -865,6 +883,34 @@ where
     }
 }
 
+fn clause_separator<'arena, A>(f: &FormatterState<'_, 'arena, A>, prev_block_span: Span) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    if f.settings.following_clause_on_newline
+        || f.is_followed_by_comment_on_next_line(prev_block_span)
+        || f.has_same_line_trailing_comment(prev_block_span)
+    {
+        Document::Line(Line::hard())
+    } else {
+        Document::space()
+    }
+}
+
+fn print_eq_assignment<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    node: AssignmentLikeNode<'arena>,
+    lhs: Document<'arena, A>,
+    value: &'arena Expression<'arena>,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    let alignment = f.alignment_context();
+
+    print_assignment_with_alignment(f, node, lhs, Document::String(b"="), value, alignment)
+}
+
 impl<'arena, A> Format<'arena, A> for ClassLikeConstant<'arena>
 where
     A: Arena,
@@ -888,19 +934,7 @@ where
                 contents.push(h.format(f));
             }
 
-            if self.items.len() == 1 {
-                contents.push(Document::space());
-                contents.push(self.items.as_slice()[0].format(f));
-            } else if !self.items.is_empty() {
-                contents.push(Document::Indent(vec_in![f.arena; Document::Line(Line::default())]));
-
-                contents.push(Document::Indent(Document::join(
-                    f.arena,
-                    self.items.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )));
-                contents.push(Document::Line(Line::soft()));
-            }
+            push_comma_separated_items(f, &mut contents, self.items.as_slice());
 
             contents.push(self.terminator.format(f));
 
@@ -917,14 +951,7 @@ where
         wrap!(f, self, ClassLikeConstantItem, {
             let lhs = self.name.format(f);
 
-            print_assignment_with_alignment(
-                f,
-                AssignmentLikeNode::ClassLikeConstantItem(self),
-                lhs,
-                Document::String(b"="),
-                self.value,
-                f.alignment_context(),
-            )
+            print_eq_assignment(f, AssignmentLikeNode::ClassLikeConstantItem(self), lhs, self.value)
         })
     }
 }
@@ -981,16 +1008,8 @@ where
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, EnumCaseBackedItem, {
             let lhs = self.name.format(f);
-            let operator = Document::String(b"=");
 
-            print_assignment_with_alignment(
-                f,
-                AssignmentLikeNode::EnumCaseBackedItem(self),
-                lhs,
-                operator,
-                self.value,
-                f.alignment_context(),
-            )
+            print_eq_assignment(f, AssignmentLikeNode::EnumCaseBackedItem(self), lhs, self.value)
         })
     }
 }
@@ -1043,7 +1062,7 @@ where
                 if let Some(alignment) = f.alignment_context()
                     && alignment.type_padding > 0
                 {
-                    contents.push(Document::String(f.as_str(" ".repeat(alignment.type_padding))));
+                    contents.push(Document::String(utils::spaces(f.arena, alignment.type_padding)));
                 }
 
                 should_add_space = true;
@@ -1150,16 +1169,8 @@ where
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, PropertyConcreteItem, {
             let lhs = self.variable.format(f);
-            let operator = Document::String(b"=");
 
-            print_assignment_with_alignment(
-                f,
-                AssignmentLikeNode::PropertyConcreteItem(self),
-                lhs,
-                operator,
-                self.value,
-                f.alignment_context(),
-            )
+            print_eq_assignment(f, AssignmentLikeNode::PropertyConcreteItem(self), lhs, self.value)
         })
     }
 }
@@ -1229,15 +1240,9 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, Extends, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.extends.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default())]),
-                Document::Indent(Document::join(
-                    f.arena,
-                    self.types.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )),
-            ]))
+            let keyword = self.extends.format(f);
+
+            print_inheritance_clause(f, keyword, &self.types)
         })
     }
 }
@@ -1248,15 +1253,9 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, Implements, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.implements.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default())]),
-                Document::Indent(Document::join(
-                    f.arena,
-                    self.types.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )),
-            ]))
+            let keyword = self.implements.format(f);
+
+            print_inheritance_clause(f, keyword, &self.types)
         })
     }
 }
@@ -1541,14 +1540,7 @@ where
         wrap!(f, self, ConstantItem, {
             let lhs = self.name.format(f);
 
-            print_assignment_with_alignment(
-                f,
-                AssignmentLikeNode::ConstantItem(self),
-                lhs,
-                Document::String(b"="),
-                self.value,
-                f.alignment_context(),
-            )
+            print_eq_assignment(f, AssignmentLikeNode::ConstantItem(self), lhs, self.value)
         })
     }
 }
@@ -1567,19 +1559,7 @@ where
             }
 
             contents.push(self.r#const.format(f));
-            if self.items.len() == 1 {
-                contents.push(Document::space());
-                contents.push(self.items.as_slice()[0].format(f));
-            } else if !self.items.is_empty() {
-                contents.push(Document::Indent(vec_in![f.arena; Document::Line(Line::default())]));
-
-                contents.push(Document::Indent(Document::join(
-                    f.arena,
-                    self.items.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )));
-                contents.push(Document::Line(Line::soft()));
-            }
+            push_comma_separated_items(f, &mut contents, self.items.as_slice());
 
             contents.push(self.terminator.format(f));
 
@@ -2010,9 +1990,7 @@ where
                 (f.parameter_state.variable_padding, f.parameter_state.list_group_id)
                 && padding > 0
             {
-                let mut spaces = Vec::with_capacity_in(padding, f.arena);
-                spaces.resize(padding, b' ');
-                let spaces = Document::String(spaces.leak());
+                let spaces = Document::String(utils::spaces(f.arena, padding));
                 contents.push(Document::IfBreak(IfBreak::new(f.arena, spaces, Document::empty()).with_id(list_id)));
             }
 
@@ -2066,27 +2044,13 @@ where
 
             let mut prev_block_span = self.block.span();
             for clause in &self.catch_clauses {
-                if f.settings.following_clause_on_newline
-                    || f.is_followed_by_comment_on_next_line(prev_block_span)
-                    || f.has_same_line_trailing_comment(prev_block_span)
-                {
-                    parts.push(Document::Line(Line::hard()));
-                } else {
-                    parts.push(Document::space());
-                }
+                parts.push(clause_separator(f, prev_block_span));
                 parts.push(clause.format(f));
                 prev_block_span = clause.block.span();
             }
 
             if let Some(clause) = &self.finally_clause {
-                if f.settings.following_clause_on_newline
-                    || f.is_followed_by_comment_on_next_line(prev_block_span)
-                    || f.has_same_line_trailing_comment(prev_block_span)
-                {
-                    parts.push(Document::Line(Line::hard()));
-                } else {
-                    parts.push(Document::space());
-                }
+                parts.push(clause_separator(f, prev_block_span));
                 parts.push(clause.format(f));
             }
 
@@ -2150,19 +2114,7 @@ where
         wrap!(f, self, Global, {
             let mut contents = vec_in![f.arena; self.global.format(f)];
 
-            if self.variables.len() == 1 {
-                contents.push(Document::space());
-                contents.push(self.variables.as_slice()[0].format(f));
-            } else if !self.variables.is_empty() {
-                contents.push(Document::Indent(vec_in![f.arena; Document::Line(Line::default())]));
-
-                contents.push(Document::Indent(Document::join(
-                    f.arena,
-                    self.variables.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )));
-                contents.push(Document::Line(Line::soft()));
-            }
+            push_comma_separated_items(f, &mut contents, self.variables.as_slice());
 
             contents.push(self.terminator.format(f));
 
@@ -2219,19 +2171,7 @@ where
         wrap!(f, self, Static, {
             let mut contents = vec_in![f.arena; self.r#static.format(f)];
 
-            if self.items.len() == 1 {
-                contents.push(Document::space());
-                contents.push(self.items.as_slice()[0].format(f));
-            } else if !self.items.is_empty() {
-                contents.push(Document::Indent(vec_in![f.arena; Document::Line(Line::default())]));
-
-                contents.push(Document::Indent(Document::join(
-                    f.arena,
-                    self.items.iter().map(|v| v.format(f)),
-                    Separator::CommaLine,
-                )));
-                contents.push(Document::Line(Line::soft()));
-            }
+            push_comma_separated_items(f, &mut contents, self.items.as_slice());
 
             contents.push(self.terminator.format(f));
 

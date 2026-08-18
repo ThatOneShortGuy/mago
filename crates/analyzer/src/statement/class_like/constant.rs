@@ -91,10 +91,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
                     &TypeExpansionOptions {
                         self_class: Some(class_metadata.original_name),
                         static_class_type: StaticClassType::Name(class_metadata.original_name),
-                        evaluate_class_constants: true,
-                        evaluate_conditional_types: true,
-                        expand_generic: true,
-                        expand_templates: true,
                         ..Default::default()
                     },
                 );
@@ -132,8 +128,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
 
                     context.collector.report_with_code(IssueCode::InvalidConstantValue, issue);
                 }
-            } else {
-                // no declared type to check against, or value/declared type are too generic to compare
             }
         }
 

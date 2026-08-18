@@ -208,8 +208,8 @@ where
             TAtomic::Mixed(mixed) if mixed.is_non_null() => {
                 return Some(intersect_null(context, assertion, existing_var_type, key, negated, span));
             }
-            TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_false() => {
-                return Some(subtract_false(
+            TAtomic::Scalar(TScalar::Bool(bool)) if bool.value.is_some() => {
+                return Some(subtract_bool_literal(
                     context,
                     assertion,
                     existing_var_type,
@@ -217,17 +217,7 @@ where
                     negated,
                     span,
                     assertion.has_equality(),
-                ));
-            }
-            TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_true() => {
-                return Some(subtract_true(
-                    context,
-                    assertion,
-                    existing_var_type,
-                    key,
-                    negated,
-                    span,
-                    assertion.has_equality(),
+                    bool.value == Some(false),
                 ));
             }
             _ => (),
@@ -238,8 +228,9 @@ where
         Assertion::Falsy | Assertion::Empty => {
             Some(reconcile_falsy_or_empty(context, assertion, existing_var_type, key, negated, span))
         }
-        Assertion::IsNotIsset => Some(reconcile_not_isset(context, existing_var_type, key, span)),
-        Assertion::ArrayKeyDoesNotExist => Some(reconcile_not_isset(context, existing_var_type, key, span)),
+        Assertion::IsNotIsset | Assertion::ArrayKeyDoesNotExist => {
+            Some(reconcile_not_isset(context, existing_var_type, key, span))
+        }
         Assertion::DoesNotHaveArrayKey(key_name) => {
             Some(reconcile_no_array_key(context, assertion, existing_var_type, key, span, key_name, negated))
         }
@@ -930,8 +921,6 @@ where
             if !is_equality {
                 new_existing_var_type.remove_type(atomic);
             }
-        } else {
-            // atomic isn't an int/string/array-key family; arraykey subtraction doesn't apply
         }
     }
 
@@ -997,8 +986,6 @@ where
             if !is_equality {
                 new_existing_var_type.remove_type(atomic);
             }
-        } else {
-            // atomic isn't a bool; bool subtraction doesn't apply
         }
     }
 
@@ -1141,7 +1128,8 @@ where
     )
 }
 
-fn subtract_false<A>(
+#[allow(clippy::too_many_arguments)]
+fn subtract_bool_literal<A>(
     context: &mut Context<'_, '_, A>,
     assertion: &Assertion,
     existing_var_type: &TUnion,
@@ -1149,6 +1137,7 @@ fn subtract_false<A>(
     negated: bool,
     span: Option<&Span>,
     is_equality: bool,
+    subtracted_is_false: bool,
 ) -> TUnion
 where
     A: Arena,
@@ -1156,6 +1145,9 @@ where
     if existing_var_type.is_mixed() {
         return existing_var_type.clone();
     }
+
+    let remaining_bool =
+        if subtracted_is_false { TAtomic::Scalar(TScalar::r#true()) } else { TAtomic::Scalar(TScalar::r#false()) };
 
     let existing_var_types = existing_var_type.types.as_ref();
     let mut did_remove_type = false;
@@ -1166,7 +1158,16 @@ where
             TAtomic::GenericParameter(generic_parameter) => {
                 if !is_equality
                     && let Some(atomic) = map_generic_constraint(generic_parameter, |constraint| {
-                        subtract_false(context, assertion, constraint, None, false, None, is_equality)
+                        subtract_bool_literal(
+                            context,
+                            assertion,
+                            constraint,
+                            None,
+                            false,
+                            None,
+                            is_equality,
+                            subtracted_is_false,
+                        )
                     })
                 {
                     new_existing_var_type.remove_type(&atomic);
@@ -1177,7 +1178,7 @@ where
             }
             TAtomic::Scalar(TScalar::Generic) => {
                 new_existing_var_type.remove_type(atomic);
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::r#true()));
+                new_existing_var_type.types.to_mut().push(remaining_bool.clone());
                 new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::string()));
                 new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::int()));
                 new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::float()));
@@ -1185,85 +1186,14 @@ where
             }
             TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_general() => {
                 new_existing_var_type.remove_type(atomic);
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::r#true()));
+                new_existing_var_type.types.to_mut().push(remaining_bool.clone());
                 did_remove_type = true;
             }
-            TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_false() => {
+            TAtomic::Scalar(TScalar::Bool(bool)) if bool.value == Some(!subtracted_is_false) => {
                 did_remove_type = true;
                 new_existing_var_type.remove_type(atomic);
             }
             _ => {}
-        }
-    }
-
-    if (new_existing_var_type.types.is_empty() || !did_remove_type)
-        && let Some(key) = key
-        && let Some(pos) = span
-    {
-        let old_var_type_atom = existing_var_type.get_id();
-        trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, pos);
-    }
-
-    if new_existing_var_type.types.is_empty() {
-        return get_never();
-    }
-
-    new_existing_var_type
-}
-
-fn subtract_true<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    is_equality: bool,
-) -> TUnion
-where
-    A: Arena,
-{
-    if existing_var_type.is_mixed() {
-        return existing_var_type.clone();
-    }
-
-    let existing_var_types = existing_var_type.types.as_ref();
-    let mut did_remove_type = false;
-    let mut new_existing_var_type = existing_var_type.clone();
-
-    for atomic in existing_var_types {
-        match atomic {
-            TAtomic::GenericParameter(generic_parameter) => {
-                if !is_equality
-                    && let Some(atomic) = map_generic_constraint(generic_parameter, |constraint| {
-                        subtract_true(context, assertion, constraint, None, false, None, is_equality)
-                    })
-                {
-                    new_existing_var_type.remove_type(&atomic);
-                    new_existing_var_type.types.to_mut().push(atomic);
-                } else {
-                    did_remove_type = true;
-                }
-            }
-            TAtomic::Scalar(TScalar::Generic) => {
-                did_remove_type = true;
-                new_existing_var_type.remove_type(atomic);
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::r#false()));
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::string()));
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::int()));
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::float()));
-            }
-            TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_general() => {
-                new_existing_var_type.remove_type(atomic);
-                new_existing_var_type.types.to_mut().push(TAtomic::Scalar(TScalar::r#false()));
-                did_remove_type = true;
-            }
-            TAtomic::Scalar(TScalar::Bool(bool)) if bool.is_true() => {
-                did_remove_type = true;
-
-                new_existing_var_type.remove_type(atomic);
-            }
-            _ => (),
         }
     }
 
@@ -1483,13 +1413,9 @@ where
                 }
             } else if !atomic.is_falsy() {
                 did_remove_type = true;
-            } else {
-                // list with no known count and possibly empty; no fixed-count contradiction to detect
             }
         } else if atomic.is_keyed_array() && !atomic.is_false() {
             did_remove_type = true;
-        } else {
-            // atomic isn't a list or non-false keyed array; count assertion doesn't apply
         }
 
         acceptable_types.push(atomic);
@@ -1562,8 +1488,6 @@ where
                         if known_item.0 {
                             known_items.remove(key_name);
                             did_remove_type = true;
-                        } else {
-                            // entry is non-optional and present; assertion can't remove it
                         }
                     } else if let Some((key_parameter, _)) = parameters
                         && union_comparator::can_expression_types_be_identical(
@@ -1575,8 +1499,6 @@ where
                         )
                     {
                         did_remove_type = true;
-                    } else {
-                        // key not in known items and parameters don't admit it; nothing to remove
                     }
                 } else if let Some((key_parameter, _)) = parameters
                     && union_comparator::can_expression_types_be_identical(
@@ -1588,8 +1510,6 @@ where
                     )
                 {
                     did_remove_type = true;
-                } else {
-                    // no known items and parameters don't admit this key; nothing to remove
                 }
 
                 acceptable_types.push(atomic);
@@ -1601,18 +1521,12 @@ where
                             if known_element.0 {
                                 known_elements.remove(&(*i as usize));
                                 did_remove_type = true;
-                            } else {
-                                // element is non-optional and present; assertion can't remove it
                             }
                         } else if !element_type.is_never() {
                             did_remove_type = true;
-                        } else {
-                            // index missing and no element type to fall back on; nothing to remove
                         }
                     } else if !element_type.is_never() {
                         did_remove_type = true;
-                    } else {
-                        // no known elements and the element type is never; nothing to remove
                     }
                 }
 
@@ -1625,8 +1539,6 @@ where
                     reconcile_no_array_key(context, assertion, constraint, None, None, key_name, negated)
                 }) {
                     acceptable_types.push(atomic);
-                } else {
-                    // constraint reconciles to nothing; drop the parameter entirely
                 }
 
                 did_remove_type = true;
@@ -1675,11 +1587,7 @@ fn reconcile_no_nonnull_entry_for_key(existing_var_type: &TUnion, key_name: &Arr
                     if known_items_inner.is_empty() {
                         all_known_items_removed = true;
                     }
-                } else {
-                    // todo emit issue
                 }
-            } else {
-                // do nothing
             }
 
             if all_known_items_removed {

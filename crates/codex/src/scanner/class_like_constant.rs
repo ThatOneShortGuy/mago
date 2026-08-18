@@ -15,12 +15,14 @@ use crate::metadata::class_like_constant::ClassLikeConstantMetadata;
 use crate::metadata::flags::MetadataFlags;
 use crate::scanner::Context;
 use crate::scanner::attribute::scan_attribute_lists;
+use crate::scanner::docblock::apply_common_metadata_flag;
 use crate::scanner::docblock::find_most_trusted_tag;
 use crate::scanner::docblock::parse_docblock;
 use crate::scanner::inference::infer;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::ttype::merge_type_preserving_nullability;
+use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::reference::TReference;
@@ -44,7 +46,7 @@ where
 {
     let verdict = evaluate_version_attributes(&constant.attribute_lists, context, context.php_version);
 
-    let attributes = scan_attribute_lists(&constant.attribute_lists, context);
+    let attributes = scan_attribute_lists(&constant.attribute_lists, context, scope, classname);
     let visibility =
         constant.modifiers.get_first_visibility().and_then(|m| Visibility::try_from(m).ok()).unwrap_or_default();
     let is_final = constant.modifiers.contains_final();
@@ -93,19 +95,11 @@ where
 
             if let Some(document) = document.as_ref() {
                 for tag in document.tags() {
+                    if apply_common_metadata_flag(&mut meta.flags, &tag.value) {
+                        continue;
+                    }
+
                     match &tag.value {
-                        TagValue::Deprecated(_) => {
-                            meta.flags |= MetadataFlags::DEPRECATED;
-                        }
-                        TagValue::NotDeprecated(_) => {
-                            meta.flags.set(MetadataFlags::DEPRECATED, false);
-                        }
-                        TagValue::Internal(_) => {
-                            meta.flags |= MetadataFlags::INTERNAL;
-                        }
-                        TagValue::Experimental(_) => {
-                            meta.flags |= MetadataFlags::EXPERIMENTAL;
-                        }
                         TagValue::Final(_) => {
                             meta.flags |= MetadataFlags::FINAL;
                         }
@@ -126,15 +120,11 @@ where
 
                             meta.type_metadata = Some(type_metadata);
                         }
-                        Err(typing_error) => class_like_metadata.issues.push(
-                            Issue::error("Could not resolve the type for the @var tag.")
-                                .with_code(ScanningIssueKind::InvalidVarTag)
-                                .with_annotation(
-                                    Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
-                                )
-                                .with_note(typing_error.note())
-                                .with_help(typing_error.help()),
-                        ),
+                        Err(typing_error) => class_like_metadata.issues.push(typing_error_issue(
+                            "Could not resolve the type for the @var tag.",
+                            ScanningIssueKind::InvalidVarTag,
+                            &typing_error,
+                        )),
                     }
                 }
             }

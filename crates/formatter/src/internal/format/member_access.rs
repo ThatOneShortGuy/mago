@@ -3,6 +3,7 @@ use mago_allocator::vec::Vec;
 use mago_allocator::vec_in;
 use mago_database::file::HasFileId;
 use mago_span::HasSpan;
+use mago_span::Position;
 use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Argument;
@@ -104,10 +105,10 @@ impl<'arena> MemberAccess<'arena> {
         }
     }
 
-    fn get_flat_width(&self) -> Option<usize> {
+    fn get_flat_width(&self, with_binary_arguments: bool) -> Option<usize> {
         let selector_width = get_selector_width(self.get_selector())?;
         let arguments_width = match self.get_arguments_list() {
-            Some(argument_list) => get_argument_list_width(argument_list)?,
+            Some(argument_list) => get_argument_list_width(argument_list, with_binary_arguments)?,
             None => 0,
         };
 
@@ -327,7 +328,7 @@ where
     }
 
     fn exceeds_print_width(&self, f: &FormatterState<'_, '_, A>) -> bool {
-        let Some(width) = self.get_flat_width() else {
+        let Some(width) = self.get_flat_width(false) else {
             return false;
         };
 
@@ -335,7 +336,7 @@ where
     }
 
     fn exceeds_print_width_from_line_start(&self, f: &FormatterState<'_, '_, A>) -> bool {
-        let Some(width) = self.get_flat_width_with_binary_arguments() else {
+        let Some(width) = self.get_flat_width(true) else {
             return false;
         };
 
@@ -402,19 +403,10 @@ where
         misc::has_new_line_in_range(f.source_text, chain_end, terminator_start)
     }
 
-    fn get_flat_width(&self) -> Option<usize> {
-        let mut width = get_flat_expression_width(self.base)?;
+    fn get_flat_width(&self, with_binary_arguments: bool) -> Option<usize> {
+        let mut width = get_flat_expression_width(self.base, with_binary_arguments)?;
         for access in &self.accesses {
-            width += access.get_flat_width()?;
-        }
-
-        Some(width)
-    }
-
-    fn get_flat_width_with_binary_arguments(&self) -> Option<usize> {
-        let mut width = get_flat_expression_width_with_binary_arguments(self.base)?;
-        for access in &self.accesses {
-            width += get_access_flat_width_with_binary_arguments(access)?;
+            width += access.get_flat_width(with_binary_arguments)?;
         }
 
         Some(width)
@@ -427,34 +419,10 @@ where
             accesses_len -= 1; // First access is inline, so we don't count it for broken links
         }
 
-        let mut broken_links = 0;
-        if let Some(first_access) = self.accesses.first() {
-            let base_end = self.base.span().end;
-            let first_op_start = first_access.get_operator_span().start;
-
-            if misc::has_new_line_in_range(f.source_text, base_end.offset, first_op_start.offset) {
-                broken_links += 1;
-            }
-        }
-
-        for (i, access) in self.accesses.iter().enumerate() {
-            if i == 0 {
-                continue; // Skip the first access since we need previous selector
-            }
-
-            let prev_access = &self.accesses[i - 1];
-            let prev_selector = prev_access.get_selector();
-            let prev_selector_end = match prev_access.get_arguments_list() {
-                Some(args) => args.span().end,
-                None => prev_selector.span().end,
-            };
-
-            let current_op_span = access.get_operator_span();
-
-            if misc::has_new_line_in_range(f.source_text, prev_selector_end.offset, current_op_span.start_offset()) {
-                broken_links += 1;
-            }
-        }
+        let broken_links = self
+            .link_gaps()
+            .filter(|(start, end)| misc::has_new_line_in_range(f.source_text, start.offset, end.offset))
+            .count();
 
         if broken_links == 0 {
             return false;
@@ -472,50 +440,36 @@ where
         true
     }
 
-    #[inline]
-    fn has_comments_in_chain(&self, f: &FormatterState<'_, '_, A>) -> bool {
-        // Check if there are comments after the base expression
-        if let Some(first_access) = self.accesses.first() {
-            let base_end = self.base.span().end;
-            let first_op_start = first_access.get_operator_span().start;
+    fn link_gaps(&self) -> impl Iterator<Item = (Position, Position)> + '_ {
+        let first = self.accesses.first().map(|access| (self.base.span().end, access.get_operator_span().start));
 
-            // Check for comments between base and first operator
-            if f.has_inner_comment(Span::new(f.file_id(), base_end, first_op_start)) {
-                return true;
-            }
-        }
-
-        // Check for comments between chain elements
-        for (i, access) in self.accesses.iter().enumerate() {
-            if i == 0 {
-                continue; // Skip the first access as we already checked between base and it
-            }
-
-            let prev_access = &self.accesses[i - 1];
-            let prev_selector = prev_access.get_selector();
-            let prev_span = match prev_access.get_arguments_list() {
-                Some(args) => args.span(),
-                None => prev_selector.span(),
+        first.into_iter().chain(self.accesses.windows(2).filter_map(|pair| {
+            let [previous, current] = pair else {
+                return None;
             };
 
-            let current_op_start = access.get_operator_span().start;
+            let end = match previous.get_arguments_list() {
+                Some(arguments) => arguments.span().end,
+                None => previous.get_selector().span().end,
+            };
 
-            // Check for comments between previous selector/args and current operator
-            if f.has_inner_comment(Span::new(prev_span.file_id, prev_span.end, current_op_start)) {
-                return true;
-            }
+            Some((end, current.get_operator_span().start))
+        }))
+    }
 
-            // Check for comments between operator and selector
-            if f.has_inner_comment(Span::new(
+    #[inline]
+    fn has_comments_in_chain(&self, f: &FormatterState<'_, '_, A>) -> bool {
+        if self.link_gaps().any(|(start, end)| f.has_inner_comment(Span::new(f.file_id(), start, end))) {
+            return true;
+        }
+
+        self.accesses.iter().skip(1).any(|access| {
+            f.has_inner_comment(Span::new(
                 access.get_operator_span().file_id,
                 access.get_operator_span().end_position(),
                 access.get_selector().span().start_position(),
-            )) {
-                return true;
-            }
-        }
-
-        false
+            ))
+        })
     }
 
     /// Checks if any method call in the chain has arguments that will force the chain to break.
@@ -651,16 +605,15 @@ where
     }
 }
 
-fn get_argument_width(argument: &Argument<'_>) -> Option<usize> {
+fn get_argument_width(argument: &Argument<'_>, with_binary_arguments: bool) -> Option<usize> {
     match argument {
         Argument::Positional(argument) => {
             let unpack_width = usize::from(argument.ellipsis.is_some()) * 3;
 
-            get_flat_expression_width(argument.value).map(|width| width + unpack_width)
+            get_flat_expression_width(argument.value, with_binary_arguments).map(|width| width + unpack_width)
         }
-        Argument::Named(argument) => {
-            get_flat_expression_width(argument.value).map(|width| width + string_width(argument.name.value) + 2)
-        }
+        Argument::Named(argument) => get_flat_expression_width(argument.value, with_binary_arguments)
+            .map(|width| width + string_width(argument.name.value) + 2),
     }
 }
 
@@ -696,48 +649,23 @@ where
 }
 
 fn get_instantiation_width(instantiation: &Instantiation<'_>) -> Option<usize> {
-    let class_width = get_flat_expression_width(instantiation.class)?;
+    let class_width = get_flat_expression_width(instantiation.class, false)?;
     let argument_list_width = match &instantiation.argument_list {
-        Some(argument_list) => get_argument_list_width(argument_list)?,
+        Some(argument_list) => get_argument_list_width(argument_list, false)?,
         None => 0,
     };
 
     Some(string_width(b"new ") + class_width + argument_list_width)
 }
 
-fn get_argument_width_with_binary_arguments(argument: &Argument<'_>) -> Option<usize> {
-    match argument {
-        Argument::Positional(argument) => {
-            let unpack_width = usize::from(argument.ellipsis.is_some()) * 3;
-
-            get_flat_expression_width_with_binary_arguments(argument.value).map(|width| width + unpack_width)
-        }
-        Argument::Named(argument) => get_flat_expression_width_with_binary_arguments(argument.value)
-            .map(|width| width + string_width(argument.name.value) + 2),
-    }
-}
-
-fn get_argument_list_width(argument_list: &ArgumentList<'_>) -> Option<usize> {
+fn get_argument_list_width(argument_list: &ArgumentList<'_>, with_binary_arguments: bool) -> Option<usize> {
     let mut width = 2;
     for (i, argument) in argument_list.arguments.iter().enumerate() {
         if i > 0 {
             width += 2;
         }
 
-        width += get_argument_width(argument)?;
-    }
-
-    Some(width)
-}
-
-fn get_argument_list_width_with_binary_arguments(argument_list: &ArgumentList<'_>) -> Option<usize> {
-    let mut width = 2;
-    for (i, argument) in argument_list.arguments.iter().enumerate() {
-        if i > 0 {
-            width += 2;
-        }
-
-        width += get_argument_width_with_binary_arguments(argument)?;
+        width += get_argument_width(argument, with_binary_arguments)?;
     }
 
     Some(width)
@@ -756,90 +684,48 @@ fn get_selector_width(selector: &ClassLikeMemberSelector<'_>) -> Option<usize> {
         ClassLikeMemberSelector::Identifier(identifier) => Some(string_width(identifier.value)),
         ClassLikeMemberSelector::Variable(variable) => get_variable_width(variable),
         ClassLikeMemberSelector::Expression(selector) => {
-            get_flat_expression_width(selector.expression).map(|width| width + 2)
+            get_flat_expression_width(selector.expression, false).map(|width| width + 2)
         }
         ClassLikeMemberSelector::Missing(_) => None,
     }
 }
 
-fn get_flat_expression_width(expression: &Expression<'_>) -> Option<usize> {
+fn get_flat_expression_width(expression: &Expression<'_>, with_binary_arguments: bool) -> Option<usize> {
     if let Some(width) = get_expression_width(expression) {
         return Some(width);
     }
 
+    let recurse = |expression| get_flat_expression_width(expression, with_binary_arguments);
+    let argument_list_width = |argument_list| get_argument_list_width(argument_list, with_binary_arguments);
+
     match expression {
-        Expression::Parenthesized(parenthesized) => {
-            get_flat_expression_width(parenthesized.expression).map(|width| width + 2)
-        }
-        Expression::Access(Access::Property(access)) => get_flat_expression_width(access.object)
+        Expression::Parenthesized(parenthesized) => recurse(parenthesized.expression).map(|width| width + 2),
+        Expression::Access(Access::Property(access)) => recurse(access.object)
             .zip(get_selector_width(&access.property))
             .map(|(object, property)| object + string_width(b"->") + property),
-        Expression::Access(Access::NullSafeProperty(access)) => get_flat_expression_width(access.object)
+        Expression::Access(Access::NullSafeProperty(access)) => recurse(access.object)
             .zip(get_selector_width(&access.property))
             .map(|(object, property)| object + string_width(b"?->") + property),
-        Expression::Call(Call::Method(call)) => get_flat_expression_width(call.object)
-            .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width(&call.argument_list))
-            .map(|((object, method), arguments)| object + string_width(b"->") + method + arguments),
-        Expression::Call(Call::NullSafeMethod(call)) => get_flat_expression_width(call.object)
-            .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width(&call.argument_list))
-            .map(|((object, method), arguments)| object + string_width(b"?->") + method + arguments),
-        Expression::Call(Call::StaticMethod(call)) => get_flat_expression_width(call.class)
-            .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width(&call.argument_list))
-            .map(|((class, method), arguments)| class + string_width(b"::") + method + arguments),
-        _ => None,
-    }
-}
-
-fn get_flat_expression_width_with_binary_arguments(expression: &Expression<'_>) -> Option<usize> {
-    if let Some(width) = get_expression_width(expression) {
-        return Some(width);
-    }
-
-    match expression {
-        Expression::Parenthesized(parenthesized) => {
-            get_flat_expression_width_with_binary_arguments(parenthesized.expression).map(|width| width + 2)
-        }
-        Expression::Access(Access::Property(access)) => get_flat_expression_width_with_binary_arguments(access.object)
-            .zip(get_selector_width(&access.property))
-            .map(|(object, property)| object + string_width(b"->") + property),
-        Expression::Access(Access::NullSafeProperty(access)) => {
-            get_flat_expression_width_with_binary_arguments(access.object)
-                .zip(get_selector_width(&access.property))
-                .map(|(object, property)| object + string_width(b"?->") + property)
-        }
-        Expression::Call(Call::Function(call)) => get_flat_expression_width_with_binary_arguments(call.function)
-            .zip(get_argument_list_width_with_binary_arguments(&call.argument_list))
+        Expression::Call(Call::Function(call)) if with_binary_arguments => recurse(call.function)
+            .zip(argument_list_width(&call.argument_list))
             .map(|(function, arguments)| function + arguments),
-        Expression::Call(Call::Method(call)) => get_flat_expression_width_with_binary_arguments(call.object)
+        Expression::Call(Call::Method(call)) => recurse(call.object)
             .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width_with_binary_arguments(&call.argument_list))
+            .zip(argument_list_width(&call.argument_list))
             .map(|((object, method), arguments)| object + string_width(b"->") + method + arguments),
-        Expression::Call(Call::NullSafeMethod(call)) => get_flat_expression_width_with_binary_arguments(call.object)
+        Expression::Call(Call::NullSafeMethod(call)) => recurse(call.object)
             .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width_with_binary_arguments(&call.argument_list))
+            .zip(argument_list_width(&call.argument_list))
             .map(|((object, method), arguments)| object + string_width(b"?->") + method + arguments),
-        Expression::Call(Call::StaticMethod(call)) => get_flat_expression_width_with_binary_arguments(call.class)
+        Expression::Call(Call::StaticMethod(call)) => recurse(call.class)
             .zip(get_selector_width(&call.method))
-            .zip(get_argument_list_width_with_binary_arguments(&call.argument_list))
+            .zip(argument_list_width(&call.argument_list))
             .map(|((class, method), arguments)| class + string_width(b"::") + method + arguments),
-        Expression::Binary(binary) => get_flat_expression_width_with_binary_arguments(binary.lhs)
-            .zip(get_flat_expression_width_with_binary_arguments(binary.rhs))
+        Expression::Binary(binary) if with_binary_arguments => recurse(binary.lhs)
+            .zip(recurse(binary.rhs))
             .map(|(lhs, rhs)| lhs + string_width(binary.operator.as_bytes()) + rhs + 2),
         _ => None,
     }
-}
-
-fn get_access_flat_width_with_binary_arguments(access: &MemberAccess<'_>) -> Option<usize> {
-    let selector_width = get_selector_width(access.get_selector())?;
-    let arguments_width = match access.get_arguments_list() {
-        Some(argument_list) => get_argument_list_width_with_binary_arguments(argument_list)?,
-        None => 0,
-    };
-
-    Some(string_width(access.get_operator_as_bytes()) + selector_width + arguments_width)
 }
 
 pub(super) fn collect_member_access_chain<'arena, A>(
@@ -1112,21 +998,9 @@ where
 
     if f.settings.preserve_breaking_member_access_chain
         && member_access_chain.is_first_link_object_method_call()
-        && member_access_chain.is_first_link_already_broken(f)
-    {
-        return false;
-    }
-
-    if f.settings.preserve_breaking_member_access_chain
-        && member_access_chain.is_first_link_object_method_call()
-        && member_access_chain.has_break_after_first_access(f)
-    {
-        return false;
-    }
-
-    if f.settings.preserve_breaking_member_access_chain
-        && member_access_chain.is_first_link_object_method_call()
-        && member_access_chain.exceeds_print_width(f)
+        && (member_access_chain.is_first_link_already_broken(f)
+            || member_access_chain.has_break_after_first_access(f)
+            || member_access_chain.exceeds_print_width(f))
     {
         return false;
     }

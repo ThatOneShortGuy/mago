@@ -1,5 +1,4 @@
 use mago_allocator::Arena;
-use mago_allocator::vec::Vec as BumpVec;
 use mago_allocator::vec_in;
 use std::collections::VecDeque;
 
@@ -75,6 +74,7 @@ use mago_syntax::cst::PrintConstruct;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::RequireConstruct;
 use mago_syntax::cst::RequireOnceConstruct;
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::ShellExecuteString;
 use mago_syntax::cst::StaticMethodPartialApplication;
 use mago_syntax::cst::StaticPropertyAccess;
@@ -107,11 +107,12 @@ use crate::internal::format::IndentIfBreak;
 use crate::internal::format::Separator;
 use crate::internal::format::alignment::AlignmentRun;
 use crate::internal::format::alignment::AlignmentWidths;
+use crate::internal::format::alignment::detect_alignment_runs;
+use crate::internal::format::alignment::get_alignment;
 use crate::internal::format::alignment::has_comment_between;
 use crate::internal::format::array::ArrayLike;
 use crate::internal::format::array::print_array_like;
 use crate::internal::format::assignment::AssignmentLikeNode;
-use crate::internal::format::assignment::print_assignment;
 use crate::internal::format::assignment::print_assignment_with_alignment;
 use crate::internal::format::binaryish;
 use crate::internal::format::binaryish::BinaryishOperator;
@@ -601,18 +602,46 @@ where
     }
 }
 
+fn print_keyword_parenthesized_value<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    keyword: Document<'arena, A>,
+    value: Document<'arena, A>,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    Document::Group(Group::new(vec_in![f.arena;
+        keyword,
+        Document::String(b"("),
+        value,
+        Document::String(b")"),
+    ]))
+}
+
+fn print_keyword_indented_value<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    keyword: Document<'arena, A>,
+    value: Document<'arena, A>,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    Document::Group(Group::new(vec_in![f.arena;
+        keyword,
+        Document::Indent(vec_in![f.arena; Document::Line(Line::default()), value]),
+    ]))
+}
+
 impl<'arena, A> Format<'arena, A> for EmptyConstruct<'arena>
 where
     A: Arena,
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, EmptyConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.empty.format(f),
-                Document::String(b"("),
-                self.value.format(f),
-                Document::String(b")"),
-            ]))
+            let keyword = self.empty.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_parenthesized_value(f, keyword, value)
         })
     }
 }
@@ -623,12 +652,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, EvalConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.eval.format(f),
-                Document::String(b"("),
-                self.value.format(f),
-                Document::String(b")"),
-            ]))
+            let keyword = self.r#eval.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_parenthesized_value(f, keyword, value)
         })
     }
 }
@@ -639,10 +666,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, IncludeConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.include.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default()), self.value.format(f)]),
-            ]))
+            let keyword = self.include.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_indented_value(f, keyword, value)
         })
     }
 }
@@ -653,10 +680,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, IncludeOnceConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.include_once.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default()), self.value.format(f)]),
-            ]))
+            let keyword = self.include_once.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_indented_value(f, keyword, value)
         })
     }
 }
@@ -667,10 +694,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, RequireConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.require.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default()), self.value.format(f)]),
-            ]))
+            let keyword = self.require.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_indented_value(f, keyword, value)
         })
     }
 }
@@ -681,10 +708,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, RequireOnceConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.require_once.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default()), self.value.format(f)]),
-            ]))
+            let keyword = self.require_once.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_indented_value(f, keyword, value)
         })
     }
 }
@@ -695,10 +722,10 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, PrintConstruct, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.print.format(f),
-                Document::Indent(vec_in![f.arena; Document::Line(Line::default()), self.value.format(f)]),
-            ]))
+            let keyword = self.print.format(f);
+            let value = self.value.format(f);
+
+            print_keyword_indented_value(f, keyword, value)
         })
     }
 }
@@ -757,12 +784,9 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, NamedArgument, {
-            let padding = if let Some(padding) = f.argument_state.named_argument_padding {
-                let mut spaces = BumpVec::with_capacity_in(padding, f.arena);
-                spaces.resize(padding, b' ');
-                Document::String(spaces.leak())
-            } else {
-                Document::empty()
+            let padding = match f.argument_state.named_argument_padding {
+                Some(padding) => Document::String(utils::spaces(f.arena, padding)),
+                None => Document::empty(),
             };
 
             Document::Group(Group::new(vec_in![f.arena;
@@ -1091,39 +1115,6 @@ where
     }
 }
 
-impl<'arena, A> Format<'arena, A> for MatchArm<'arena>
-where
-    A: Arena,
-{
-    fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
-        format_match_arm(f, self, None)
-    }
-}
-
-impl<'arena, A> Format<'arena, A> for MatchDefaultArm<'arena>
-where
-    A: Arena,
-{
-    fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
-        wrap!(f, self, MatchDefaultArm, {
-            Document::Group(Group::new(vec_in![f.arena;
-                self.default.format(f),
-                format_token(f, self.arrow, b" => "),
-                self.expression.format(f),
-            ]))
-        })
-    }
-}
-
-impl<'arena, A> Format<'arena, A> for MatchExpressionArm<'arena>
-where
-    A: Arena,
-{
-    fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
-        format_match_expression_arm(f, self, None)
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct MatchArmAlignment {
     name_padding: usize,
@@ -1253,7 +1244,7 @@ where
 {
     match alignment {
         Some(MatchArmAlignment { name_padding }) if name_padding > 0 => {
-            Document::String(f.as_str(" ".repeat(name_padding)))
+            Document::String(utils::spaces(f.arena, name_padding))
         }
         _ => Document::empty(),
     }
@@ -1286,71 +1277,18 @@ where
         return std::vec::Vec::new();
     }
 
-    let mut runs = std::vec::Vec::new();
-    let mut run_start: Option<usize> = None;
-
-    for (i, arm) in arms.iter().enumerate() {
-        let is_alignable = match_arm_lhs_width(arm).is_some();
-        let should_break_run = run_start.is_some_and(|_start_idx| {
-            if !is_alignable {
-                return true;
-            }
-
-            if i > 0 {
-                let prev_span = arms[i - 1].span();
-                let curr_span = arm.span();
-                if has_comment_between(f, prev_span, curr_span) {
-                    return true;
-                }
-            }
-
-            false
-        });
-
-        if should_break_run {
-            if let Some(start_idx) = run_start
-                && i - start_idx >= 2
-            {
-                let widths = calculate_match_arm_widths(&arms[start_idx..i]);
-                runs.push(AlignmentRun::new(start_idx, i, widths));
-            }
-            run_start = None;
-        }
-
-        if is_alignable {
-            if run_start.is_none() {
-                run_start = Some(i);
-            }
-        } else {
-            if let Some(start_idx) = run_start
-                && i - start_idx >= 2
-            {
-                let widths = calculate_match_arm_widths(&arms[start_idx..i]);
-                runs.push(AlignmentRun::new(start_idx, i, widths));
-            }
-            run_start = None;
-        }
-    }
-
-    if let Some(start_idx) = run_start {
-        let len = arms.len();
-        if len - start_idx >= 2 {
-            let widths = calculate_match_arm_widths(&arms[start_idx..]);
-            runs.push(AlignmentRun::new(start_idx, len, widths));
-        }
-    }
-
-    runs
+    detect_alignment_runs(
+        arms.len(),
+        |i| match_arm_lhs_width(&arms[i]).map(|_| ()),
+        |i| i > 0 && has_comment_between(f, arms[i - 1].span(), arms[i].span()),
+        |start, end, ()| Some(calculate_match_arm_widths(&arms[start..end])),
+    )
 }
 
 fn calculate_match_arm_widths(arms: &[MatchArm<'_>]) -> AlignmentWidths {
     let max_name_width = arms.iter().filter_map(match_arm_lhs_width).max().unwrap_or(0);
 
     AlignmentWidths::new(max_name_width)
-}
-
-fn get_match_arm_alignment(runs: &[AlignmentRun], index: usize) -> Option<AlignmentWidths> {
-    runs.iter().find(|run| run.contains(index)).map(|run| run.widths)
 }
 
 fn calculate_match_arm_alignment(arm: &MatchArm<'_>, widths: &AlignmentWidths) -> MatchArmAlignment {
@@ -1425,8 +1363,8 @@ where
                 let mut arms_document = Document::join(
                     f.arena,
                     self.arms.iter().enumerate().map(|(i, arm)| {
-                        let alignment = get_match_arm_alignment(&alignment_runs, i)
-                            .map(|widths| calculate_match_arm_alignment(arm, &widths));
+                        let alignment =
+                            get_alignment(&alignment_runs, i).map(|widths| calculate_match_arm_alignment(arm, &widths));
 
                         format_match_arm(f, arm, alignment)
                     }),
@@ -1696,6 +1634,41 @@ where
     }
 }
 
+fn print_string_parts<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    parts: &mut Vec<'arena, Document<'arena, A>, A>,
+    string_parts: &'arena Sequence<'arena, StringPart<'arena>>,
+    align_unbraced_expressions: bool,
+) where
+    A: Arena,
+{
+    let mut last_part_indentation: &[u8] = b"";
+
+    for part in string_parts {
+        let formatted = match part {
+            StringPart::Literal(literal) => {
+                let lines = f.split_lines(literal.raw);
+                if let Some(last_line) = lines.last() {
+                    last_part_indentation = leading_whitespace(last_line);
+                }
+                part.format(f)
+            }
+            StringPart::Expression(_) if !align_unbraced_expressions => part.format(f),
+            _ => {
+                if last_part_indentation.is_empty() {
+                    part.format(f)
+                } else {
+                    Document::Align(Align {
+                        alignment: last_part_indentation,
+                        contents: vec_in![f.arena; part.format(f)],
+                    })
+                }
+            }
+        };
+        parts.push(formatted);
+    }
+}
+
 impl<'arena, A> Format<'arena, A> for InterpolatedString<'arena>
 where
     A: Arena,
@@ -1707,31 +1680,7 @@ where
                 parts.push(Document::String(prefix.value));
             }
             parts.push(Document::String(b"\""));
-            let mut last_part_indentation: &[u8] = b"";
-
-            for part in &self.parts {
-                let formatted = match part {
-                    StringPart::Literal(l) => {
-                        let lines = f.split_lines(l.raw);
-                        if let Some(last_line) = lines.last() {
-                            last_part_indentation = leading_whitespace(last_line);
-                        }
-                        part.format(f)
-                    }
-                    _ => {
-                        if last_part_indentation.is_empty() {
-                            part.format(f)
-                        } else {
-                            Document::Align(Align {
-                                alignment: last_part_indentation,
-                                contents: vec_in![f.arena; part.format(f)],
-                            })
-                        }
-                    }
-                };
-                parts.push(formatted);
-            }
-
+            print_string_parts(f, &mut parts, &self.parts, true);
             parts.push(Document::String(b"\""));
 
             Document::Group(Group::new(parts))
@@ -1746,32 +1695,7 @@ where
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, ShellExecuteString, {
             let mut parts = vec_in![f.arena; Document::String(b"`")];
-            let mut last_part_indentation: &[u8] = b"";
-
-            for part in &self.parts {
-                let formatted = match part {
-                    StringPart::Literal(l) => {
-                        let lines = f.split_lines(l.raw);
-                        if let Some(last_line) = lines.last() {
-                            last_part_indentation = leading_whitespace(last_line);
-                        }
-                        part.format(f)
-                    }
-                    StringPart::BracedExpression(_) => {
-                        if last_part_indentation.is_empty() {
-                            part.format(f)
-                        } else {
-                            Document::Align(Align {
-                                alignment: last_part_indentation,
-                                contents: vec_in![f.arena; part.format(f)],
-                            })
-                        }
-                    }
-                    _ => part.format(f),
-                };
-                parts.push(formatted);
-            }
-
+            print_string_parts(f, &mut parts, &self.parts, false);
             parts.push(Document::String(b"`"));
 
             Document::Group(Group::new(parts))
@@ -1864,12 +1788,13 @@ where
                 Group::new(vec_in![f.arena;
                     yield_keyword,
                     Document::space(),
-                    print_assignment(
+                    print_assignment_with_alignment(
                         f,
                         AssignmentLikeNode::YieldPair(self),
                         key_document,
                         Document::String(b"=>"),
                         self.value,
+                        None,
                     ),
                 ])
                 .with_id(group_id),

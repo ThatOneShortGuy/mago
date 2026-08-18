@@ -352,8 +352,6 @@ where
                 );
             } else if left_block_context.assigned_variable_ids.contains_key(var_id) {
                 block_context.locals.insert(*var_id, Rc::clone(left_type));
-            } else {
-                // variable wasn't assigned in the left branch and isn't in the parent; drop it
             }
         }
 
@@ -605,8 +603,6 @@ where
                         context.settings.combiner_options(),
                     ),
                 );
-            } else {
-                // variable doesn't appear in the if body or left branch; nothing to merge in
             }
         }
 
@@ -656,36 +652,34 @@ where
     check_logical_operand(context, binary.lhs, lhs_type, "Left", "xor");
     check_logical_operand(context, binary.rhs, rhs_type, "Right", "xor");
 
-    let result_type = if lhs_type.is_always_truthy() && rhs_type.is_always_truthy() {
-        if !block_context.flags.inside_loop_expressions() {
-            // true xor true → false (no fix)
-            report_redundant_logical_operation(context, binary, "always true", "always true", "`false`", None);
+    let known_truthiness = |operand_type: &TUnion| {
+        if operand_type.is_always_truthy() {
+            Some(true)
+        } else if operand_type.is_always_falsy() {
+            Some(false)
+        } else {
+            None
         }
+    };
 
-        get_false()
-    } else if lhs_type.is_always_truthy() && rhs_type.is_always_falsy() {
-        if !block_context.flags.inside_loop_expressions() {
-            // true xor false → true (no fix)
-            report_redundant_logical_operation(context, binary, "always true", "always false", "`true`", None);
+    let result_type = match (known_truthiness(lhs_type), known_truthiness(rhs_type)) {
+        (Some(lhs_known), Some(rhs_known)) => {
+            let result = lhs_known != rhs_known;
+            if !block_context.flags.inside_loop_expressions() {
+                let describe = |known: bool| if known { "always true" } else { "always false" };
+                report_redundant_logical_operation(
+                    context,
+                    binary,
+                    describe(lhs_known),
+                    describe(rhs_known),
+                    if result { "`true`" } else { "`false`" },
+                    None,
+                );
+            }
+
+            if result { get_true() } else { get_false() }
         }
-
-        get_true()
-    } else if lhs_type.is_always_falsy() && rhs_type.is_always_truthy() {
-        if !block_context.flags.inside_loop_expressions() {
-            // false xor true → true (no fix)
-            report_redundant_logical_operation(context, binary, "always false", "always true", "`true`", None);
-        }
-
-        get_true()
-    } else if lhs_type.is_always_falsy() && rhs_type.is_always_falsy() {
-        if !block_context.flags.inside_loop_expressions() {
-            // false xor false → false (no fix)
-            report_redundant_logical_operation(context, binary, "always false", "always false", "`false`", None);
-        }
-
-        get_false()
-    } else {
-        get_bool()
+        _ => get_bool(),
     };
 
     artifacts.expression_types.insert(get_expression_range(binary), Rc::new(result_type));
@@ -754,8 +748,6 @@ fn check_logical_operand<'arena, A>(
                 .with_note("Resources generally coerce to `true`. This implicit conversion can be unclear.")
                 .with_help("Explicitly check the state of the resource or cast to `bool` if necessary."),
         );
-    } else {
-        // operand has a clean boolean coercion; no diagnostic needed
     }
 }
 

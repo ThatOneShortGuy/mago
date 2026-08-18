@@ -114,6 +114,13 @@ pub fn reconcile_keyed_types<'ctx, A>(
 
     add_nested_assertions(&mut new_types, &mut active_new_types, block_context);
 
+    let original_types = can_report_issues.then(|| {
+        new_types
+            .keys()
+            .filter_map(|key| block_context.locals.get(key).map(|ty| (*key, Rc::clone(ty))))
+            .collect::<WordMap<_>>()
+    });
+
     for (key, new_type_parts) in &new_types {
         let key_str = key.as_bytes();
         if key_str.ends_with(b"()") && !block_context.locals.contains_key(key) {
@@ -204,8 +211,10 @@ pub fn reconcile_keyed_types<'ctx, A>(
                     && active_new_types.get(key).is_some_and(|active_new_type| active_new_type.contains(&i));
 
                 if report_this_assertion
-                    && i > 0
-                    && let Some(original) = before_adjustment.as_ref()
+                    && let Some(original) = original_types
+                        .as_ref()
+                        .and_then(|types| types.get(key).map(Rc::as_ref))
+                        .or(before_adjustment.as_ref())
                     && result_type.as_ref().is_some_and(|current| current != original)
                 {
                     let probe_on_original = assertion_reconciler::reconcile(
@@ -322,8 +331,6 @@ pub fn reconcile_keyed_types<'ctx, A>(
                 }
             } else if memchr::memmem::find(key_str, b"->").is_some() && !is_equality {
                 adjust_object_property_type(key_parts.clone(), block_context, changed_var_ids, &result_type, context);
-            } else {
-                // plain variable assertion; no parent array or object property to propagate into
             }
 
             if key_str != b"$this" {
@@ -392,8 +399,6 @@ pub fn reconcile_keyed_types<'ctx, A>(
             }
         } else if !has_negation && !has_truthy_or_falsy_or_empty && !has_isset && !has_relational_comparison {
             changed_var_ids.insert(*key);
-        } else {
-            // type unchanged and the assertion is one that wouldn't mark the variable changed anyway
         }
 
         if !has_object_array_access {
@@ -1454,8 +1459,6 @@ pub(crate) fn trigger_issue_for_impossible<A>(
             } else if assertion_atom.as_bytes() == b"truthy" {
                 not_operator = false;
                 assertion_atom = word(b"falsy");
-            } else {
-                // other assertion atoms don't have a complementary truthy/falsy form to swap into
             }
         }
 
@@ -1650,13 +1653,7 @@ fn map_concrete_generic_constraint<F>(generic_parameter: &TGenericParameter, f: 
 where
     F: FnOnce(&TUnion) -> TUnion,
 {
-    let parameter = if generic_parameter.constraint.is_mixed() {
-        generic_parameter.clone()
-    } else {
-        generic_parameter.with_constraint(f(&generic_parameter.constraint))
-    };
-
-    if parameter.constraint.is_never() { None } else { Some(TAtomic::GenericParameter(parameter)) }
+    map_generic_constraint_or_else(generic_parameter, || (*generic_parameter.constraint).clone(), f)
 }
 
 pub(crate) fn map_generic_constraint_or_else<F, D>(generic_parameter: &TGenericParameter, d: D, f: F) -> Option<TAtomic>

@@ -26,7 +26,6 @@ use mago_syntax::cst::Pipe;
 use mago_syntax::cst::PlaceholderArgument;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::VariadicPlaceholderArgument;
-use mago_word::Word;
 
 use crate::context::Context;
 
@@ -53,9 +52,18 @@ pub struct Invocation<'ctx, 'ast, 'arena> {
     pub span: Span,
 }
 
+/// Parameter contract supplied by a provider before argument analysis.
+#[derive(Debug, Clone)]
+pub struct EffectiveCallableSignature {
+    pub parameters: Vec<TCallableParameter>,
+    pub allows_named_arguments: bool,
+}
+
 /// Context information for method call resolution.
 #[derive(Debug, Clone)]
 pub struct MethodTargetContext<'ctx> {
+    /// Whether the source invocation uses instance-method or static-method syntax.
+    pub invocation_kind: MethodInvocationKind,
     /// The method identifier, if statically resolved.
     pub declaring_method_id: Option<MethodIdentifier>,
     /// Metadata for the class the method is being called on (not necessarily where it's declared).
@@ -70,6 +78,15 @@ pub struct MethodTargetContext<'ctx> {
     pub declaring_object_type: Option<TNamedObject>,
 }
 
+/// The source-level form of a method invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodInvocationKind {
+    /// An instance method invocation such as `$object->method()`.
+    Instance,
+    /// A static method invocation such as `ClassName::method()`.
+    Static,
+}
+
 /// The target of an invocation (function, method, or callable).
 #[derive(Debug, Clone)]
 pub enum InvocationTarget<'ctx> {
@@ -79,6 +96,8 @@ pub enum InvocationTarget<'ctx> {
         source: Option<FunctionLikeIdentifier>,
         /// The callable's type signature.
         signature: TCallableSignature,
+        /// Provider-supplied parameter contract, when one handled this call.
+        effective_signature: Option<EffectiveCallableSignature>,
         /// The span of the callable expression.
         span: Span,
     },
@@ -90,8 +109,21 @@ pub enum InvocationTarget<'ctx> {
         metadata: &'ctx FunctionLikeMetadata,
         /// Inferred return type (used for closures/arrow functions).
         inferred_return_type: Option<Arc<TUnion>>,
+        /// Provider-supplied parameter contract, when one handled this call.
+        effective_signature: Option<EffectiveCallableSignature>,
         /// Method call context, if applicable.
         method_context: Option<MethodTargetContext<'ctx>>,
+        /// The span of the callable part.
+        span: Span,
+    },
+    /// An otherwise unresolved method established by an external callable-signature provider.
+    ExternalMethod {
+        /// The source-level method identifier requested by the caller.
+        identifier: FunctionLikeIdentifier,
+        /// Provider-supplied parameter contract. This is present before the target is analyzed.
+        effective_signature: Option<EffectiveCallableSignature>,
+        /// Receiver and invocation-kind context supplied to external providers.
+        method_context: MethodTargetContext<'ctx>,
         /// The span of the callable part.
         span: Span,
     },
@@ -215,6 +247,7 @@ impl<'ctx> InvocationTarget<'ctx> {
                     || metadata.flags.is_mutation_free()
                     || metadata.flags.is_external_mutation_free()
             }
+            InvocationTarget::ExternalMethod { .. } => false,
         }
     }
 
@@ -224,7 +257,7 @@ impl<'ctx> InvocationTarget<'ctx> {
     pub const fn is_non_closure_callable(&self) -> bool {
         match self {
             InvocationTarget::Callable { signature, .. } => !signature.is_closure(),
-            _ => false,
+            InvocationTarget::FunctionLike { .. } | InvocationTarget::ExternalMethod { .. } => false,
         }
     }
 
@@ -233,7 +266,7 @@ impl<'ctx> InvocationTarget<'ctx> {
     pub const fn get_function_like_metadata(&self) -> Option<&'ctx FunctionLikeMetadata> {
         match self {
             InvocationTarget::FunctionLike { metadata, .. } => Some(metadata),
-            _ => None,
+            InvocationTarget::Callable { .. } | InvocationTarget::ExternalMethod { .. } => None,
         }
     }
 
@@ -242,37 +275,9 @@ impl<'ctx> InvocationTarget<'ctx> {
     pub const fn get_function_like_identifier(&self) -> Option<&FunctionLikeIdentifier> {
         match self {
             InvocationTarget::Callable { source, .. } => source.as_ref(),
-            InvocationTarget::FunctionLike { identifier, .. } => Some(identifier),
-        }
-    }
-
-    /// If this target is a method, returns the fully qualified name of the class it belongs to.
-    #[inline]
-    #[allow(dead_code)]
-    pub const fn get_method_class_like_name(&self) -> Option<Word> {
-        match self.get_function_like_identifier() {
-            Some(FunctionLikeIdentifier::Method(fq_class_like_name, _)) => Some(*fq_class_like_name),
-            _ => None,
-        }
-    }
-
-    /// If this target is a method, returns its `MethodIdentifier`.
-    #[inline]
-    #[allow(dead_code)]
-    pub const fn get_method_identifier(&self) -> Option<MethodIdentifier> {
-        match self {
-            InvocationTarget::FunctionLike { identifier, .. } => identifier.as_method_identifier(),
-            _ => None,
-        }
-    }
-
-    /// Checks if the target function/method is known to potentially throw exceptions (e.g., has `@throws` tags).
-    #[inline]
-    #[allow(dead_code)]
-    pub const fn has_throw(&self) -> bool {
-        match self {
-            InvocationTarget::FunctionLike { metadata, .. } => metadata.flags.has_throw(),
-            _ => false,
+            InvocationTarget::FunctionLike { identifier, .. } | InvocationTarget::ExternalMethod { identifier, .. } => {
+                Some(identifier)
+            }
         }
     }
 
@@ -281,7 +286,7 @@ impl<'ctx> InvocationTarget<'ctx> {
     pub fn get_template_types(&self) -> Option<&'ctx TemplateTypes> {
         match self {
             InvocationTarget::FunctionLike { metadata, .. } => Some(&metadata.template_types),
-            _ => None,
+            InvocationTarget::Callable { .. } | InvocationTarget::ExternalMethod { .. } => None,
         }
     }
 
@@ -289,8 +294,31 @@ impl<'ctx> InvocationTarget<'ctx> {
     #[inline]
     pub const fn allows_named_arguments(&self) -> bool {
         match self {
+            InvocationTarget::Callable { effective_signature: Some(signature), .. }
+            | InvocationTarget::FunctionLike { effective_signature: Some(signature), .. }
+            | InvocationTarget::ExternalMethod { effective_signature: Some(signature), .. } => {
+                signature.allows_named_arguments
+            }
             InvocationTarget::FunctionLike { metadata, .. } => !metadata.flags.forbids_named_arguments(),
-            _ => false,
+            InvocationTarget::Callable { .. } | InvocationTarget::ExternalMethod { .. } => false,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn set_effective_signature(&mut self, signature: EffectiveCallableSignature) {
+        match self {
+            InvocationTarget::Callable { effective_signature, .. }
+            | InvocationTarget::FunctionLike { effective_signature, .. }
+            | InvocationTarget::ExternalMethod { effective_signature, .. } => *effective_signature = Some(signature),
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn has_effective_signature(&self) -> bool {
+        match self {
+            InvocationTarget::Callable { effective_signature, .. }
+            | InvocationTarget::FunctionLike { effective_signature, .. }
+            | InvocationTarget::ExternalMethod { effective_signature, .. } => effective_signature.is_some(),
         }
     }
 
@@ -299,7 +327,8 @@ impl<'ctx> InvocationTarget<'ctx> {
     pub const fn get_method_context(&self) -> Option<&MethodTargetContext<'ctx>> {
         match self {
             InvocationTarget::FunctionLike { method_context, .. } => method_context.as_ref(),
-            _ => None,
+            InvocationTarget::ExternalMethod { method_context, .. } => Some(method_context),
+            InvocationTarget::Callable { .. } => None,
         }
     }
 
@@ -307,8 +336,14 @@ impl<'ctx> InvocationTarget<'ctx> {
     #[must_use]
     pub fn parameter_count(&self) -> usize {
         match self {
+            InvocationTarget::Callable { effective_signature: Some(signature), .. }
+            | InvocationTarget::FunctionLike { effective_signature: Some(signature), .. }
+            | InvocationTarget::ExternalMethod { effective_signature: Some(signature), .. } => {
+                signature.parameters.len()
+            }
             InvocationTarget::Callable { signature, .. } => signature.parameters.len(),
             InvocationTarget::FunctionLike { metadata, .. } => metadata.parameters.len(),
+            InvocationTarget::ExternalMethod { .. } => 0,
         }
     }
 
@@ -319,12 +354,18 @@ impl<'ctx> InvocationTarget<'ctx> {
         'ctx: 'target,
     {
         match self {
+            InvocationTarget::Callable { effective_signature: Some(signature), .. }
+            | InvocationTarget::FunctionLike { effective_signature: Some(signature), .. }
+            | InvocationTarget::ExternalMethod { effective_signature: Some(signature), .. } => {
+                signature.parameters.get(index).map(InvocationTargetParameter::Callable)
+            }
             InvocationTarget::Callable { signature, .. } => {
                 signature.parameters.get(index).map(InvocationTargetParameter::Callable)
             }
             InvocationTarget::FunctionLike { metadata, .. } => {
                 metadata.parameters.get(index).map(InvocationTargetParameter::FunctionLike)
             }
+            InvocationTarget::ExternalMethod { .. } => None,
         }
     }
 
@@ -357,6 +398,7 @@ impl<'ctx> InvocationTarget<'ctx> {
             InvocationTarget::FunctionLike { metadata, inferred_return_type, .. } => inferred_return_type
                 .as_deref()
                 .or_else(|| metadata.return_type_metadata.as_ref().map(|type_metadata| &type_metadata.type_union)),
+            InvocationTarget::ExternalMethod { .. } => None,
         }
     }
 }
@@ -380,7 +422,7 @@ impl<'ctx> InvocationTargetParameter<'ctx> {
             InvocationTargetParameter::FunctionLike(metadata) => {
                 metadata.closure_this_type.as_ref().map(|type_metadata| &type_metadata.type_union)
             }
-            _ => None,
+            InvocationTargetParameter::Callable(parameter) => parameter.get_closure_this_type(),
         }
     }
 
@@ -404,22 +446,20 @@ impl<'ctx> InvocationTargetParameter<'ctx> {
         }
     }
 
-    /// Checks if the parameter is passed by reference (`&`).
-    #[inline]
-    #[allow(dead_code)]
-    pub const fn is_by_reference(&self) -> bool {
-        match self {
-            InvocationTargetParameter::FunctionLike(metadata) => metadata.flags.is_by_reference(),
-            InvocationTargetParameter::Callable(parameter) => parameter.is_by_reference(),
-        }
-    }
-
     /// Checks if the parameter is variadic (`...`).
     #[inline]
     pub const fn is_variadic(&self) -> bool {
         match self {
             InvocationTargetParameter::FunctionLike(metadata) => metadata.flags.is_variadic(),
             InvocationTargetParameter::Callable(parameter) => parameter.is_variadic(),
+        }
+    }
+
+    #[inline]
+    pub const fn is_by_reference(&self) -> bool {
+        match self {
+            InvocationTargetParameter::FunctionLike(metadata) => metadata.flags.is_by_reference(),
+            InvocationTargetParameter::Callable(parameter) => parameter.is_by_reference(),
         }
     }
 
@@ -638,6 +678,7 @@ impl HasSpan for InvocationTarget<'_> {
         match self {
             InvocationTarget::Callable { span, .. } => *span,
             InvocationTarget::FunctionLike { span, .. } => *span,
+            InvocationTarget::ExternalMethod { span, .. } => *span,
         }
     }
 }

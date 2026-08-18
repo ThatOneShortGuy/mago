@@ -22,12 +22,14 @@ use crate::misc::VariableIdentifier;
 use crate::scanner::Context;
 use crate::scanner::attribute::scan_attribute_lists;
 use crate::scanner::docblock::HookParamTag;
+use crate::scanner::docblock::apply_common_metadata_flag;
 use crate::scanner::docblock::find_most_trusted_tag;
 use crate::scanner::docblock::parse_docblock;
 use crate::scanner::inference::infer;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::ttype::merge_type_preserving_nullability;
+use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::TypeOverride;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::resolution::TypeResolutionContext;
@@ -90,6 +92,7 @@ where
 
     let mut property_metadata = PropertyMetadata::new(*name, flags);
 
+    property_metadata.attributes.clone_from(&parameter_metadata.attributes);
     property_metadata.set_default_type_metadata(default_type_metadata);
     property_metadata.set_name_span(Some(name_span));
     property_metadata.set_span(Some(parameter.span()));
@@ -100,7 +103,8 @@ where
 
     if let Some(hook_list) = &parameter.hooks {
         for hook in &hook_list.hooks {
-            let mut hook_metadata = scan_property_hook(hook, &property_metadata, context, scope);
+            let mut hook_metadata =
+                scan_property_hook(hook, &property_metadata, context, scope, Some(class_like_metadata.original_name));
             class_like_metadata.issues.extend(hook_metadata.take_issues());
             property_metadata.hooks.insert(hook_metadata.name, hook_metadata);
         }
@@ -182,6 +186,12 @@ where
     match property {
         Property::Plain(plain_property) => {
             let verdict = evaluate_version_attributes(&plain_property.attribute_lists, context, context.php_version);
+            let attributes = scan_attribute_lists(
+                &plain_property.attribute_lists,
+                context,
+                scope,
+                Some(class_like_metadata.original_name),
+            );
 
             plain_property
                 .items
@@ -230,6 +240,7 @@ where
 
                     let mut metadata = PropertyMetadata::new(name, item_flags);
 
+                    metadata.attributes.clone_from(&attributes);
                     metadata.set_name_span(Some(name_span));
                     metadata.set_default_type_metadata(default_type);
                     metadata.set_visibility(read_visibility, write_visibility);
@@ -265,6 +276,12 @@ where
         }
         Property::Hooked(hooked_property) => {
             let verdict = evaluate_version_attributes(&hooked_property.attribute_lists, context, context.php_version);
+            let attributes = scan_attribute_lists(
+                &hooked_property.attribute_lists,
+                context,
+                scope,
+                Some(class_like_metadata.original_name),
+            );
 
             let (name, name_span, has_default, default_type) =
                 scan_property_item(&hooked_property.item, classname, context, scope);
@@ -293,6 +310,7 @@ where
 
             let mut metadata = PropertyMetadata::new(name, flags);
 
+            metadata.attributes = attributes;
             metadata.set_name_span(Some(name_span));
             metadata.set_default_type_metadata(default_type);
             metadata.set_span(Some(hooked_property.span()));
@@ -317,7 +335,8 @@ where
             }
 
             for hook in &hooked_property.hook_list.hooks {
-                let mut hook_metadata = scan_property_hook(hook, &metadata, context, scope);
+                let mut hook_metadata =
+                    scan_property_hook(hook, &metadata, context, scope, Some(class_like_metadata.original_name));
                 class_like_metadata.issues.extend(hook_metadata.take_issues());
                 metadata.hooks.insert(hook_metadata.name, hook_metadata);
             }
@@ -343,6 +362,7 @@ fn scan_property_hook<'arena, A>(
     property_metadata: &PropertyMetadata,
     context: &mut Context<'_, 'arena, A>,
     scope: &NamespaceScope,
+    classname: Option<Word>,
 ) -> PropertyHookMetadata
 where
     A: Arena,
@@ -368,7 +388,7 @@ where
         None
     };
 
-    let attributes = scan_attribute_lists(&hook.attribute_lists, context);
+    let attributes = scan_attribute_lists(&hook.attribute_lists, context, scope, classname);
 
     let mut has_docblock = false;
     let mut return_type_metadata = None;
@@ -416,15 +436,11 @@ where
                         param.set_type_metadata(Some(merged));
                     }
                     Err(typing_error) => {
-                        issues.push(
-                            Issue::error("Could not resolve the type for the @param tag.")
-                                .with_code(ScanningIssueKind::InvalidParamTag)
-                                .with_annotation(
-                                    Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
-                                )
-                                .with_note(typing_error.note())
-                                .with_help(typing_error.help()),
-                        );
+                        issues.push(typing_error_issue(
+                            "Could not resolve the type for the @param tag.",
+                            ScanningIssueKind::InvalidParamTag,
+                            &typing_error,
+                        ));
                     }
                 }
             }
@@ -444,29 +460,28 @@ where
                     return_type_metadata = Some(docblock_type);
                 }
                 Err(typing_error) => {
-                    issues.push(
-                        Issue::error("Could not resolve the type for the @return tag.")
-                            .with_code(ScanningIssueKind::InvalidReturnTag)
-                            .with_annotation(
-                                Annotation::primary(typing_error.span()).with_message(typing_error.to_string()),
-                            )
-                            .with_note(typing_error.note())
-                            .with_help(typing_error.help()),
-                    );
+                    issues.push(typing_error_issue(
+                        "Could not resolve the type for the @return tag.",
+                        ScanningIssueKind::InvalidReturnTag,
+                        &typing_error,
+                    ));
                 }
             }
         }
     }
 
-    PropertyHookMetadata::new(name, hook.span())
-        .with_flags(flags)
-        .with_parameter(parameter)
-        .with_returns_by_ref(hook.ampersand.is_some())
-        .with_is_abstract(is_abstract)
-        .with_attributes(attributes)
-        .with_return_type_metadata(return_type_metadata)
-        .with_has_docblock(has_docblock)
-        .with_issues(issues)
+    PropertyHookMetadata {
+        name,
+        span: hook.span(),
+        flags,
+        parameter,
+        returns_by_ref: hook.ampersand.is_some(),
+        is_abstract,
+        attributes,
+        return_type_metadata,
+        has_docblock,
+        issues,
+    }
 }
 
 fn scan_hook_parameter<'arena, A>(
@@ -552,19 +567,11 @@ fn update_property_metadata_from_docblock(
     allow_param_tag: bool,
 ) {
     for tag in document.tags() {
+        if apply_common_metadata_flag(&mut property_metadata.flags, &tag.value) {
+            continue;
+        }
+
         match &tag.value {
-            TagValue::Internal(_) => {
-                property_metadata.flags |= MetadataFlags::INTERNAL;
-            }
-            TagValue::Experimental(_) => {
-                property_metadata.flags |= MetadataFlags::EXPERIMENTAL;
-            }
-            TagValue::Deprecated(_) => {
-                property_metadata.flags |= MetadataFlags::DEPRECATED;
-            }
-            TagValue::NotDeprecated(_) => {
-                property_metadata.flags.set(MetadataFlags::DEPRECATED, false);
-            }
             TagValue::Readonly(_) => {
                 property_metadata.flags |= MetadataFlags::READONLY;
             }
@@ -596,13 +603,11 @@ fn update_property_metadata_from_docblock(
 
                 property_metadata.set_type_metadata(Some(property_type_metadata));
             }
-            Err(typing_error) => class_like_metadata.issues.push(
-                Issue::error("Could not resolve the property type from its docblock.")
-                    .with_code(ScanningIssueKind::InvalidVarTag)
-                    .with_annotation(Annotation::primary(typing_error.span()).with_message(typing_error.to_string()))
-                    .with_note(typing_error.note())
-                    .with_help(typing_error.help()),
-            ),
+            Err(typing_error) => class_like_metadata.issues.push(typing_error_issue(
+                "Could not resolve the property type from its docblock.",
+                ScanningIssueKind::InvalidVarTag,
+                &typing_error,
+            )),
         }
     }
 }

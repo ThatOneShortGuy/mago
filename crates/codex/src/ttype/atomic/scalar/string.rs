@@ -56,32 +56,11 @@ impl TStringLiteral {
         TStringLiteral::Value(word(value))
     }
 
-    /// Creates the 'Value' literal state from a static string slice.
-    #[inline]
-    #[must_use]
-    pub fn value_from_static_str(value: &'static str) -> Self {
-        TStringLiteral::Value(word(value))
-    }
-
-    /// Creates the 'Value' literal state from a string slice.
-    #[inline]
-    #[must_use]
-    pub fn value_from_str(value: &str) -> Self {
-        TStringLiteral::Value(word(value))
-    }
-
     /// Checks if this represents an unspecified literal value.
     #[inline]
     #[must_use]
     pub const fn is_unspecified(&self) -> bool {
         matches!(self, TStringLiteral::Unspecified)
-    }
-
-    /// Checks if this represents a literal with a known value.
-    #[inline]
-    #[must_use]
-    pub const fn is_value(&self) -> bool {
-        matches!(self, TStringLiteral::Value(_))
     }
 
     /// Returns the known literal string value, if available.
@@ -140,25 +119,11 @@ impl TString {
         Self::new(None, false, false, false, false, TStringCasing::Lowercase)
     }
 
-    /// Creates a non-empty lowercase string instance.
-    #[inline]
-    #[must_use]
-    pub const fn non_empty_lowercase() -> Self {
-        Self::new(None, false, false, true, false, TStringCasing::Lowercase)
-    }
-
     /// Creates a uppercase string instance.
     #[inline]
     #[must_use]
     pub const fn uppercase() -> Self {
         Self::new(None, false, false, false, false, TStringCasing::Uppercase)
-    }
-
-    /// Creates a non-empty uppercase string instance.
-    #[inline]
-    #[must_use]
-    pub const fn non_empty_uppercase() -> Self {
-        Self::new(None, false, false, true, false, TStringCasing::Uppercase)
     }
 
     /// Creates a truthy string instance.
@@ -278,18 +243,6 @@ impl TString {
         matches!(self.literal, Some(TStringLiteral::Value(_)))
     }
 
-    /// Checks if this string is guaranteed to be a specific literal value.
-    ///
-    /// Returns `true` if the string is a known literal and matches the provided value.
-    #[inline]
-    #[must_use]
-    pub fn is_specific_literal(&self, value: &[u8]) -> bool {
-        match &self.literal {
-            Some(TStringLiteral::Value(s)) => s.as_bytes() == value,
-            _ => false,
-        }
-    }
-
     /// Returns the known literal string value, if available.
     #[inline]
     #[must_use]
@@ -392,13 +345,6 @@ impl TString {
         }
     }
 
-    /// Returns the literal state (`Unspecified` or `Value(...)`) if the origin is literal.
-    #[inline]
-    #[must_use]
-    pub const fn literal_state(&self) -> Option<&TStringLiteral> {
-        self.literal.as_ref()
-    }
-
     // Returns a new instance with the same properties but without the literal value.
     #[inline]
     #[must_use]
@@ -427,91 +373,49 @@ impl TString {
 }
 
 impl TType for TString {
-    fn needs_population(&self) -> bool {
-        false
-    }
-
     #[inline]
-    fn is_expandable(&self) -> bool {
-        false
-    }
-
-    fn is_complex(&self) -> bool {
-        false
-    }
-
     fn get_id(&self) -> Word {
-        let s = match &self.literal {
+        let literal_infix: &[u8] = match &self.literal {
             Some(TStringLiteral::Value(s)) => return concat_word!(b"string('", s, b"')"),
-            Some(_) => {
-                if self.is_truthy {
-                    if self.is_numeric {
-                        "truthy-numeric-literal-string"
-                    } else {
-                        match self.casing {
-                            TStringCasing::Lowercase => "truthy-lowercase-literal-string",
-                            TStringCasing::Uppercase => "truthy-uppercase-literal-string",
-                            TStringCasing::Unspecified => "truthy-literal-string",
-                        }
-                    }
-                } else if self.is_numeric {
-                    "numeric-literal-string"
-                } else if self.is_non_empty {
-                    match self.casing {
-                        TStringCasing::Lowercase => "lowercase-non-empty-literal-string",
-                        TStringCasing::Uppercase => "uppercase-non-empty-literal-string",
-                        TStringCasing::Unspecified => "non-empty-literal-string",
-                    }
-                } else {
-                    match self.casing {
-                        TStringCasing::Lowercase => "lowercase-literal-string",
-                        TStringCasing::Uppercase => "uppercase-literal-string",
-                        TStringCasing::Unspecified => "literal-string",
-                    }
+            Some(_) => b"literal-",
+            None => b"",
+        };
+
+        if self.is_callable && literal_infix.is_empty() {
+            return word(match self.casing {
+                TStringCasing::Lowercase => "lowercase-callable-string",
+                TStringCasing::Uppercase => "uppercase-callable-string",
+                TStringCasing::Unspecified => "callable-string",
+            });
+        }
+
+        let stem: &[u8] = if self.is_truthy {
+            if self.is_numeric {
+                b"truthy-numeric-"
+            } else {
+                match self.casing {
+                    TStringCasing::Lowercase => b"truthy-lowercase-",
+                    TStringCasing::Uppercase => b"truthy-uppercase-",
+                    TStringCasing::Unspecified => b"truthy-",
                 }
             }
-            None => {
-                if self.is_callable {
-                    return word(match self.casing {
-                        TStringCasing::Lowercase => "lowercase-callable-string",
-                        TStringCasing::Uppercase => "uppercase-callable-string",
-                        TStringCasing::Unspecified => "callable-string",
-                    });
-                }
-
-                if self.is_truthy {
-                    if self.is_numeric {
-                        "truthy-numeric-string"
-                    } else {
-                        match self.casing {
-                            TStringCasing::Lowercase => "truthy-lowercase-string",
-                            TStringCasing::Uppercase => "truthy-uppercase-string",
-                            TStringCasing::Unspecified => "truthy-string",
-                        }
-                    }
-                } else if self.is_numeric {
-                    "numeric-string"
-                } else if self.is_non_empty {
-                    match self.casing {
-                        TStringCasing::Lowercase => "lowercase-non-empty-string",
-                        TStringCasing::Uppercase => "uppercase-non-empty-string",
-                        TStringCasing::Unspecified => "non-empty-string",
-                    }
-                } else {
-                    match self.casing {
-                        TStringCasing::Lowercase => "lowercase-string",
-                        TStringCasing::Uppercase => "uppercase-string",
-                        TStringCasing::Unspecified => "string",
-                    }
-                }
+        } else if self.is_numeric {
+            b"numeric-"
+        } else if self.is_non_empty {
+            match self.casing {
+                TStringCasing::Lowercase => b"lowercase-non-empty-",
+                TStringCasing::Uppercase => b"uppercase-non-empty-",
+                TStringCasing::Unspecified => b"non-empty-",
+            }
+        } else {
+            match self.casing {
+                TStringCasing::Lowercase => b"lowercase-",
+                TStringCasing::Uppercase => b"uppercase-",
+                TStringCasing::Unspecified => b"",
             }
         };
 
-        word(s)
-    }
-
-    fn get_pretty_id_with_indent(&self, _indent: usize) -> Word {
-        self.get_id()
+        concat_word!(stem, literal_infix, b"string")
     }
 }
 

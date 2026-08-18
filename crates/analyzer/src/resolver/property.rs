@@ -1,7 +1,7 @@
 use foldhash::HashMap;
 use indexmap::IndexMap;
 use mago_allocator::Arena;
-
+use mago_bytes::trim_start_byte;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
@@ -44,6 +44,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::external::PropertyAccessKind;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
@@ -51,7 +52,6 @@ use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_resolved_property_read_visibility;
 use crate::visibility::check_resolved_property_write_visibility;
 use crate::visibility::is_visible_from_scope;
-use mago_bytes::trim_start_byte;
 
 /// Represents a successfully resolved instance property.
 #[derive(Debug)]
@@ -81,6 +81,8 @@ pub struct PropertyResolutionResult {
     pub encountered_null: bool,
     pub encountered_mixed: bool,
     pub has_possibly_defined_property: bool,
+    /// True when a successfully written extension property cannot subsequently be read.
+    pub has_unreadable_property: bool,
     /// True if all resolved properties are non-nullable.
     /// When combined with `encountered_null` and nullsafe access, indicates
     /// the null in the result type came ONLY from nullsafe short-circuit.
@@ -159,17 +161,25 @@ where
             continue;
         }
 
-        let TAtomic::Object(object) = object_atomic else {
-            result.has_invalid_path = true;
-            if object_type.is_mixed() {
-                result.encountered_mixed = true;
+        let closure_object;
+        let object = match object_atomic {
+            TAtomic::Object(object) => object,
+            TAtomic::Callable(callable) if callable.is_closure() => {
+                closure_object = TObject::new_named(word("Closure"));
+                &closure_object
             }
+            _ => {
+                result.has_invalid_path = true;
+                if object_type.is_mixed() {
+                    result.encountered_mixed = true;
+                }
 
-            if !block_context.flags.inside_isset() || !object_atomic.is_mixed() {
-                report_access_on_non_object(context, object_atomic, property_selector, object_expression.span());
+                if !block_context.flags.inside_isset() || !object_atomic.is_mixed() {
+                    report_access_on_non_object(context, object_atomic, property_selector, object_expression.span());
+                }
+
+                continue;
             }
-
-            continue;
         };
 
         let classname = match object {
@@ -329,20 +339,32 @@ where
                 continue;
             }
 
-            let resolved_property = find_property_in_class(
+            let resolved_property = match resolve_external_property(
                 context,
-                block_context,
-                artifacts,
                 classname,
                 *prop_name,
-                property_selector,
-                object_expression,
+                property_selector.span(),
                 object,
-                operator_span,
                 for_assignment,
                 &mut result,
-                magic_method.is_some(),
-            );
+            )? {
+                Some(ExternalPropertyResolution::Resolved(property)) => Some(property),
+                Some(ExternalPropertyResolution::Invalid) => None,
+                None => find_property_in_class(
+                    context,
+                    block_context,
+                    artifacts,
+                    classname,
+                    *prop_name,
+                    property_selector,
+                    object_expression,
+                    object,
+                    operator_span,
+                    for_assignment,
+                    &mut result,
+                    magic_method.is_some(),
+                ),
+            };
 
             let Some(resolved_property) = resolved_property else {
                 result.has_invalid_path = true;
@@ -391,6 +413,97 @@ where
         !result.properties.is_empty() && result.properties.iter().all(|p| !p.property_type.is_nullable());
 
     Ok(result)
+}
+
+enum ExternalPropertyResolution {
+    Resolved(ResolvedProperty),
+    Invalid,
+}
+
+fn resolve_external_property<A>(
+    context: &mut Context<'_, '_, A>,
+    class: Word,
+    property: Word,
+    span: Span,
+    object: &TObject,
+    for_assignment: bool,
+    result: &mut PropertyResolutionResult,
+) -> Result<Option<ExternalPropertyResolution>, AnalysisError>
+where
+    A: Arena,
+{
+    if context.external_analysis_session.is_none() || !context.plugin_registry.may_have_property_type_provider() {
+        return Ok(None);
+    }
+
+    let property_without_dollar = trim_start_byte(property.as_bytes(), b'$');
+    let receiver_type = TUnion::from_atomic(TAtomic::Object(object.clone()));
+    let Some(effective) = context.plugin_registry.get_property_type(
+        context.codebase,
+        class.as_bytes(),
+        property_without_dollar,
+        if for_assignment { PropertyAccessKind::Write } else { PropertyAccessKind::Read },
+        &receiver_type,
+        span,
+        context.external_analysis_session,
+    ) else {
+        return Ok(None);
+    };
+
+    if for_assignment {
+        let Some(write_type) = effective.write_type else {
+            report_external_invalid_property_access(context, class, property, span, true);
+            result.has_error_path = true;
+            return Ok(Some(ExternalPropertyResolution::Invalid));
+        };
+
+        result.has_unreadable_property |= effective.read_type.is_none();
+        return Ok(Some(ExternalPropertyResolution::Resolved(ResolvedProperty {
+            property_name: property,
+            declaring_class_id: None,
+            property_span: None,
+            property_type: write_type,
+            is_magic: true,
+            read_type: effective.read_type,
+        })));
+    }
+
+    let Some(read_type) = effective.read_type else {
+        report_external_invalid_property_access(context, class, property, span, false);
+        result.has_error_path = true;
+        return Ok(Some(ExternalPropertyResolution::Invalid));
+    };
+
+    Ok(Some(ExternalPropertyResolution::Resolved(ResolvedProperty {
+        property_name: property,
+        declaring_class_id: None,
+        property_span: None,
+        property_type: read_type,
+        is_magic: true,
+        read_type: None,
+    })))
+}
+
+fn report_external_invalid_property_access<A>(
+    context: &mut Context<'_, '_, A>,
+    class: Word,
+    property: Word,
+    span: Span,
+    for_assignment: bool,
+) where
+    A: Arena,
+{
+    let class = context.codebase.get_class_like(class.as_bytes()).map_or(class, |metadata| metadata.original_name);
+    let (code, action, direction) = if for_assignment {
+        (IssueCode::InvalidPropertyWrite, "write to", "read-only")
+    } else {
+        (IssueCode::InvalidPropertyRead, "read from", "write-only")
+    };
+    context.collector.report_with_code(
+        code,
+        Issue::error(format!("Cannot {action} extension-provided {direction} property `{class}::{property}`."))
+            .with_annotation(Annotation::primary(span).with_message(format!("This property is {direction}"))),
+    );
 }
 
 /// Resolves built-in enum properties (`name` and `value`) with literal types.
@@ -627,6 +740,28 @@ pub(crate) fn resolve_declared_property<'ctx>(
 /// a class scope but is certainly outside the class (mixins, intersection members,
 /// `array_column()`): a real property governs when it is publicly visible, a magic
 /// `@property*` annotation otherwise.  Returns `None` when neither reaches a declaration.
+fn get_resolved_declared_property(
+    codebase: &CodebaseMetadata,
+    resolution: &DeclaredProperty<'_>,
+    prop_name: Word,
+    for_assignment: bool,
+) -> ResolvedProperty {
+    let property_metadata = resolution.property;
+
+    ResolvedProperty {
+        property_span: property_metadata.name_span.or(property_metadata.span),
+        property_name: prop_name,
+        declaring_class_id: Some(resolution.declaring_class.name),
+        property_type: resolution.declared_type_for(codebase, for_assignment),
+        is_magic: resolution.is_magic(),
+        read_type: if for_assignment && resolution.is_magic() {
+            Some(resolution.declared_type(codebase))
+        } else {
+            None
+        },
+    }
+}
+
 pub(crate) fn resolve_property_for_external_access<'ctx>(
     codebase: &'ctx CodebaseMetadata,
     class_metadata: &'ctx ClassLikeMetadata,
@@ -804,6 +939,11 @@ where
             });
         }
 
+        if class_metadata.has_incomplete_hierarchy() {
+            result.has_ambiguous_path = true;
+            return None;
+        }
+
         result.has_invalid_path = true;
 
         if !class_metadata.flags.is_final() || class_metadata.kind.is_interface() || class_metadata.kind.is_trait() {
@@ -856,7 +996,6 @@ where
             &TypeExpansionOptions {
                 self_class: Some(declaring_class_id),
                 static_class_type: StaticClassType::Object(object.clone()),
-                parent_class: declaring_class_metadata.direct_parent_class,
                 ..Default::default()
             },
         );
@@ -1103,7 +1242,7 @@ fn update_template_types<A>(
                             expander::expand_union(
                                 context.codebase,
                                 &mut lhs_param_type,
-                                &TypeExpansionOptions { parent_class: None, ..Default::default() },
+                                &TypeExpansionOptions::default(),
                             );
 
                             lhs_param_type
@@ -1513,7 +1652,7 @@ fn find_property_in_mixins<A>(
     context: &Context<'_, '_, A>,
     class_metadata: &ClassLikeMetadata,
     outer_object: &TObject,
-    mixins: &[TUnion],
+    mixins: &[TypeMetadata],
     prop_name: Word,
     for_assignment: bool,
 ) -> Option<ResolvedProperty>
@@ -1521,7 +1660,7 @@ where
     A: Arena,
 {
     for mixin_type in mixins {
-        for mixin_atomic in mixin_type.types.as_ref() {
+        for mixin_atomic in mixin_type.type_union.types.as_ref() {
             match mixin_atomic {
                 TAtomic::Object(TObject::Named(named)) => {
                     if let Some(result) = find_property_in_single_mixin(context, named.name, prop_name, for_assignment)
@@ -1603,20 +1742,8 @@ where
     // Mixin access is always external, so a non-public real property defers to a magic
     // `@property*` annotation when the mixin class documents one.
     let resolution = resolve_property_for_external_access(context.codebase, mixin_metadata, prop_name)?;
-    let property_metadata = resolution.property;
 
-    Some(ResolvedProperty {
-        property_span: property_metadata.name_span.or(property_metadata.span),
-        property_name: prop_name,
-        declaring_class_id: Some(resolution.declaring_class.name),
-        property_type: resolution.declared_type_for(context.codebase, for_assignment),
-        is_magic: resolution.is_magic(),
-        read_type: if for_assignment && resolution.is_magic() {
-            Some(resolution.declared_type(context.codebase))
-        } else {
-            None
-        },
-    })
+    Some(get_resolved_declared_property(context.codebase, &resolution, prop_name, for_assignment))
 }
 
 /// Searches for a property in intersection types of a named object.
@@ -1647,20 +1774,7 @@ where
                     continue;
                 };
 
-                let property_metadata = resolution.property;
-
-                return Some(ResolvedProperty {
-                    property_span: property_metadata.name_span.or(property_metadata.span),
-                    property_name: prop_name,
-                    declaring_class_id: Some(resolution.declaring_class.name),
-                    property_type: resolution.declared_type_for(context.codebase, for_assignment),
-                    is_magic: resolution.is_magic(),
-                    read_type: if for_assignment && resolution.is_magic() {
-                        Some(resolution.declared_type(context.codebase))
-                    } else {
-                        None
-                    },
-                });
+                return Some(get_resolved_declared_property(context.codebase, &resolution, prop_name, for_assignment));
             }
             TAtomic::Object(TObject::WithProperties(shaped)) => {
                 let key = mago_word::word(trim_start_byte(prop_name.as_bytes(), b'$'));

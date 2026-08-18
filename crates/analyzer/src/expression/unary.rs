@@ -18,7 +18,6 @@ use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
 use mago_codex::ttype::atomic::array::list::TList;
-use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::atomic::mixed::TMixed;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
@@ -62,7 +61,7 @@ use crate::error::AnalysisError;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::assign_to_expression;
 use crate::expression::call::method_call::analyze_implicit_method_call;
-use crate::utils::expression::get_expression_id;
+use crate::utils::expression::get_block_expression_id;
 use crate::utils::php_emulation::str_increment_bytes;
 use crate::utils::php_emulation::str_is_numeric_bytes;
 
@@ -102,14 +101,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
 
                 artifacts.set_rc_expression_type(self, Rc::new(referenced_type));
             }
-            UnaryPrefixOperator::ErrorControl(_) | UnaryPrefixOperator::Plus(_) => {
-                if let Some(operand_type) = operand_type {
-                    artifacts.set_rc_expression_type(self, operand_type);
-                } else {
-                    artifacts.set_expression_type(self, get_mixed());
-                }
-            }
-            UnaryPrefixOperator::BitwiseNot(_) => {
+            UnaryPrefixOperator::ErrorControl(_)
+            | UnaryPrefixOperator::Plus(_)
+            | UnaryPrefixOperator::BitwiseNot(_) => {
                 if let Some(operand_type) = operand_type {
                     artifacts.set_rc_expression_type(self, operand_type);
                 } else {
@@ -398,12 +392,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                             report_redundant_type_cast(&self.operator, self, &t, context);
                         }
 
-                        let operand_expression_id = get_expression_id(
-                            self.operand,
-                            block_context.scope.get_class_like_name(),
-                            context.resolved_names,
-                            Some(context.codebase),
-                        );
+                        let operand_expression_id = get_block_expression_id(self.operand, context, block_context);
 
                         cast_type_to_string(
                             &t,
@@ -685,13 +674,7 @@ where
         TUnion::from_vec(combine(possibilities, context.codebase, context.settings.combiner_options()))
     });
 
-    let operand_id = get_expression_id(
-        operand,
-        block_context.scope.get_class_like_name(),
-        context.resolved_names,
-        Some(context.codebase),
-    );
-
+    let operand_id = get_block_expression_id(operand, context, block_context);
     let successful = assign_to_expression(
         context,
         block_context,
@@ -945,13 +928,7 @@ where
         TUnion::from_vec(combine(possibilities, context.codebase, context.settings.combiner_options()))
     });
 
-    let operand_id = get_expression_id(
-        operand,
-        block_context.scope.get_class_like_name(),
-        context.resolved_names,
-        Some(context.codebase),
-    );
-
+    let operand_id = get_block_expression_id(operand, context, block_context);
     let successful = assign_to_expression(
         context,
         block_context,
@@ -1568,7 +1545,7 @@ where
             },
 
             TAtomic::Callable(callable) => {
-                if callable.get_signature().is_none_or(TCallableSignature::is_closure) {
+                if callable.is_closure() {
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
                         Issue::error("Cannot cast type `Closure` to `string`.")

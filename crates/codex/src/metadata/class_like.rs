@@ -107,11 +107,41 @@ pub struct ClassLikeMetadata {
     pub imported_type_aliases: WordMap<(Word, Word, Span)>,
     /// Mixin types from @mixin annotations - these types' methods/properties
     /// can be accessed via magic methods (__call, __get, __set, __callStatic)
-    pub mixins: Vec<TUnion>,
+    pub mixins: Vec<TypeMetadata>,
     pub version_constraint: VersionConstraint,
 }
 
 impl ClassLikeMetadata {
+    /// Returns whether this class-like's inherited metadata is incomplete.
+    ///
+    /// Synthetic enum contracts are materialized by the scanner and do not make
+    /// an enum incomplete when their own metadata is unavailable.
+    #[inline]
+    #[must_use]
+    pub fn has_incomplete_hierarchy(&self) -> bool {
+        self.incomplete_hierarchy_dependencies().next().is_some()
+    }
+
+    /// Returns the unresolved dependencies that make this class-like's
+    /// inherited metadata incomplete.
+    ///
+    /// Synthetic enum contracts are materialized by the scanner and are not
+    /// exposed as unresolved hierarchy dependencies.
+    #[inline]
+    pub fn incomplete_hierarchy_dependencies(&self) -> impl Iterator<Item = Word> + '_ {
+        let is_enum = self.kind.is_enum();
+        self.invalid_dependencies.iter().copied().filter(move |dependency| {
+            !is_enum
+                || !matches!(
+                    dependency.as_bytes(),
+                    b"unitenum"
+                        | b"backedenum"
+                        | b"__internal_do_not_use__intbackedenum"
+                        | b"__internal_do_not_use__stringbackedenum"
+                )
+        })
+    }
+
     #[must_use]
     pub fn new(
         name: Word,
@@ -217,18 +247,6 @@ impl ClassLikeMetadata {
         self.template_types.get(&name)
     }
 
-    /// Returns type parameters for a specific generic parameter name with its index.
-    #[inline]
-    #[must_use]
-    pub fn get_template_type_with_index(&self, name: Word) -> Option<(usize, &GenericTemplate)> {
-        self.template_types.get_full(&name).map(|(index, _, types)| (index, types))
-    }
-
-    #[must_use]
-    pub fn get_template_for_index(&self, index: usize) -> Option<(Word, &GenericTemplate)> {
-        self.template_types.get_index(index).map(|(name, types)| (*name, types))
-    }
-
     #[must_use]
     pub fn get_template_name_for_index(&self, index: usize) -> Option<Word> {
         self.template_types.get_index(index).map(|(name, _)| *name)
@@ -244,13 +262,6 @@ impl ClassLikeMetadata {
     #[must_use]
     pub fn has_parent(&self, parent: Word) -> bool {
         self.all_parent_classes.contains(&parent) || self.all_parent_interfaces.contains(&parent)
-    }
-
-    /// Checks if a specific parent has template extended parameters.
-    #[inline]
-    #[must_use]
-    pub fn has_template_extended_parameter(&self, parent: Word) -> bool {
-        self.template_extended_parameters.contains_key(&parent)
     }
 
     /// Checks if a specific method appears in this class-like.
@@ -274,13 +285,6 @@ impl ClassLikeMetadata {
         self.appearing_property_ids.contains_key(&name)
     }
 
-    /// Checks if a specific property is declared in this class-like.
-    #[inline]
-    #[must_use]
-    pub fn has_declaring_property(&self, name: Word) -> bool {
-        self.declaring_property_ids.contains_key(&name)
-    }
-
     /// Takes ownership of the issues found for this class-like structure.
     #[inline]
     pub fn take_issues(&mut self) -> Vec<Issue> {
@@ -292,24 +296,6 @@ impl ClassLikeMetadata {
     pub fn add_direct_parent_interface(&mut self, interface: Word) {
         self.direct_parent_interfaces.insert(interface);
         self.all_parent_interfaces.insert(interface);
-    }
-
-    /// Adds a single interface to the list of all parent interfaces. Use with caution, normally derived.
-    #[inline]
-    pub fn add_all_parent_interface(&mut self, interface: Word) {
-        self.all_parent_interfaces.insert(interface);
-    }
-
-    /// Adds multiple interfaces to the list of all parent interfaces. Use with caution.
-    #[inline]
-    pub fn add_all_parent_interfaces(&mut self, interfaces: impl IntoIterator<Item = Word>) {
-        self.all_parent_interfaces.extend(interfaces);
-    }
-
-    /// Adds multiple ancestor classes. Use with caution.
-    #[inline]
-    pub fn add_all_parent_classes(&mut self, classes: impl IntoIterator<Item = Word>) {
-        self.all_parent_classes.extend(classes);
     }
 
     /// Adds a single used trait. Returns `true` if the trait was not already present.
@@ -1012,6 +998,26 @@ mod tests {
     fn make(name: &str) -> ClassLikeMetadata {
         let a = word(name);
         ClassLikeMetadata::new(a, a, Span::dummy(0, 10), None, MetadataFlags::empty())
+    }
+
+    #[test]
+    fn incomplete_hierarchy_dependencies_hide_synthetic_enum_contracts() {
+        let mut metadata = make("Example");
+        metadata.kind = SymbolKind::Enum;
+        metadata.invalid_dependencies.extend([
+            word("unitenum"),
+            word("backedenum"),
+            word("__internal_do_not_use__intbackedenum"),
+        ]);
+
+        assert!(!metadata.has_incomplete_hierarchy());
+        assert_eq!(metadata.incomplete_hierarchy_dependencies().collect::<Vec<_>>(), []);
+
+        let missing = word("vendor\\missing\\contract");
+        metadata.invalid_dependencies.insert(missing);
+
+        assert!(metadata.has_incomplete_hierarchy());
+        assert_eq!(metadata.incomplete_hierarchy_dependencies().collect::<Vec<_>>(), [missing]);
     }
 
     #[test]

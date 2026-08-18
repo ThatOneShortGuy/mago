@@ -84,7 +84,7 @@ where
         match assertion_type {
             TAtomic::Scalar(TScalar::Generic) => {
                 return intersect_simple!(
-                    TAtomic::Scalar(scalar) if !scalar.is_generic(),
+                    TAtomic::Scalar(_),
                     TAtomic::Mixed(_),
                     context,
                     get_scalar(),
@@ -261,11 +261,6 @@ where
                     i,
                 ));
             }
-            TAtomic::Mixed(mixed)
-                if (mixed.is_vanilla() || mixed.is_isset_from_loop()) && existing_var_type.is_mixed() =>
-            {
-                return Some(existing_var_type.clone());
-            }
             _ => {}
         }
     }
@@ -313,40 +308,68 @@ where
             span,
         )),
         Assertion::NonEmptyCountable(_) => {
-            Some(reconcile_non_empty_countable(context, assertion, existing_var_type, key, negated, span, false))
+            Some(reconcile_non_empty_countable(context, assertion, existing_var_type, key, negated, span))
         }
-        Assertion::HasExactCount(count) => {
-            Some(reconcile_exactly_countable(context, assertion, existing_var_type, key, negated, span, false, *count))
-        }
-        Assertion::HasAtLeastCount(count) => {
-            Some(reconcile_at_least_countable(context, assertion, existing_var_type, key, negated, span, false, *count))
-        }
-        Assertion::IsLessThan(less_than) | Assertion::IsLessThanFromBound(less_than) => {
-            Some(reconcile_less_than(context, assertion, existing_var_type, key, negated, span, *less_than))
-        }
-        Assertion::IsGreaterThan(greater_than) | Assertion::IsGreaterThanFromBound(greater_than) => {
-            Some(reconcile_greater_than(context, assertion, existing_var_type, key, negated, span, *greater_than))
-        }
-        Assertion::IsLessThanOrEqual(less_than_or_equal)
-        | Assertion::IsLessThanOrEqualFromBound(less_than_or_equal) => Some(reconcile_less_than_or_equal(
+        Assertion::HasExactCount(count) => Some(reconcile_countable_with_bound(
             context,
             assertion,
             existing_var_type,
             key,
             negated,
             span,
-            *less_than_or_equal,
+            *count,
+            true,
         )),
-        Assertion::IsGreaterThanOrEqual(greater_than_or_equal)
-        | Assertion::IsGreaterThanOrEqualFromBound(greater_than_or_equal) => Some(reconcile_greater_than_or_equal(
+        Assertion::HasAtLeastCount(count) => Some(reconcile_countable_with_bound(
             context,
             assertion,
             existing_var_type,
             key,
             negated,
             span,
-            *greater_than_or_equal,
+            *count,
+            false,
         )),
+        Assertion::IsLessThan(value) | Assertion::IsLessThanFromBound(value) => Some(reconcile_integer_comparison(
+            context,
+            assertion,
+            existing_var_type,
+            key,
+            negated,
+            span,
+            *value,
+            true,
+            false,
+        )),
+        Assertion::IsGreaterThan(value) | Assertion::IsGreaterThanFromBound(value) => {
+            Some(reconcile_integer_comparison(
+                context,
+                assertion,
+                existing_var_type,
+                key,
+                negated,
+                span,
+                *value,
+                false,
+                false,
+            ))
+        }
+        Assertion::IsLessThanOrEqual(value) | Assertion::IsLessThanOrEqualFromBound(value) => Some(
+            reconcile_integer_comparison(context, assertion, existing_var_type, key, negated, span, *value, true, true),
+        ),
+        Assertion::IsGreaterThanOrEqual(value) | Assertion::IsGreaterThanOrEqualFromBound(value) => {
+            Some(reconcile_integer_comparison(
+                context,
+                assertion,
+                existing_var_type,
+                key,
+                negated,
+                span,
+                *value,
+                false,
+                true,
+            ))
+        }
         Assertion::Countable => Some(reconcile_countable(context, assertion, existing_var_type, key, negated, span)),
         _ => None,
     }
@@ -538,6 +561,42 @@ where
     get_never()
 }
 
+fn finalize<A>(
+    context: &mut Context<'_, '_, A>,
+    acceptable_types: Vec<TAtomic>,
+    did_remove_type: bool,
+    key: Option<&[u8]>,
+    span: Option<&Span>,
+    existing_var_type: &TUnion,
+    assertion: &Assertion,
+    negated: bool,
+    is_equality: bool,
+) -> TUnion
+where
+    A: Arena,
+{
+    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
+        && let Some(key) = key
+        && let Some(span) = span
+    {
+        trigger_issue_for_impossible(
+            context,
+            existing_var_type.get_id(),
+            key,
+            assertion,
+            !did_remove_type,
+            negated,
+            span,
+        );
+    }
+
+    if !acceptable_types.is_empty() {
+        return TUnion::from_vec(acceptable_types);
+    }
+
+    get_never()
+}
+
 fn intersect_iterable<A>(
     context: &mut Context<'_, '_, A>,
     assertion: &Assertion,
@@ -586,26 +645,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_array_list<A>(
@@ -695,21 +735,7 @@ where
             }
             TAtomic::Callable(_) => {
                 did_remove_type = true;
-
-                let mut known_items = BTreeMap::new();
-
-                known_items.insert(
-                    ArrayKey::Integer(0),
-                    (
-                        false,
-                        TUnion::from_vec(vec![TAtomic::Object(TObject::Any), TAtomic::Scalar(TScalar::class_string())]),
-                    ),
-                );
-                known_items.insert(ArrayKey::Integer(1), (false, get_non_empty_string()));
-
-                acceptable_types.push(TAtomic::Array(TArray::Keyed(
-                    TKeyedArray::new().with_known_items(known_items).with_non_empty(true),
-                )));
+                acceptable_types.push(get_callable_array_shape());
             }
             _ => {
                 did_remove_type = true;
@@ -717,26 +743,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_keyed_array<A>(
@@ -812,21 +819,7 @@ where
             }
             TAtomic::Callable(_) => {
                 did_remove_type = true;
-
-                let mut known_items = BTreeMap::new();
-
-                known_items.insert(
-                    ArrayKey::Integer(0),
-                    (
-                        false,
-                        TUnion::from_vec(vec![TAtomic::Object(TObject::Any), TAtomic::Scalar(TScalar::class_string())]),
-                    ),
-                );
-                known_items.insert(ArrayKey::Integer(1), (false, get_non_empty_string()));
-
-                acceptable_types.push(TAtomic::Array(TArray::Keyed(
-                    TKeyedArray::new().with_known_items(known_items).with_non_empty(true),
-                )));
+                acceptable_types.push(get_callable_array_shape());
             }
             _ => {
                 did_remove_type = true;
@@ -834,26 +827,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_arraykey<A>(
@@ -917,26 +891,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_numeric<A>(
@@ -958,6 +913,9 @@ where
         match atomic {
             TAtomic::Mixed(_) | TAtomic::Scalar(TScalar::Generic) => {
                 return get_numeric();
+            }
+            TAtomic::Scalar(TScalar::Numeric) => {
+                acceptable_types.push(TAtomic::Scalar(TScalar::Numeric));
             }
             TAtomic::Scalar(TScalar::Float(float)) => {
                 acceptable_types.push(TAtomic::Scalar(TScalar::Float(*float)));
@@ -997,26 +955,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_string<A>(
@@ -1122,26 +1061,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_bool<A>(
@@ -1209,26 +1129,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_float<A>(
@@ -1284,26 +1185,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn intersect_int<A>(
@@ -1361,26 +1243,7 @@ where
         }
     }
 
-    if (acceptable_types.is_empty() || (!did_remove_type && !is_equality))
-        && let Some(key) = key
-        && let Some(span) = span
-    {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
-    }
-
-    if !acceptable_types.is_empty() {
-        return TUnion::from_vec(acceptable_types);
-    }
-
-    get_never()
+    finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
 }
 
 fn reconcile_truthy_or_non_empty<A>(
@@ -1481,10 +1344,6 @@ where
 {
     let mut did_remove_type = existing_var_type.possibly_undefined() || existing_var_type.possibly_undefined_from_try();
 
-    if existing_var_type.possibly_undefined() {
-        did_remove_type = true;
-    }
-
     let mut new_var_type = existing_var_type.clone();
 
     let existing_var_types = std::mem::take(new_var_type.types.to_mut());
@@ -1530,6 +1389,18 @@ where
     new_var_type
 }
 
+fn get_callable_array_shape() -> TAtomic {
+    let mut known_items = BTreeMap::new();
+
+    known_items.insert(
+        ArrayKey::Integer(0),
+        (false, TUnion::from_vec(vec![TAtomic::Object(TObject::Any), TAtomic::Scalar(TScalar::class_string())])),
+    );
+    known_items.insert(ArrayKey::Integer(1), (false, get_non_empty_string()));
+
+    TAtomic::Array(TArray::Keyed(TKeyedArray::new().with_known_items(known_items).with_non_empty(true)))
+}
+
 fn reconcile_non_empty_countable<A>(
     context: &mut Context<'_, '_, A>,
     assertion: &Assertion,
@@ -1537,7 +1408,6 @@ fn reconcile_non_empty_countable<A>(
     key: Option<&[u8]>,
     negated: bool,
     span: Option<&Span>,
-    recursive_check: bool,
 ) -> TUnion
 where
     A: Arena,
@@ -1586,7 +1456,6 @@ where
 
     if let Some(key) = key
         && let Some(span) = span
-        && !recursive_check
         && (!did_remove_type || acceptable_types.is_empty())
     {
         let old_var_type_atom = existing_var_type.get_id();
@@ -1602,15 +1471,16 @@ where
     new_var_type
 }
 
-fn reconcile_exactly_countable<A>(
+#[allow(clippy::too_many_arguments)]
+fn reconcile_countable_with_bound<A>(
     context: &mut Context<'_, '_, A>,
     assertion: &Assertion,
     existing_var_type: &TUnion,
     key: Option<&[u8]>,
     negated: bool,
     span: Option<&Span>,
-    recursive_check: bool,
     count: usize,
+    exact: bool,
 ) -> TUnion
 where
     A: Arena,
@@ -1624,90 +1494,16 @@ where
 
     for atomic in existing_var_types {
         if let TAtomic::Array(TArray::List(TList { non_empty, known_count, element_type, known_elements })) = atomic {
-            let min_under_count = if let Some(known_count) = known_count { *known_count < count } else { false };
-            if !non_empty || min_under_count || known_count.is_none() {
-                existing_var_type.remove_type(atomic);
-                if !element_type.is_never() {
-                    existing_var_type.types.to_mut().push(TAtomic::Array(TArray::List(TList {
-                        element_type: Arc::clone(element_type),
-                        known_elements: known_elements.clone(),
-                        known_count: Some(count),
-                        non_empty: true,
-                    })));
-                }
-
-                did_remove_type = true;
-            }
-        } else if let TAtomic::Array(TArray::Keyed(TKeyedArray { non_empty, parameters, known_items })) = atomic {
-            did_remove_type = true;
-
-            if !non_empty {
-                existing_var_type.remove_type(atomic);
-
-                let known_item_count = known_items.as_ref().map_or(0, |items| items.len());
-                if parameters.is_none() && known_item_count < count {
-                    continue;
-                }
-
-                existing_var_type.types.to_mut().push(TAtomic::Array(TArray::Keyed(TKeyedArray {
-                    known_items: known_items.clone(),
-                    parameters: parameters.clone(),
-                    non_empty: true,
-                })));
-            }
-        } else {
-            // atomic isn't a list or keyed array; countable assertion doesn't apply
-        }
-    }
-
-    if !did_remove_type || existing_var_type.types.is_empty() {
-        // every type was removed, this is an impossible assertion
-        if let Some(key) = key
-            && let Some(span) = span
-            && !recursive_check
-        {
-            trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
-        }
-
-        if existing_var_type.types.is_empty() {
-            return get_never();
-        }
-    }
-
-    existing_var_type
-}
-
-fn reconcile_at_least_countable<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    recursive_check: bool,
-    count: usize,
-) -> TUnion
-where
-    A: Arena,
-{
-    let old_var_type_atom = existing_var_type.get_id();
-
-    let mut did_remove_type = false;
-
-    let existing_var_types = existing_var_type.types.as_ref();
-    let mut existing_var_type = existing_var_type.clone();
-
-    for atomic in existing_var_types {
-        if let TAtomic::Array(TArray::List(TList { non_empty, known_count, element_type, known_elements })) = atomic {
-            let min_under_count = match known_count {
-                Some(kc) => *kc < count,
-                None => *non_empty && count > 1,
+            let needs_replacement = match known_count {
+                Some(existing_count) => !*non_empty || *existing_count < count,
+                None if exact => true,
+                None => !*non_empty || count > 1,
             };
 
-            if !non_empty || min_under_count {
+            if needs_replacement {
                 existing_var_type.remove_type(atomic);
                 if !element_type.is_never() {
-                    let new_known_count = if known_count.is_some() { Some(count) } else { *known_count };
+                    let new_known_count = if exact { Some(count) } else { known_count.map(|_| count) };
 
                     existing_var_type.types.to_mut().push(TAtomic::Array(TArray::List(TList {
                         element_type: Arc::clone(element_type),
@@ -1725,14 +1521,16 @@ where
             if !non_empty {
                 existing_var_type.remove_type(atomic);
 
+                if exact && parameters.is_none() && known_items.as_ref().map_or(0, |items| items.len()) < count {
+                    continue;
+                }
+
                 existing_var_type.types.to_mut().push(TAtomic::Array(TArray::Keyed(TKeyedArray {
                     known_items: known_items.clone(),
                     parameters: parameters.clone(),
                     non_empty: true,
                 })));
             }
-        } else {
-            // atomic isn't a list or keyed array; countable assertion doesn't apply
         }
     }
 
@@ -1740,7 +1538,6 @@ where
         // every type was removed, this is an impossible assertion
         if let Some(key) = key
             && let Some(span) = span
-            && !recursive_check
         {
             trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
         }
@@ -1822,110 +1619,6 @@ where
     }
 
     existing_var_type.clone_with_types(countable_types)
-}
-
-#[inline]
-fn reconcile_less_than<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    value: i64,
-) -> TUnion
-where
-    A: Arena,
-{
-    reconcile_integer_comparison(
-        context,
-        assertion,
-        existing_var_type,
-        key,
-        negated,
-        span,
-        value,
-        true,  // is_less_than
-        false, // or_equal
-    )
-}
-
-#[inline]
-fn reconcile_less_than_or_equal<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    value: i64,
-) -> TUnion
-where
-    A: Arena,
-{
-    reconcile_integer_comparison(
-        context,
-        assertion,
-        existing_var_type,
-        key,
-        negated,
-        span,
-        value,
-        true, // is_less_than
-        true, // or_equal
-    )
-}
-
-#[inline]
-fn reconcile_greater_than<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    value: i64,
-) -> TUnion
-where
-    A: Arena,
-{
-    reconcile_integer_comparison(
-        context,
-        assertion,
-        existing_var_type,
-        key,
-        negated,
-        span,
-        value,
-        false, // is_less_than
-        false, // or_equal
-    )
-}
-
-#[inline]
-fn reconcile_greater_than_or_equal<A>(
-    context: &mut Context<'_, '_, A>,
-    assertion: &Assertion,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    negated: bool,
-    span: Option<&Span>,
-    value: i64,
-) -> TUnion
-where
-    A: Arena,
-{
-    reconcile_integer_comparison(
-        context,
-        assertion,
-        existing_var_type,
-        key,
-        negated,
-        span,
-        value,
-        false, // is_less_than
-        true,  // or_equal
-    )
 }
 
 fn reconcile_integer_comparison<A>(
@@ -2057,9 +1750,7 @@ where
             trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, false, negated, span);
         }
 
-        if new_var_type.types.is_empty() {
-            return get_never();
-        }
+        return get_never();
     }
 
     new_var_type
@@ -2162,8 +1853,6 @@ where
                     } else if !element_type.is_never() {
                         *non_empty = true;
                         *known_elements = Some(BTreeMap::from([(*i as usize, (false, (**element_type).clone()))]));
-                    } else {
-                        // no known elements and element type is never; leave the list shape untouched
                     }
 
                     acceptable_types.push(atomic);
@@ -2256,8 +1945,6 @@ where
                             *known_item = (false, nonnull);
                         } else if known_item.1 != nonnull {
                             known_item.1 = nonnull;
-                        } else {
-                            // entry already non-optional and stripping null produced no change
                         }
                     } else if let Some((_, value_param)) = parameters {
                         let nonnull = subtract_null(context, assertion, value_param, None, negated, None);
@@ -2297,8 +1984,6 @@ where
                             *known_element = (false, nonnull);
                         } else if known_element.1 != nonnull {
                             known_element.1 = nonnull;
-                        } else {
-                            // entry already non-optional and stripping null produced no change
                         }
                     } else if !element_type.is_never() {
                         let nonnull = subtract_null(context, assertion, element_type, None, negated, None);
@@ -2309,8 +1994,6 @@ where
                 } else if !element_type.is_never() {
                     let nonnull = subtract_null(context, assertion, element_type, None, negated, None);
                     *known_elements = Some(BTreeMap::from([(*i as usize, (false, nonnull))]));
-                } else {
-                    // no known elements and the generic element type is never; leave the list shape untouched
                 }
 
                 acceptable_types.push(atomic);

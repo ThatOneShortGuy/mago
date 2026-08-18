@@ -151,37 +151,16 @@ pub enum StaticClassType {
     Object(TObject),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TypeExpansionOptions {
     pub self_class: Option<Word>,
     pub static_class_type: StaticClassType,
-    pub parent_class: Option<Word>,
-    pub evaluate_class_constants: bool,
-    pub evaluate_conditional_types: bool,
     pub function_is_final: bool,
-    pub expand_generic: bool,
-    pub expand_templates: bool,
     /// True when expanding the return type of a method resolved through `@mixin`:
     /// a pre-bound `static` that reaches the receiver through mixin tags rebinds
     /// to the receiver. Elsewhere the mixin relationship between two class names
     /// says nothing about how a value was obtained, so no rebinding happens.
     pub allow_mixin_static_rebind: bool,
-}
-
-impl Default for TypeExpansionOptions {
-    fn default() -> Self {
-        Self {
-            self_class: None,
-            static_class_type: StaticClassType::default(),
-            parent_class: None,
-            evaluate_class_constants: true,
-            evaluate_conditional_types: false,
-            function_is_final: false,
-            expand_generic: false,
-            expand_templates: true,
-            allow_mixin_static_rebind: false,
-        }
-    }
 }
 
 /// Expands a type union, resolving special types like `self`, `static`, `parent`,
@@ -335,44 +314,20 @@ pub(crate) fn expand_atomic(
             *skip_key = true;
             new_return_type_parts.extend(expand_alias(alias, codebase, options));
         }
-        TAtomic::Derived(derived) => match derived {
-            TDerived::KeyOf(key_of) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_key_of(key_of, codebase, options));
-            }
-            TDerived::ValueOf(value_of) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_value_of(value_of, codebase, options));
-            }
-            TDerived::IndexAccess(index_access) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_index_access(index_access, codebase, options));
-            }
-            TDerived::IntMask(int_mask) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_int_mask(int_mask, codebase, options));
-            }
-            TDerived::IntMaskOf(int_mask_of) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_int_mask_of(int_mask_of, codebase, options));
-            }
-            TDerived::PropertiesOf(properties_of) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_properties_of(properties_of, codebase, options));
-            }
-            TDerived::New(new_type) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_new(new_type, codebase, options));
-            }
-            TDerived::TemplateType(template_type) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_template_type(template_type, codebase, options));
-            }
-            TDerived::Intersection(intersection) => {
-                *skip_key = true;
-                new_return_type_parts.extend(expand_derived_intersection(intersection, codebase, options));
-            }
-        },
+        TAtomic::Derived(derived) => {
+            *skip_key = true;
+            new_return_type_parts.extend(match derived {
+                TDerived::KeyOf(key_of) => expand_key_of(key_of, codebase, options),
+                TDerived::ValueOf(value_of) => expand_value_of(value_of, codebase, options),
+                TDerived::IndexAccess(index_access) => expand_index_access(index_access, codebase, options),
+                TDerived::IntMask(int_mask) => expand_int_mask(int_mask, codebase, options),
+                TDerived::IntMaskOf(int_mask_of) => expand_int_mask_of(int_mask_of, codebase, options),
+                TDerived::PropertiesOf(properties_of) => expand_properties_of(properties_of, codebase, options),
+                TDerived::New(new_type) => expand_new(new_type, codebase, options),
+                TDerived::TemplateType(template_type) => expand_template_type(template_type, codebase, options),
+                TDerived::Intersection(intersection) => expand_derived_intersection(intersection, codebase, options),
+            });
+        }
         TAtomic::Iterable(iterable) => {
             expand_union(codebase, Arc::make_mut(&mut iterable.key_type), options);
             expand_union(codebase, Arc::make_mut(&mut iterable.value_type), options);
@@ -855,7 +810,7 @@ fn direct_mixins<'ctx>(
     metadata: &'ctx ClassLikeMetadata,
     codebase: &'ctx CodebaseMetadata,
 ) -> impl Iterator<Item = (Word, Option<&'ctx ClassLikeMetadata>)> {
-    metadata.mixins.iter().flat_map(|mixin| mixin.types.as_ref().iter()).flat_map(move |mixin_type| {
+    metadata.mixins.iter().flat_map(|mixin| mixin.type_union.types.as_ref().iter()).flat_map(move |mixin_type| {
         let atomics = match mixin_type {
             TAtomic::GenericParameter(TGenericParameter { constraint, .. }) => constraint.types.as_ref(),
             other => std::slice::from_ref(other),
@@ -869,7 +824,7 @@ fn direct_mixins<'ctx>(
 }
 
 /// Returns true if we should use the static object's type parameters instead of the current ones.
-/// This is true when current params are None or match the class's default template bounds.
+/// This is true when current params are None or came from omitted/defaulted template arguments.
 fn should_use_static_type_params(named: &TNamedObject, static_obj: &TNamedObject, codebase: &CodebaseMetadata) -> bool {
     let Some(current_params) = &named.type_parameters else {
         return true;
@@ -883,13 +838,13 @@ fn should_use_static_type_params(named: &TNamedObject, static_obj: &TNamedObject
 
     current_params.len() == templates.len()
         && current_params.iter().zip(templates.values()).all(|(current, template)| {
-            current.from_template_default()
+            current.from_template_fallback()
                 || current == &template.constraint
                 || template.default.as_ref().is_some_and(|default| current == default)
         })
 }
 
-/// Expands existing type parameters or fills them with default template bounds.
+/// Expands existing type parameters and fills omitted arguments.
 fn expand_or_fill_type_parameters(
     named: &mut TNamedObject,
     codebase: &CodebaseMetadata,
@@ -902,9 +857,15 @@ fn expand_or_fill_type_parameters(
         if supplied_count < template_count {
             let mut params = named.type_parameters.take().unwrap_or_default();
             params.extend(class_metadata.template_types.values().skip(supplied_count).map(|template| {
-                let mut fallback = template.default.clone().unwrap_or_else(|| template.constraint.clone());
-                fallback.set_from_template_default(true);
-                fallback
+                if let Some(default) = &template.default {
+                    let mut default = default.clone();
+                    default.set_from_template_default(true);
+                    default
+                } else {
+                    let mut constraint = template.constraint.clone();
+                    constraint.set_from_unspecified_template(true);
+                    constraint
+                }
             }));
             named.type_parameters = Some(params);
         }
@@ -943,46 +904,28 @@ fn get_signature_of_function_like_identifier_with_options(
     codebase: &CodebaseMetadata,
     preserve_parameter_dependencies: bool,
 ) -> Option<TCallableSignature> {
-    Some(match function_like_identifier {
+    let (function_like_metadata, options) = match function_like_identifier {
         FunctionLikeIdentifier::Function(name) => {
-            let function_like_metadata = codebase.get_function(name.as_bytes())?;
-
-            get_signature_of_function_like_metadata_with_options(
-                function_like_identifier,
-                function_like_metadata,
-                codebase,
-                &TypeExpansionOptions::default(),
-                preserve_parameter_dependencies,
-            )
+            (codebase.get_function(name.as_bytes())?, TypeExpansionOptions::default())
         }
-        FunctionLikeIdentifier::Closure(name) => {
-            let function_like_metadata = codebase.get_closure(name)?;
+        FunctionLikeIdentifier::Closure(name) => (codebase.get_closure(name)?, TypeExpansionOptions::default()),
+        FunctionLikeIdentifier::Method(classlike_name, method_name) => (
+            codebase.get_declaring_method(classlike_name.as_bytes(), method_name.as_bytes())?,
+            TypeExpansionOptions {
+                self_class: Some(*classlike_name),
+                static_class_type: StaticClassType::Name(*classlike_name),
+                ..Default::default()
+            },
+        ),
+    };
 
-            get_signature_of_function_like_metadata_with_options(
-                function_like_identifier,
-                function_like_metadata,
-                codebase,
-                &TypeExpansionOptions::default(),
-                preserve_parameter_dependencies,
-            )
-        }
-        FunctionLikeIdentifier::Method(classlike_name, method_name) => {
-            let function_like_metadata =
-                codebase.get_declaring_method(classlike_name.as_bytes(), method_name.as_bytes())?;
-
-            get_signature_of_function_like_metadata_with_options(
-                function_like_identifier,
-                function_like_metadata,
-                codebase,
-                &TypeExpansionOptions {
-                    self_class: Some(*classlike_name),
-                    static_class_type: StaticClassType::Name(*classlike_name),
-                    ..Default::default()
-                },
-                preserve_parameter_dependencies,
-            )
-        }
-    })
+    Some(get_signature_of_function_like_metadata_with_options(
+        function_like_identifier,
+        function_like_metadata,
+        codebase,
+        &options,
+        preserve_parameter_dependencies,
+    ))
 }
 
 #[must_use]
@@ -1835,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_object_gets_default_type_params() {
+    fn test_expand_object_marks_omitted_type_params_as_unspecified() {
         let code = "<?php
             /** @template T */
             class Container {}
@@ -1848,9 +1791,38 @@ mod tests {
         let mut actual = input;
         expand_union(&codebase, &mut actual, &TypeExpansionOptions::default());
 
-        if let TAtomic::Object(TObject::Named(named)) = &actual.types[0] {
-            assert!(named.type_parameters.is_some());
-        }
+        let TAtomic::Object(TObject::Named(named)) = &actual.types[0] else {
+            panic!("Expected a named object");
+        };
+        let parameter = &named.type_parameters.as_ref().expect("Expected a filled type parameter")[0];
+
+        assert!(parameter.is_mixed());
+        assert!(parameter.from_unspecified_template());
+        assert!(!parameter.from_template_default());
+    }
+
+    #[test]
+    fn test_expand_object_keeps_declared_template_defaults_concrete() {
+        let code = "<?php
+            /** @template T = string */
+            class Container {}
+        ";
+        let codebase = create_test_codebase(code);
+
+        let named = TNamedObject::new(ascii_lowercase_word(b"container"));
+        let input = TUnion::from_atomic(TAtomic::Object(TObject::Named(named)));
+
+        let mut actual = input;
+        expand_union(&codebase, &mut actual, &TypeExpansionOptions::default());
+
+        let TAtomic::Object(TObject::Named(named)) = &actual.types[0] else {
+            panic!("Expected a named object");
+        };
+        let parameter = &named.type_parameters.as_ref().expect("Expected a filled type parameter")[0];
+
+        assert!(parameter.is_string());
+        assert!(parameter.from_template_default());
+        assert!(!parameter.from_unspecified_template());
     }
 
     #[test]
@@ -2512,12 +2484,7 @@ mod tests {
         let alias = TAlias::new(ascii_lowercase_word(b"foo"), word("SelfAlias"));
         let input = TUnion::from_atomic(TAtomic::Alias(alias));
 
-        let options = TypeExpansionOptions {
-            evaluate_conditional_types: true,
-            expand_generic: true,
-            expand_templates: true,
-            ..Default::default()
-        };
+        let options = TypeExpansionOptions::default();
         let mut actual = input;
         expand_union(&codebase, &mut actual, &options);
 
@@ -2878,12 +2845,7 @@ mod tests {
         let options = TypeExpansionOptions {
             self_class: None,
             static_class_type: StaticClassType::None,
-            parent_class: None,
-            evaluate_class_constants: false,
-            evaluate_conditional_types: false,
             function_is_final: false,
-            expand_generic: false,
-            expand_templates: false,
             allow_mixin_static_rebind: false,
         };
 

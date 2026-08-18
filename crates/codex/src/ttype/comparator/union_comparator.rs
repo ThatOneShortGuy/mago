@@ -1,6 +1,7 @@
 use crate::metadata::CodebaseMetadata;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::generic::TGenericParameter;
+use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::scalar::TScalar;
 use crate::ttype::comparator::ComparisonResult;
 use crate::ttype::comparator::atomic_comparator;
@@ -53,6 +54,69 @@ pub fn is_contained_by(
     all_matched
 }
 
+/// Checks containment while treating omitted, non-defaulted generic arguments in the
+/// container as erased runtime wildcards.
+///
+/// This is intentionally narrower than normal generic containment. It is used where a
+/// native, non-generic PHP type declaration is compared with a PHPDoc specialization.
+pub fn is_contained_by_with_erased_template_arguments(
+    codebase: &CodebaseMetadata,
+    input_type: &TUnion,
+    container_type: &TUnion,
+    union_comparison_result: &mut ComparisonResult,
+) -> bool {
+    let mut direct_result = ComparisonResult::new();
+    if is_contained_by(codebase, input_type, container_type, false, false, false, &mut direct_result) {
+        *union_comparison_result = direct_result;
+        return true;
+    }
+
+    let Some(relaxed_container) = replace_erased_template_arguments(input_type, container_type) else {
+        *union_comparison_result = direct_result;
+        return false;
+    };
+
+    is_contained_by(codebase, input_type, &relaxed_container, false, false, false, union_comparison_result)
+}
+
+fn replace_erased_template_arguments(input_type: &TUnion, container_type: &TUnion) -> Option<TUnion> {
+    let mut relaxed = container_type.clone();
+    let mut replaced = false;
+
+    for container_atomic in relaxed.types.to_mut() {
+        let TAtomic::Object(TObject::Named(container_object)) = container_atomic else {
+            continue;
+        };
+        let Some(container_parameters) = container_object.type_parameters.as_mut() else {
+            continue;
+        };
+
+        let Some(input_parameters) = input_type.types.iter().find_map(|input_atomic| {
+            let TAtomic::Object(TObject::Named(input_object)) = input_atomic else {
+                return None;
+            };
+
+            input_object
+                .name
+                .as_bytes()
+                .eq_ignore_ascii_case(container_object.name.as_bytes())
+                .then_some(input_object.type_parameters.as_deref())
+                .flatten()
+        }) else {
+            continue;
+        };
+
+        for (container_parameter, input_parameter) in container_parameters.iter_mut().zip(input_parameters) {
+            if container_parameter.from_unspecified_template() {
+                *container_parameter = input_parameter.clone();
+                replaced = true;
+            }
+        }
+    }
+
+    replaced.then_some(relaxed)
+}
+
 #[inline]
 pub fn is_return_type_contained_by(
     codebase: &CodebaseMetadata,
@@ -91,7 +155,7 @@ fn is_contained_by_atomic(
 
             union_comparison_result
                 .type_variable_upper_bounds
-                .push((*name, TemplateBound::new(container_type.clone(), 0, None, None)));
+                .push((*name, TemplateBound::new(container_type.clone(), 0, None)));
 
             return true;
         }
@@ -119,11 +183,8 @@ fn is_contained_by_atomic(
     }
 
     let container_atomic_types = container_type.types.as_ref();
-    let input_from_template_default = input_type.from_template_default();
+    let input_from_template_fallback = input_type.from_template_fallback();
     let mut type_match_found = false;
-    let mut all_type_coerced = None;
-    let mut all_type_coerced_from_nested_mixed = None;
-    let mut all_type_coerced_from_as_mixed = None;
     let mut some_type_coerced = false;
     let mut some_type_coerced_from_nested_mixed = false;
 
@@ -210,7 +271,7 @@ fn is_contained_by_atomic(
         if let TAtomic::Variable(name) = &container_type_part {
             union_comparison_result
                 .type_variable_lower_bounds
-                .push((*name, TemplateBound::new(input_type.clone(), 0, None, None)));
+                .push((*name, TemplateBound::new(input_type.clone(), 0, None)));
 
             type_match_found = true;
 
@@ -225,13 +286,6 @@ fn is_contained_by_atomic(
             inside_assertion,
             &mut atomic_comparison_result,
         );
-
-        if (input_type_part.is_mixed() || matches!(input_type_part, TAtomic::Scalar(TScalar::ArrayKey)))
-            && input_from_template_default
-            && atomic_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false)
-        {
-            atomic_comparison_result.type_coerced_from_as_mixed = Some(true);
-        }
 
         if is_atomic_contained_by {
             if let Some(replacement_atomic_type) = atomic_comparison_result.replacement_atomic_type {
@@ -259,37 +313,8 @@ fn is_contained_by_atomic(
             some_type_coerced_from_nested_mixed = true;
         }
 
-        if !atomic_comparison_result.type_coerced.unwrap_or(false) || !all_type_coerced.unwrap_or(true) {
-            all_type_coerced = Some(false);
-        } else {
-            all_type_coerced = Some(true);
-        }
-
-        if !atomic_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false)
-            || !all_type_coerced_from_nested_mixed.unwrap_or(true)
-        {
-            all_type_coerced_from_nested_mixed = Some(false);
-        } else {
-            all_type_coerced_from_nested_mixed = Some(true);
-        }
-
         if is_atomic_contained_by {
             type_match_found = true;
-            all_type_coerced_from_nested_mixed = Some(false);
-            all_type_coerced_from_as_mixed = Some(false);
-            all_type_coerced = Some(false);
-        }
-    }
-
-    if all_type_coerced.unwrap_or(false) {
-        union_comparison_result.type_coerced = Some(true);
-    }
-
-    if all_type_coerced_from_nested_mixed.unwrap_or(false) {
-        union_comparison_result.type_coerced_from_nested_mixed = Some(true);
-
-        if input_from_template_default || all_type_coerced_from_as_mixed.unwrap_or(false) {
-            union_comparison_result.type_coerced_from_as_mixed = Some(true);
         }
     }
 
@@ -304,7 +329,7 @@ fn is_contained_by_atomic(
     if some_type_coerced_from_nested_mixed {
         union_comparison_result.type_coerced_from_nested_mixed = Some(true);
 
-        if input_from_template_default || all_type_coerced_from_as_mixed.unwrap_or(false) {
+        if input_from_template_fallback {
             union_comparison_result.type_coerced_from_as_mixed = Some(true);
         }
     }

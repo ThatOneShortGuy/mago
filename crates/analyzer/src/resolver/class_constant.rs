@@ -124,6 +124,13 @@ where
 
             // Handle regular constants and enum cases
             let Some(metadata) = context.codebase.get_class_like(fq_class_id.as_bytes()) else {
+                if class_resolution.is_parent()
+                    && block_context.scope.get_class_like().is_some_and(ClassLikeMetadata::has_incomplete_hierarchy)
+                {
+                    result.has_ambiguous_path = true;
+                    continue;
+                }
+
                 result.has_invalid_path = true;
                 report_non_existent_class(context, fq_class_id, class_expr.span());
                 continue;
@@ -131,7 +138,7 @@ where
 
             artifacts.symbol_references.add_reference_to_class_member(
                 &block_context.scope,
-                (fq_class_id, const_name),
+                (metadata.name, const_name),
                 false,
             );
 
@@ -319,7 +326,6 @@ where
             &TypeExpansionOptions {
                 self_class: Some(metadata.name),
                 static_class_type: StaticClassType::Name(metadata.name),
-                parent_class: metadata.direct_parent_class,
                 function_is_final: metadata.flags.is_final(),
                 ..Default::default()
             },
@@ -366,7 +372,6 @@ where
                 &TypeExpansionOptions {
                     self_class: Some(required_metadata.name),
                     static_class_type: StaticClassType::Name(required_metadata.name),
-                    parent_class: required_metadata.direct_parent_class,
                     function_is_final: required_metadata.flags.is_final(),
                     ..Default::default()
                 },
@@ -383,6 +388,10 @@ where
 
             return Some(ResolvedConstant { const_type });
         }
+    }
+
+    if metadata.has_incomplete_hierarchy() {
+        return Some(ResolvedConstant { const_type: get_mixed() });
     }
 
     // Not found, report error.

@@ -60,9 +60,9 @@ pub(crate) fn is_contained_by(
         };
 
         // When the input has no explicit type parameters, the specialized type
-        // comes from template defaults, not explicit annotations.
+        // is only the template's upper bound, not an explicit invariant argument.
         if input_type_parameters.is_none() {
-            specialized_template_type.set_from_template_default(true);
+            specialized_template_type.set_from_unspecified_template(true);
         }
 
         let mut parameter_comparison_result = ComparisonResult::new();
@@ -124,8 +124,8 @@ pub(crate) fn is_contained_by(
 
         if matches!(variance, Variance::Invariant)
             && (!inside_assertion || !container_type_parameter.has_template_types())
-            && !specialized_template_type.from_template_default()
-            && !container_type_parameter.from_template_default()
+            && !specialized_template_type.from_template_fallback()
+            && !container_type_parameter.from_template_fallback()
         {
             let mut reverse_result = ComparisonResult::new();
             let reverse_ok = union_comparator::is_contained_by(
@@ -187,23 +187,14 @@ pub(crate) fn update_failed_result_from_nested(
     atomic_comparison_result: &mut ComparisonResult,
     param_comparison_result: &ComparisonResult,
 ) {
-    atomic_comparison_result.type_coerced = Some(if let Some(val) = atomic_comparison_result.type_coerced {
-        val
-    } else {
-        param_comparison_result.type_coerced.unwrap_or(false)
-    });
+    fn merge(destination: &mut Option<bool>, source: Option<bool>) {
+        *destination = Some(destination.unwrap_or(source.unwrap_or(false)));
+    }
 
-    atomic_comparison_result.type_coerced_from_nested_mixed =
-        Some(if let Some(val) = atomic_comparison_result.type_coerced_from_nested_mixed {
-            val
-        } else {
-            param_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false)
-        });
-
-    atomic_comparison_result.type_coerced_from_as_mixed =
-        Some(if let Some(val) = atomic_comparison_result.type_coerced_from_as_mixed {
-            val
-        } else {
-            param_comparison_result.type_coerced_from_as_mixed.unwrap_or(false)
-        });
+    merge(&mut atomic_comparison_result.type_coerced, param_comparison_result.type_coerced);
+    merge(
+        &mut atomic_comparison_result.type_coerced_from_nested_mixed,
+        param_comparison_result.type_coerced_from_nested_mixed,
+    );
+    merge(&mut atomic_comparison_result.type_coerced_from_as_mixed, param_comparison_result.type_coerced_from_as_mixed);
 }

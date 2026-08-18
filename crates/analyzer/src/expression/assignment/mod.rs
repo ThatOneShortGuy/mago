@@ -54,7 +54,7 @@ use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::expression_has_logic;
-use crate::utils::expression::get_expression_id;
+use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_root_expression_id;
 use crate::utils::misc::unwrap_expression;
 
@@ -111,13 +111,7 @@ where
 
     analyze_assignment_target(target_expression, context, block_context, artifacts)?;
 
-    let target_variable_id = get_expression_id(
-        target_expression,
-        block_context.scope.get_class_like_name(),
-        context.resolved_names,
-        Some(context.codebase),
-    );
-
+    let target_variable_id = get_block_expression_id(target_expression, context, block_context);
     let mut existing_target_type = None;
     if let Some(target_variable_id) = &target_variable_id {
         block_context.conditionally_referenced_variable_ids.remove(target_variable_id);
@@ -345,10 +339,12 @@ where
     } else if !matches!(target_expression, Expression::Variable(_)) {
         block_context.stable_method_call_assertions.clear();
         block_context.stable_method_calls.clear();
-        block_context.clauses.retain(|clause| !clause.possibilities.keys().any(|key| key.as_bytes().ends_with(b"()")));
-        block_context
-            .reconciled_expression_clauses
-            .retain(|clause| !clause.possibilities.keys().any(|key| key.as_bytes().ends_with(b"()")));
+        block_context.clauses.retain(|clause| {
+            !clause.possibilities.keys().any(|key| memchr::memmem::find(key.as_bytes(), b"()").is_some())
+        });
+        block_context.reconciled_expression_clauses.retain(|clause| {
+            !clause.possibilities.keys().any(|key| memchr::memmem::find(key.as_bytes(), b"()").is_some())
+        });
     }
 
     match target_expression {
@@ -432,20 +428,8 @@ fn analyze_reference_assignment<'ctx, 'ast, 'arena, A>(
         return;
     };
 
-    let target_variable_id = get_expression_id(
-        target_expression,
-        block_context.scope.get_class_like_name(),
-        context.resolved_names,
-        Some(context.codebase),
-    );
-
-    let referenced_variable_id = get_expression_id(
-        referenced_expression,
-        block_context.scope.get_class_like_name(),
-        context.resolved_names,
-        Some(context.codebase),
-    );
-
+    let target_variable_id = get_block_expression_id(target_expression, context, block_context);
+    let referenced_variable_id = get_block_expression_id(referenced_expression, context, block_context);
     let (Some(target_variable_id), Some(referenced_variable_id)) = (target_variable_id, referenced_variable_id) else {
         return;
     };
@@ -1216,12 +1200,8 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
     );
 }
 
-const fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {
-    if let Expression::Parenthesized(parenthesized) = expression {
-        return is_closure_expression(parenthesized.expression);
-    }
-
-    matches!(expression, Expression::Closure(_))
+fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {
+    get_closure_expression_span(expression).is_some()
 }
 
 fn get_closure_expression_span<'arena>(expression: &'arena Expression<'arena>) -> Option<Span> {

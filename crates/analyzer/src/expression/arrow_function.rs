@@ -57,7 +57,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
             ));
         };
 
-        let mut scope = ScopeContext::new();
+        let mut scope = ScopeContext::new(block_context.scope.get_reference_origin());
         scope.set_function_like(Some(function_metadata));
         if let Some(bind_scope) = &artifacts.closure_bind_scope {
             if let Some(class_name) = bind_scope.class_name {
@@ -194,8 +194,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
                 } else {
                     signature.return_type = Some(Arc::new(get_void()));
                 }
-            } else {
-                // generator-yielding closure; return type already set above
             }
         }
 

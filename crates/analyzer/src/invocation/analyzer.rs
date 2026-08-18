@@ -54,7 +54,6 @@ use crate::invocation::arguments::verify_argument_type;
 use crate::invocation::resolver::resolve_invocation_type;
 use crate::invocation::template_inference::infer_parameter_templates_from_argument;
 use crate::invocation::template_inference::infer_parameter_templates_from_default;
-use crate::invocation::template_result::check_template_result;
 use crate::invocation::template_result::get_class_template_parameters_from_result;
 use crate::invocation::template_result::populate_template_result_from_invocation;
 use crate::invocation::template_result::refine_template_result_for_function_like;
@@ -111,7 +110,7 @@ pub fn analyze_invocation<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    invocation: &Invocation<'ctx, '_, 'arena>,
+    invocation: &mut Invocation<'ctx, '_, 'arena>,
     calling_class_like: Option<(Word, Option<&TAtomic>)>,
     template_result: &mut TemplateResult,
     parameter_types: &mut WordMap<TUnion>,
@@ -119,6 +118,14 @@ pub fn analyze_invocation<'ctx, 'arena, A>(
 where
     A: Arena,
 {
+    if context.external_analysis_session.is_some()
+        && !invocation.target.has_effective_signature()
+        && let Some(identifier) = invocation.target.get_function_like_identifier().copied()
+        && context.plugin_registry.may_have_callable_signature_provider(&identifier)
+    {
+        apply_callable_signature(context, artifacts, &identifier, invocation);
+    }
+
     if !context.settings.allow_side_effects_in_conditions
         && block_context.flags.inside_conditional()
         && !invocation.target.is_pure_or_mutation_free()
@@ -646,8 +653,6 @@ where
         } else if *argument_offset >= invocation.target.parameter_count() {
             has_too_many_arguments = true;
             continue;
-        } else {
-            // positional argument with no matching parameter and not over the limit; fall through to record offset
         }
 
         last_argument_offset = *argument_offset as isize;
@@ -990,8 +995,6 @@ where
                 )
                 .with_help("Remove the argument unpacking (`...`)."),
             );
-        } else {
-            // target accepts no parameters and no unpacking was attempted; nothing to validate
         }
     }
 
@@ -1141,13 +1144,35 @@ where
             .with_help("Remove the extra argument(s).");
 
         context.collector.report_with_code(IssueCode::TooManyArguments, issue);
-    } else {
-        // argument count is within the parameter range; nothing to report
     }
 
-    check_template_result(context, template_result, invocation.span);
-
     Ok(())
+}
+
+/// Installs a provider-supplied signature for an explicit callable identity.
+///
+pub(crate) fn apply_callable_signature<'ctx, 'arena, A>(
+    context: &Context<'ctx, 'arena, A>,
+    artifacts: &AnalysisArtifacts,
+    identifier: &FunctionLikeIdentifier,
+    invocation: &mut Invocation<'ctx, '_, 'arena>,
+) -> bool
+where
+    A: Arena,
+{
+    let Some(signature) = context.plugin_registry.get_function_like_callable_signature(
+        context.codebase,
+        context.source_file,
+        artifacts,
+        identifier,
+        invocation,
+        context.external_analysis_session,
+    ) else {
+        return false;
+    };
+
+    invocation.target.set_effective_signature(signature);
+    true
 }
 
 /// Instantiates first-class generic callables from the surrounding call's other arguments.
@@ -1356,7 +1381,6 @@ where
         &TypeExpansionOptions {
             self_class: base_class_metadata.map(|meta| meta.name),
             static_class_type,
-            parent_class: base_class_metadata.and_then(|meta| meta.direct_parent_class),
             function_is_final: calling_class_like_metadata.is_some_and(|meta| meta.flags.is_final()),
             ..Default::default()
         },
@@ -1800,8 +1824,6 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                     }),
                 );
             }
-        } else {
-            // integer array key with no matching parameter; already handled via continue above
         }
     }
 }

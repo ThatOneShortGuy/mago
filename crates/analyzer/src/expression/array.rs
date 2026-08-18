@@ -53,7 +53,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
-use crate::utils::expression::get_expression_id;
+use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
 
 /// Analyzes array literals and their elements.
@@ -113,6 +113,20 @@ struct ArrayCreationInfo {
     is_list: bool,
     can_be_empty: bool,
     known_int_offset: bool,
+}
+
+fn report_unpacked_int_key_overflow<A>(context: &mut Context<'_, '_, A>, element_span: Span)
+where
+    A: Arena,
+{
+    context.collector.report_with_code(
+        IssueCode::InvalidArrayIndex,
+        Issue::error("Cannot add an item with an offset beyond `PHP_INT_MAX`.")
+            .with_annotation(Annotation::primary(element_span).with_message("Adding this item would result in an invalid integer key."))
+            .with_note(format!("PHP automatically assigns integer keys starting from the highest previous integer key. The next key would exceed `PHP_INT_MAX` ({}).", i64::MAX))
+            .with_note("This usually happens in very large arrays or after using an explicit integer key close to the maximum.")
+            .with_help("Consider using an explicit string key for this item, restructuring the array, or ensuring previous explicit integer keys are smaller."),
+    );
 }
 
 fn analyze_array_elements<'ctx, 'arena, A>(
@@ -328,13 +342,7 @@ where
         if let Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) =
             unwrap_expression(value)
         {
-            let variable_id = get_expression_id(
-                operand,
-                block_context.scope.get_class_like_name(),
-                context.resolved_names,
-                Some(context.codebase),
-            );
-
+            let variable_id = get_block_expression_id(operand, context, block_context);
             if let Some(variable_id) = variable_id {
                 if let Some(existing_type) = block_context.locals.remove(&variable_id) {
                     block_context.remove_descendants(context, variable_id, &existing_type, None);
@@ -533,25 +541,7 @@ fn handle_variadic_array_element<'arena, A>(
                             let new_offset_key = match key {
                                 ArrayKey::Integer(_) => {
                                     if array_creation_info.int_offset == i64::MAX {
-                                        context.collector.report_with_code(
-                                            IssueCode::InvalidArrayIndex,
-                                            Issue::error(
-                                                "Cannot add an item with an offset beyond `PHP_INT_MAX`."
-                                            )
-                                            .with_annotation(
-                                                Annotation::primary(variadic_array_element.span())
-                                                    .with_message("Adding this item would result in an invalid integer key.")
-                                            )
-                                            .with_note(
-                                                format!("PHP automatically assigns integer keys starting from the highest previous integer key. The next key would exceed `PHP_INT_MAX` ({}).", i64::MAX)
-                                            )
-                                            .with_note(
-                                                "This usually happens in very large arrays or after using an explicit integer key close to the maximum."
-                                            )
-                                            .with_help(
-                                                "Consider using an explicit string key for this item, restructuring the array, or ensuring previous explicit integer keys are smaller."
-                                            ),
-                                        );
+                                        report_unpacked_int_key_overflow(context, variadic_array_element.span());
 
                                         continue;
                                     }
@@ -606,25 +596,7 @@ fn handle_variadic_array_element<'arena, A>(
                             }
 
                             if array_creation_info.int_offset == i64::MAX {
-                                context.collector.report_with_code(
-                                    IssueCode::InvalidArrayIndex,
-                                    Issue::error(
-                                        "Cannot add an item with an offset beyond `PHP_INT_MAX`."
-                                    )
-                                    .with_annotation(
-                                        Annotation::primary(variadic_array_element.span())
-                                            .with_message("Adding this item would result in an invalid integer key.")
-                                    )
-                                    .with_note(
-                                        format!("PHP automatically assigns integer keys starting from the highest previous integer key. The next key would exceed `PHP_INT_MAX` ({}).", i64::MAX)
-                                    )
-                                    .with_note(
-                                        "This usually happens in very large arrays or after using an explicit integer key close to the maximum."
-                                    )
-                                    .with_help(
-                                        "Consider using an explicit string key for this item, restructuring the array, or ensuring previous explicit integer keys are smaller."
-                                    ),
-                                );
+                                report_unpacked_int_key_overflow(context, variadic_array_element.span());
 
                                 continue;
                             }
@@ -715,23 +687,6 @@ fn handle_variadic_array_element<'arena, A>(
 
             if is_string_key {
                 array_creation_info.is_list = false;
-
-                if !context.settings.version.is_at_least(0, 0, 0) {
-                    context.collector.report_with_code(
-                        IssueCode::InvalidArrayElementKey,
-                        Issue::error("String keys are not supported in unpacked arrays")
-                            .with_annotation(
-                                Annotation::primary(variadic_array_element.span())
-                                    .with_message("Spread operator requires an iterable type with array-key keys."),
-                            )
-                            .with_note(
-                                "In PHP versions prior to 8.1, using string keys in unpacked arrays is not supported.",
-                            )
-                            .with_help("Consider using an array or a traversable object with integer keys."),
-                    );
-
-                    continue;
-                }
             }
 
             if !is_array_key_key {

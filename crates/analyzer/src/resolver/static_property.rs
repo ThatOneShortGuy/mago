@@ -140,6 +140,13 @@ where
     A: Arena,
 {
     let Some(class_metadata) = context.codebase.get_class_like(class_id.as_bytes()) else {
+        if matches!(class_expr, Expression::Parent(_))
+            && block_context.scope.get_class_like().is_some_and(|metadata| metadata.has_incomplete_hierarchy())
+        {
+            result.has_ambiguous_path = true;
+            return None;
+        }
+
         // Error reporting for non-existent class is handled by `resolve_classnames_from_expression`.
         result.has_invalid_path = true;
         return None;
@@ -184,7 +191,6 @@ where
                     &TypeExpansionOptions {
                         self_class: Some(required_declaring_id),
                         static_class_type: StaticClassType::Name(class_id),
-                        parent_class: required_declaring_metadata.direct_parent_class,
                         ..Default::default()
                     },
                 );
@@ -198,6 +204,11 @@ where
                     read_type: None,
                 });
             }
+        }
+
+        if class_metadata.has_incomplete_hierarchy() {
+            result.has_ambiguous_path = true;
+            return None;
         }
 
         result.has_invalid_path = true;
@@ -248,7 +259,6 @@ where
         &TypeExpansionOptions {
             self_class: Some(declaring_class_id),
             static_class_type: StaticClassType::Name(class_id),
-            parent_class: declaring_class_metadata.direct_parent_class,
             ..Default::default()
         },
     );

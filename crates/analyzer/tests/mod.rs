@@ -19,6 +19,24 @@ mod framework;
 /// 2. Read the content from the file `cases/my_test.php`.
 /// 3. Create and run a `TestCase` with that content and the specified settings.
 macro_rules! test_case {
+    ($test_name:ident, references = [$(($class:literal, $member:literal, $count:literal)),+ $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let content = include_bytes!(concat!("cases/", stringify!($test_name), ".php"));
+            let test = $crate::framework::TestCase::new(stringify!($test_name), content);
+            $(let test = test.expect_symbol_reference_count($class, $member, $count);)+
+            test.run();
+        }
+    };
+    ($test_name:ident, property_reads = [$(($class:literal, $property:literal, $count:literal)),+ $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let content = include_bytes!(concat!("cases/", stringify!($test_name), ".php"));
+            let test = $crate::framework::TestCase::new(stringify!($test_name), content);
+            $(let test = test.expect_property_reads($class, $property, $count);)+
+            test.run();
+        }
+    };
     ($test_name:ident, $settings:expr) => {
         #[test]
         fn $test_name() {
@@ -402,6 +420,7 @@ test_case!(non_utf8_class_names);
 test_case!(non_utf8_function_names);
 test_case!(non_utf8_property_names);
 test_case!(numeric_reconciliation);
+test_case!(narrowing_to_numeric_is_idempotent);
 test_case!(priority_queue_implementation);
 test_case!(psl_integration);
 test_case!(psl_int_range);
@@ -625,7 +644,9 @@ test_case!(match_not_exhaustive);
 test_case!(match_expression);
 test_case!(match_arm_reaching);
 test_case!(missing_constructor);
+test_case!(missing_property_type, crate::framework::check_missing_type_hints_settings());
 test_case!(property_initialization);
+test_case!(docblock_declared_members_undefined_types);
 test_case!(parent_constructor_init);
 test_case!(parent_static_return);
 test_case!(property_hooks_initialization);
@@ -669,10 +690,12 @@ test_case!(match_true_and_false);
 test_case!(array_reconcile);
 test_case!(sealed_array_combine);
 test_case!(object_shape);
+test_case!(nullable_object_shape);
 test_case!(optional_object_with_properties);
 test_case!(unsealed_array_overlap);
 test_case!(echo_tag);
 test_case!(var_docblock);
+test_case!(var_docblock_on_global);
 test_case!(redundant_var_docblock);
 test_case!(magic_method_trait);
 test_case!(real_pseudo_method);
@@ -2641,6 +2664,7 @@ test_case!(issue_2135);
 test_case!(issue_2175);
 test_case!(issue_2176);
 test_case!(issue_2177);
+test_case!(issue_2178);
 test_case!(issue_2138);
 test_case!(issue_2140);
 test_case!(issue_2145);
@@ -2648,6 +2672,28 @@ test_case!(issue_2149);
 test_case!(issue_2151);
 test_case!(issue_2161);
 test_case!(issue_2162);
+test_case!(issue_2172);
+test_case!(issue_2180);
+test_case!(issue_2185);
+test_case!(issue_2188, {
+    let mut settings = crate::framework::default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP83;
+    settings.check_missing_override = true;
+    settings
+});
+test_case!(issue_2189, {
+    let mut settings = crate::framework::default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP83;
+    settings
+});
+test_case!(issue_2190);
+test_case!(issue_2195);
+test_case!(issue_2199);
+test_case!(issue_2203);
+test_case!(issue_2206);
+test_case!(issue_2207);
+test_case!(issue_2212, property_reads = [("MissingInterface", "$config", 1)]);
+test_case!(issue_2213, references = [("MixedCaseHolder", "USED", 1), ("lowercaseholder", "USED", 1)]);
 
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
 /// also carry a quickfix edit that scaffolds the missing case arms. This guards

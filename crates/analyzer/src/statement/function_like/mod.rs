@@ -265,6 +265,7 @@ where
 
     std::mem::swap(&mut context.type_resolution_context, &mut previous_type_resolution_context);
     parent_artifacts.expression_types.extend(std::mem::take(&mut artifacts.expression_types));
+    parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
 
@@ -311,13 +312,10 @@ where
                 let expanded_native =
                     expand_type_metadata(context, block_context, artifacts, function_like_metadata, native_type);
 
-                let is_compatible = union_comparator::is_contained_by(
+                let is_compatible = union_comparator::is_contained_by_with_erased_template_arguments(
                     context.codebase,
                     &effective_type,
                     &expanded_native,
-                    false,
-                    false,
-                    false,
                     &mut ComparisonResult::default(),
                 );
 
@@ -346,6 +344,7 @@ where
                 } else if !is_overriding_method
                     && !effective_type.has_template_types()
                     && !expanded_native.has_template_types()
+                    && !expanded_native.contains_unspecified_template_arguments()
                 {
                     let dropped: Vec<&TAtomic> = expanded_native
                         .types
@@ -397,8 +396,6 @@ where
 
                         context.collector.report_with_code(IssueCode::DocblockParameterNarrowing, issue);
                     }
-                } else {
-                    // overriding method or template-bearing types; narrowing check would be unreliable
                 }
             }
 
@@ -565,15 +562,11 @@ where
             } else {
                 StaticClassType::None
             },
-            evaluate_class_constants: true,
-            evaluate_conditional_types: true,
             function_is_final: if let Some(method_metadata) = &function_like_metadata.method_metadata {
                 method_metadata.is_final
             } else {
                 false
             },
-            expand_generic: true,
-            expand_templates: true,
             ..Default::default()
         },
     );
@@ -667,7 +660,6 @@ where
                 static_class_type: StaticClassType::Name(calling_class),
                 function_is_final: function_like_metadata
                     .is_some_and(|m| m.method_metadata.as_ref().is_some_and(|metadata| metadata.is_final)),
-                expand_generic: true,
                 ..Default::default()
             },
         );

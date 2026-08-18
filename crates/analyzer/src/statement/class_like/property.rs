@@ -128,10 +128,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyConcreteItem<'arena> {
                 &TypeExpansionOptions {
                     self_class: Some(class_metadata.original_name),
                     static_class_type: StaticClassType::Name(class_metadata.original_name),
-                    evaluate_class_constants: true,
-                    evaluate_conditional_types: true,
-                    expand_generic: true,
-                    expand_templates: true,
                     ..Default::default()
                 },
             );
@@ -237,7 +233,7 @@ where
         return Ok(());
     };
 
-    let mut scope = ScopeContext::new();
+    let mut scope = ScopeContext::new(parent_block_context.scope.get_reference_origin());
     scope.set_class_like(parent_block_context.scope.get_class_like());
     scope.set_static(false);
 

@@ -17,10 +17,12 @@ use crate::metadata::constant::ConstantMetadata;
 use crate::metadata::flags::MetadataFlags;
 use crate::scanner::Context;
 use crate::scanner::attribute::scan_attribute_lists;
+use crate::scanner::docblock::apply_common_metadata_flag;
 use crate::scanner::docblock::find_most_trusted_tag;
 use crate::scanner::docblock::parse_docblock;
 use crate::scanner::inference::infer;
 use crate::scanner::ttype::get_type_metadata_from_type;
+use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::resolution::TypeResolutionContext;
 
@@ -36,7 +38,7 @@ where
 {
     let verdict = evaluate_version_attributes(&constant.attribute_lists, context, context.php_version);
 
-    let attributes = scan_attribute_lists(&constant.attribute_lists, context);
+    let attributes = scan_attribute_lists(&constant.attribute_lists, context, scope, None);
     let document = parse_docblock(context, constant);
 
     let flags = MetadataFlags::origin_flags(context.file.file_type);
@@ -126,21 +128,7 @@ fn process_constant_docblock(
     }
 
     for tag in document.tags() {
-        match &tag.value {
-            TagValue::Deprecated(_) => {
-                metadata.flags |= MetadataFlags::DEPRECATED;
-            }
-            TagValue::NotDeprecated(_) => {
-                metadata.flags.set(MetadataFlags::DEPRECATED, false);
-            }
-            TagValue::Internal(_) => {
-                metadata.flags |= MetadataFlags::INTERNAL;
-            }
-            TagValue::Experimental(_) => {
-                metadata.flags |= MetadataFlags::EXPERIMENTAL;
-            }
-            _ => {}
-        }
+        apply_common_metadata_flag(&mut metadata.flags, &tag.value);
     }
 
     let var = find_most_trusted_tag(document, |tag| match &tag.value {
@@ -153,13 +141,11 @@ fn process_constant_docblock(
             Ok(type_metadata) => {
                 metadata.type_metadata = Some(type_metadata);
             }
-            Err(typing_error) => metadata.issues.push(
-                Issue::error("Could not resolve the type for the @var tag.")
-                    .with_code(ScanningIssueKind::InvalidVarTag)
-                    .with_annotation(Annotation::primary(typing_error.span()).with_message(typing_error.to_string()))
-                    .with_note(typing_error.note())
-                    .with_help(typing_error.help()),
-            ),
+            Err(typing_error) => metadata.issues.push(typing_error_issue(
+                "Could not resolve the type for the @var tag.",
+                ScanningIssueKind::InvalidVarTag,
+                &typing_error,
+            )),
         }
     }
 }

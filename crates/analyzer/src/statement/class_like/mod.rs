@@ -13,6 +13,7 @@ use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
+use mago_codex::reference::ReferenceOrigin;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
@@ -38,6 +39,7 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::comments::docblock::PrecedingDocblocks;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::Enum;
@@ -141,8 +143,8 @@ enum PropertyConflict {
     Visibility(Visibility, Visibility, Visibility, Visibility),
     Static(bool, bool),
     Readonly(bool, bool),
-    Type(Option<String>, Option<String>),
-    Default(Option<String>, Option<String>),
+    Type(Option<Word>, Option<Word>),
+    Default(Option<Word>, Option<Word>),
     HookedProperty,
 }
 
@@ -430,6 +432,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
                 break 'check_unused false;
             }
 
+            if class_like_metadata.flags.is_unchecked() || class_like_metadata.has_incomplete_hierarchy() {
+                break 'check_unused false;
+            }
+
             if !context.settings.diff {
                 break 'check_unused true;
             }
@@ -442,11 +448,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
         };
 
         if should_check_unused {
+            let additional_symbol_references = context.additional_symbol_references;
             let unused_members = unused_members::check_unused_members_with_transitivity(
                 class_like_metadata.name,
                 self.span(),
                 class_like_metadata,
                 &artifacts.symbol_references,
+                additional_symbol_references,
                 context,
             );
 
@@ -455,6 +463,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
                 self.span(),
                 class_like_metadata,
                 &artifacts.symbol_references,
+                additional_symbol_references,
                 &unused_members,
                 context,
             );
@@ -685,12 +694,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
             override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
         }
 
-        if context.settings.find_unused_definitions {
+        if context.settings.find_unused_definitions
+            && !class_like_metadata.flags.is_unchecked()
+            && !class_like_metadata.has_incomplete_hierarchy()
+        {
+            let additional_symbol_references = context.additional_symbol_references;
             unused_members::check_unused_members_with_transitivity(
                 class_like_metadata.name,
                 self.span(),
                 class_like_metadata,
                 &artifacts.symbol_references,
+                additional_symbol_references,
                 context,
             );
         }
@@ -807,6 +821,8 @@ where
         return Ok(());
     }
 
+    context.prepare_class_initializers(class_like_metadata)?;
+
     let name = &class_like_metadata.original_name;
 
     let mut checked_signatures: HashSet<(Word, Word)> = HashSet::default();
@@ -820,11 +836,9 @@ where
         }
     }
 
-    if !class_like_metadata.invalid_dependencies.is_empty() {
-        return Ok(());
-    }
+    let has_complete_hierarchy = !class_like_metadata.has_incomplete_hierarchy();
 
-    if !class_like_metadata.kind.is_trait() && !class_like_metadata.flags.is_abstract() {
+    if has_complete_hierarchy && !class_like_metadata.kind.is_trait() && !class_like_metadata.flags.is_abstract() {
         for (method_name, method_id) in &class_like_metadata.declaring_method_ids {
             if class_like_metadata.kind.is_enum() {
                 if method_name.as_bytes().eq_ignore_ascii_case(b"cases") {
@@ -1006,10 +1020,13 @@ where
         }
     }
 
-    check_unused_template_parameters(context, class_like_metadata);
+    if has_complete_hierarchy {
+        check_unused_template_parameters(context, class_like_metadata);
+    }
     check_class_like_properties(context, class_like_metadata);
+    check_docblock_declared_members(context, class_like_metadata, declaration_span);
 
-    let mut scope = ScopeContext::new();
+    let mut scope = ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, mago_word::empty_word())));
     scope.set_class_like(Some(class_like_metadata));
     scope.set_static(true);
 
@@ -1100,8 +1117,16 @@ where
     // so we can compare their inferred values
     check_class_like_constants(context, class_like_metadata, members);
 
-    crate::readonly::finalize_class_writes(context, artifacts, class_like_metadata);
-    initialization::check_property_initialization(context, artifacts, class_like_metadata, declaration_span, name_span);
+    if has_complete_hierarchy {
+        crate::readonly::finalize_class_writes(context, artifacts, class_like_metadata);
+        initialization::check_property_initialization(
+            context,
+            artifacts,
+            class_like_metadata,
+            declaration_span,
+            name_span,
+        )?;
+    }
 
     Ok(())
 }
@@ -1255,8 +1280,6 @@ fn check_class_like_extends<'ctx, 'arena, A>(
                         .with_note("A non-`readonly` class can only be extended by another non-`readonly` class.")
                         .with_help(format!("To resolve this, either make the `{using_name}` class non-`readonly`, or extend a different, readonly class.")),
                 );
-            } else {
-                // readonly status matches between parent and child; no inheritance error
             }
 
             if let Some(required_interface) =
@@ -1646,8 +1669,6 @@ fn check_template_parameters<'ctx, A>(
         .with_help(format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`."));
 
         context.collector.report_with_code(IssueCode::ExcessTemplateParameter, issue);
-    } else {
-        // template argument count matches expectation; nothing to report
     }
 
     let own_template_parameters_len = class_like_metadata.template_types.len();
@@ -1764,8 +1785,6 @@ fn check_template_parameters<'ctx, A>(
                                 .with_note(format!("Because `{parent_name}` is marked `@consistent-templates`, the constraints of its template parameters must be identical in child classes."))
                                 .with_help("Adjust the constraint on the child template parameter to match the parent's."),
                         );
-                    } else {
-                        // child template name resolves to a matching constraint; no inconsistency to report
                     }
                 }
             }
@@ -2365,9 +2384,9 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                         continue;
                     };
 
-                    if properties_are_compatible(first_property, second_property) {
+                    let Err(conflict) = check_property_compatibility(first_property, second_property) else {
                         continue;
-                    }
+                    };
 
                     report_trait_property_conflict(
                         context,
@@ -2376,8 +2395,7 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                         *first_trait_fqcn,
                         *second_trait_fqcn,
                         first_trait_use.span(),
-                        first_property,
-                        second_property,
+                        conflict,
                     );
                 }
             }
@@ -2402,9 +2420,9 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                             continue;
                         };
 
-                        if properties_are_compatible(first_property, second_property) {
+                        let Err(conflict) = check_property_compatibility(first_property, second_property) else {
                             continue;
-                        }
+                        };
 
                         report_trait_property_conflict(
                             context,
@@ -2413,8 +2431,7 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                             *first_trait_fqcn,
                             *second_trait_fqcn,
                             second_trait_use.span(),
-                            first_property,
-                            second_property,
+                            conflict,
                         );
                     }
                 }
@@ -2431,9 +2448,9 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                     continue;
                 };
 
-                if properties_are_compatible(trait_property, class_property) {
+                let Err(conflict) = check_property_compatibility(trait_property, class_property) else {
                     continue;
-                }
+                };
 
                 let conflict_span = members
                     .iter()
@@ -2467,56 +2484,11 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                     *first_trait_fqcn,
                     class_like_metadata.name,
                     conflict_span,
-                    trait_property,
-                    class_property,
+                    conflict,
                 );
             }
         }
     }
-}
-
-fn properties_are_compatible(prop1: &PropertyMetadata, prop2: &PropertyMetadata) -> bool {
-    // PHP 8.4: Conflict resolution between hooked properties is not supported
-    if !prop1.hooks.is_empty() || !prop2.hooks.is_empty() {
-        return false;
-    }
-
-    if prop1.read_visibility != prop2.read_visibility {
-        return false;
-    }
-    if prop1.write_visibility != prop2.write_visibility {
-        return false;
-    }
-
-    if prop1.flags.is_static() != prop2.flags.is_static() {
-        return false;
-    }
-
-    if prop1.flags.is_readonly() != prop2.flags.is_readonly() {
-        return false;
-    }
-
-    match (&prop1.type_declaration_metadata, &prop2.type_declaration_metadata) {
-        (Some(t1), Some(t2)) => {
-            if t1.type_union.get_id() != t2.type_union.get_id() {
-                return false;
-            }
-        }
-        (None, None) => {}
-        _ => return false,
-    }
-
-    match (&prop1.default_type_metadata, &prop2.default_type_metadata) {
-        (Some(d1), Some(d2)) => {
-            if d1.type_union.get_id() != d2.type_union.get_id() {
-                return false;
-            }
-        }
-        (None, None) => {}
-        _ => return false,
-    }
-
-    true
 }
 
 /// Check if two properties are compatible, returns Err with specific conflict type if not
@@ -2545,36 +2517,34 @@ fn check_property_compatibility(prop1: &PropertyMetadata, prop2: &PropertyMetada
 
     match (&prop1.type_declaration_metadata, &prop2.type_declaration_metadata) {
         (Some(t1), Some(t2)) => {
-            if t1.type_union.get_id() != t2.type_union.get_id() {
-                return Err(PropertyConflict::Type(
-                    Some(format!("{:?}", t1.type_union)),
-                    Some(format!("{:?}", t2.type_union)),
-                ));
+            let t1_id = t1.type_union.get_id();
+            let t2_id = t2.type_union.get_id();
+            if t1_id != t2_id {
+                return Err(PropertyConflict::Type(Some(t1_id), Some(t2_id)));
             }
         }
         (Some(t1), None) => {
-            return Err(PropertyConflict::Type(Some(format!("{:?}", t1.type_union)), None));
+            return Err(PropertyConflict::Type(Some(t1.type_union.get_id()), None));
         }
         (None, Some(t2)) => {
-            return Err(PropertyConflict::Type(None, Some(format!("{:?}", t2.type_union))));
+            return Err(PropertyConflict::Type(None, Some(t2.type_union.get_id())));
         }
         (None, None) => {}
     }
 
     match (&prop1.default_type_metadata, &prop2.default_type_metadata) {
         (Some(d1), Some(d2)) => {
-            if d1.type_union.get_id() != d2.type_union.get_id() {
-                return Err(PropertyConflict::Default(
-                    Some(format!("{:?}", d1.type_union)),
-                    Some(format!("{:?}", d2.type_union)),
-                ));
+            let d1_id = d1.type_union.get_id();
+            let d2_id = d2.type_union.get_id();
+            if d1_id != d2_id {
+                return Err(PropertyConflict::Default(Some(d1_id), Some(d2_id)));
             }
         }
         (Some(d1), None) => {
-            return Err(PropertyConflict::Default(Some(format!("{:?}", d1.type_union)), None));
+            return Err(PropertyConflict::Default(Some(d1.type_union.get_id()), None));
         }
         (None, Some(d2)) => {
-            return Err(PropertyConflict::Default(None, Some(format!("{:?}", d2.type_union))));
+            return Err(PropertyConflict::Default(None, Some(d2.type_union.get_id())));
         }
         (None, None) => {}
     }
@@ -2589,18 +2559,10 @@ fn report_trait_property_conflict<A>(
     trait1_name: Word,
     trait2_name: Word,
     conflict_span: Span,
-    prop1: &PropertyMetadata,
-    prop2: &PropertyMetadata,
+    conflict: PropertyConflict,
 ) where
     A: Arena,
 {
-    let conflict = match check_property_compatibility(prop1, prop2) {
-        Ok(()) => {
-            PropertyConflict::Type(None, None) // Dummy value
-        }
-        Err(conflict) => conflict,
-    };
-
     let conflict_description = conflict.describe();
     let issue_code = conflict.get_issue_code();
 
@@ -3013,6 +2975,60 @@ fn report_signature_compatibility_issue<'ctx, A>(
     }
 }
 
+/// Reports undefined type references in the `@method`, `@property` and `@mixin`
+/// tags of a class-like docblock.
+///
+/// The members these tags declare have no AST of their own, so they are never
+/// visited by the analyzers that perform this check for real methods and
+/// properties.
+fn check_docblock_declared_members<A>(
+    context: &mut Context<'_, '_, A>,
+    class_like_metadata: &ClassLikeMetadata,
+    declaration_span: Span,
+) where
+    A: Arena,
+{
+    for pseudo_method_name in &class_like_metadata.pseudo_methods {
+        let Some(metadata) = context.codebase.function_likes.get(&(class_like_metadata.name, *pseudo_method_name))
+        else {
+            continue;
+        };
+
+        if let Some(return_type) = &metadata.return_type_metadata {
+            report_undefined_type_references(context, return_type);
+        }
+
+        for parameter in &metadata.parameters {
+            if let Some(parameter_type) = &parameter.type_declaration_metadata {
+                report_undefined_type_references(context, parameter_type);
+            }
+        }
+    }
+
+    for (property_name, property_metadata) in &class_like_metadata.magic_properties {
+        if class_like_metadata.magic_property_ids.get(property_name) != Some(&class_like_metadata.name) {
+            continue;
+        }
+
+        for type_metadata in
+            [&property_metadata.type_metadata, &property_metadata.write_type_metadata].into_iter().flatten()
+        {
+            report_undefined_type_references(context, type_metadata);
+        }
+    }
+
+    // Unlike the tags above, mixins are merged into every subclass, so report only
+    // the ones coming from this class-like's own docblock.
+    let docblocks: Vec<Span> =
+        PrecedingDocblocks::new(context.comments, declaration_span.start.offset).map(|trivia| trivia.span).collect();
+
+    for mixin in &class_like_metadata.mixins {
+        if docblocks.iter().any(|docblock| docblock.contains(&mixin.span)) {
+            report_undefined_type_references(context, mixin);
+        }
+    }
+}
+
 #[allow(clippy::similar_names)]
 fn check_class_like_properties<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
@@ -3188,12 +3204,6 @@ fn check_class_like_properties<'ctx, A>(
             }
 
             if property_metadata.read_visibility > parent_property.read_visibility {
-                let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
-                let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
-
-                let declaring_class_name = class_like_metadata.original_name;
-                let parent_class_name = parent_metadata.original_name;
-
                 context.collector.report_with_code(
                         IssueCode::IncompatiblePropertyAccess,
                         Issue::error(format!(
@@ -3216,12 +3226,6 @@ fn check_class_like_properties<'ctx, A>(
                 || parent_property.write_visibility != parent_property.read_visibility)
                 && property_metadata.write_visibility > parent_property.write_visibility
             {
-                let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
-                let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
-
-                let declaring_class_name = class_like_metadata.original_name;
-                let parent_class_name = parent_metadata.original_name;
-
                 context.collector.report_with_code(
                         IssueCode::IncompatiblePropertyAccess,
                         Issue::error(format!(
@@ -3242,11 +3246,6 @@ fn check_class_like_properties<'ctx, A>(
 
             // Check static modifier consistency
             if property_metadata.flags.is_static() != parent_property.flags.is_static() {
-                let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
-                let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
-
-                let declaring_class_name = class_like_metadata.original_name;
-                let parent_class_name = parent_metadata.original_name;
                 let (child_modifier, parent_modifier) = if property_metadata.flags.is_static() {
                     ("static", "non-static")
                 } else {
@@ -3273,11 +3272,6 @@ fn check_class_like_properties<'ctx, A>(
 
             // Check readonly modifier consistency
             if property_metadata.flags.is_readonly() != parent_property.flags.is_readonly() {
-                let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
-                let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
-
-                let declaring_class_name = class_like_metadata.original_name;
-                let parent_class_name = parent_metadata.original_name;
                 let (child_modifier, parent_modifier) = if property_metadata.flags.is_readonly() {
                     ("readonly", "non-readonly")
                 } else {
