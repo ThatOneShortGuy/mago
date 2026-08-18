@@ -2700,7 +2700,7 @@ test_case!(issue_2213, references = [("MixedCaseHolder", "USED", 1), ("lowercase
 /// against the fix silently disappearing (e.g. through a bad merge).
 #[test]
 fn match_not_exhaustive_enum_offers_fill_fix() {
-    const SOURCE: &[u8] = br#"<?php
+    const SOURCE: &[u8] = b"<?php
 
 enum Suit: string
 {
@@ -2718,7 +2718,7 @@ enum Suit: string
         };
     }
 }
-"#;
+";
 
     let issues = crate::framework::collect_issues("match_fill_fix", SOURCE, None);
 

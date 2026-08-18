@@ -62,10 +62,8 @@ impl Server {
             }
         }
 
-        let mut file_wide_fixes: Vec<(String, FileWideFix)> = file_wide_fixes
-            .into_iter()
-            .filter(|(_, fix)| fix.issue_count > 1 && !fix.edits.is_empty())
-            .collect();
+        let mut file_wide_fixes: Vec<(String, FileWideFix)> =
+            file_wide_fixes.into_iter().filter(|(_, fix)| fix.issue_count > 1 && !fix.edits.is_empty()).collect();
         file_wide_fixes.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         direct_actions

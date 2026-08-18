@@ -19,6 +19,7 @@ use mago_span::HasSpan;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::Closure;
+use mago_syntax::cst::Constant;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::If;
@@ -50,6 +51,11 @@ pub struct FileAnalysis {
     /// `selection_range` to answer "what spans contain this offset?"
     /// without re-walking the AST.
     pub node_spans: Vec<(u32, u32)>,
+    /// Byte offset of the *name* of each top-level definition (class-likes,
+    /// free functions, global constants), in source order. `code_lens` anchors
+    /// its "N references" lens on these; the offset points at the identifier
+    /// rather than the declaration start so name resolution can answer for it.
+    pub definition_names: Vec<u32>,
     /// Self-referential: `&'static str` values inside borrow from
     /// `_arena`. Accessed only via [`Self::resolved`], which downcasts
     /// to a `'self`-bound reference.
@@ -79,6 +85,7 @@ impl std::fmt::Debug for FileAnalysis {
             .field("lint_issues", &self.lint_issues.len())
             .field("fold_ranges", &self.fold_ranges.len())
             .field("node_spans", &self.node_spans.len())
+            .field("definition_names", &self.definition_names.len())
             .field("resolved_names", &self.resolved.len())
             .finish_non_exhaustive()
     }
@@ -173,7 +180,8 @@ pub fn build(file: &MagoFile, linter_ctx: &LinterContext, with_semantics: bool) 
     let linter = Linter::from_registry(arena_ref, Arc::clone(&linter_ctx.registry), linter_ctx.settings.php_version);
     lint_issues.extend(linter.lint(file, program, &resolved));
 
-    let mut span_ctx = SpanCollectCtx { fold_ranges: Vec::new(), node_ranges: Vec::new(), file };
+    let mut span_ctx =
+        SpanCollectCtx { fold_ranges: Vec::new(), node_ranges: Vec::new(), definition_names: Vec::new(), file };
     walk_program(&SpanCollector, program, &mut span_ctx);
     push_comment_ranges(file, &mut span_ctx.fold_ranges);
     span_ctx.node_ranges.sort_unstable();
@@ -183,6 +191,7 @@ pub fn build(file: &MagoFile, linter_ctx: &LinterContext, with_semantics: bool) 
         lint_issues,
         fold_ranges: span_ctx.fold_ranges,
         node_spans: span_ctx.node_ranges,
+        definition_names: span_ctx.definition_names,
         resolved,
         scopes,
         _arena: arena,
@@ -192,6 +201,7 @@ pub fn build(file: &MagoFile, linter_ctx: &LinterContext, with_semantics: bool) 
 struct SpanCollectCtx<'file> {
     fold_ranges: Vec<FoldRange>,
     node_ranges: Vec<(u32, u32)>,
+    definition_names: Vec<u32>,
     file: &'file MagoFile,
 }
 
@@ -208,6 +218,10 @@ impl SpanCollectCtx<'_> {
     fn record_node(&mut self, start: u32, end: u32) {
         self.node_ranges.push((start, end));
     }
+
+    fn record_definition_name(&mut self, start: u32) {
+        self.definition_names.push(start);
+    }
 }
 
 struct SpanCollector;
@@ -219,18 +233,22 @@ impl<'arena> Walker<'arena, 'arena, SpanCollectCtx<'_>> for SpanCollector {
 
     fn walk_in_class(&self, n: &'arena Class<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_block_like(n.span().start.offset, n.span().end.offset);
+        c.record_definition_name(n.name.span().start.offset);
     }
 
     fn walk_in_interface(&self, n: &'arena Interface<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_block_like(n.span().start.offset, n.span().end.offset);
+        c.record_definition_name(n.name.span().start.offset);
     }
 
     fn walk_in_trait(&self, n: &'arena Trait<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_block_like(n.span().start.offset, n.span().end.offset);
+        c.record_definition_name(n.name.span().start.offset);
     }
 
     fn walk_in_enum(&self, n: &'arena Enum<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_block_like(n.span().start.offset, n.span().end.offset);
+        c.record_definition_name(n.name.span().start.offset);
     }
 
     fn walk_in_match(&self, n: &'arena Match<'arena>, c: &mut SpanCollectCtx<'_>) {
@@ -247,6 +265,7 @@ impl<'arena> Walker<'arena, 'arena, SpanCollectCtx<'_>> for SpanCollector {
 
     fn walk_in_function(&self, n: &'arena Function<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_node(n.span().start.offset, n.span().end.offset);
+        c.record_definition_name(n.name.span().start.offset);
     }
 
     fn walk_in_method(&self, n: &'arena Method<'arena>, c: &mut SpanCollectCtx<'_>) {
@@ -263,6 +282,12 @@ impl<'arena> Walker<'arena, 'arena, SpanCollectCtx<'_>> for SpanCollector {
 
     fn walk_in_try(&self, n: &'arena Try<'arena>, c: &mut SpanCollectCtx<'_>) {
         c.record_node(n.span().start.offset, n.span().end.offset);
+    }
+
+    fn walk_in_constant(&self, n: &'arena Constant<'arena>, c: &mut SpanCollectCtx<'_>) {
+        for item in n.items.iter() {
+            c.record_definition_name(item.name.span().start.offset);
+        }
     }
 }
 

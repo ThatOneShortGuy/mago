@@ -571,10 +571,8 @@ fn analyze_and_collect(workspace: &mut WorkspaceState, changed: &[FileId]) -> Re
     // URIs and clear ones that went quiet.
     let stale: Vec<Uri> =
         workspace.last_diagnostics.keys().filter(|url| !diagnostics.contains_key(*url)).cloned().collect();
-    let changed_diags: Vec<(Uri, Vec<Diagnostic>)> = diagnostics
-        .into_iter()
-        .filter(|(url, diags)| workspace.last_diagnostics.get(url) != Some(diags))
-        .collect();
+    let changed_diags: Vec<(Uri, Vec<Diagnostic>)> =
+        diagnostics.into_iter().filter(|(url, diags)| workspace.last_diagnostics.get(url) != Some(diags)).collect();
     for url in &stale {
         workspace.last_diagnostics.remove(url);
     }
