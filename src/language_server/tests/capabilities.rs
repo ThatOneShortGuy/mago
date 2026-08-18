@@ -152,6 +152,59 @@ async fn semantic_tokens() {
     assert_eq!(data.len() % 5, 0);
 }
 
+/// Legend indices, mirroring the order in [`crate::language_server::capabilities`].
+const TOKEN_KEYWORD: u64 = 0;
+const TOKEN_FUNCTION: u64 = 6;
+
+/// Decode the delta-encoded wire format into `(line, character, length, kind)`.
+fn decoded_tokens(result: &Value) -> Vec<(u64, u64, u64, u64)> {
+    let data: Vec<u64> = result["data"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let (mut line, mut character) = (0, 0);
+    data.chunks(5)
+        .map(|chunk| {
+            line += chunk[0];
+            character = if chunk[0] == 0 { character + chunk[1] } else { chunk[1] };
+            (line, character, chunk[2], chunk[3])
+        })
+        .collect()
+}
+
+/// Semantic tokens override the client's own highlighting wherever they land,
+/// so the server must stay out of a heredoc body: a blanket `string` token
+/// there flattens the SQL grammar the editor injects into it.
+#[tokio::test]
+async fn semantic_tokens_leave_heredoc_bodies_to_the_client() {
+    let source = "<?php\n$query = <<<'SQL'\n    SELECT id\n    FROM orders\n    SQL;\n";
+    let mut h = Harness::start(&[("a.php", source)]).await;
+    let result = h.for_doc("textDocument/semanticTokens/full", "a.php").await;
+
+    let body_lines: Vec<_> = decoded_tokens(&result).into_iter().filter(|(line, ..)| (2..=3).contains(line)).collect();
+    assert!(body_lines.is_empty(), "heredoc body was tokenized: {body_lines:?}");
+}
+
+/// A name after `::` or `->` is a member even when it lexes as a reserved
+/// keyword, and a bare name that is not a call (a `void` return type, a
+/// constant) is left alone rather than guessed at from its capitalization.
+#[tokio::test]
+async fn semantic_tokens_classify_names_by_position() {
+    let source = "<?php\nfunction run(): void\n{\n    return Builder::new();\n}\n";
+    let mut h = Harness::start(&[("a.php", source)]).await;
+    let result = h.for_doc("textDocument/semanticTokens/full", "a.php").await;
+    let tokens = decoded_tokens(&result);
+
+    // `void` on line 1 at character 15 must not be claimed at all.
+    assert!(
+        !tokens.iter().any(|(line, character, ..)| *line == 1 && *character == 15),
+        "return type was tokenized: {tokens:?}"
+    );
+    // `new` on line 3 is a static method call, not the `new` operator.
+    let new_call = tokens.iter().find(|(line, character, ..)| *line == 3 && *character == 20);
+    assert_eq!(new_call.map(|(.., kind)| *kind), Some(TOKEN_FUNCTION), "got {tokens:?}");
+    // ... while `function` on line 1 is still a keyword.
+    let keyword = tokens.iter().find(|(line, character, ..)| *line == 1 && *character == 0);
+    assert_eq!(keyword.map(|(.., kind)| *kind), Some(TOKEN_KEYWORD), "got {tokens:?}");
+}
+
 #[tokio::test]
 async fn references_cross_file() {
     let mut h =
@@ -647,9 +700,8 @@ async fn code_action_orders_direct_fix_then_expect_then_fix_all() {
 
     let expect_at = titles.iter().position(|title| title.starts_with("Add @mago-expect"));
     let fix_all_at = titles.iter().position(|title| title.starts_with("Fix all "));
-    let direct_at = titles
-        .iter()
-        .position(|title| !title.starts_with("Add @mago-expect") && !title.starts_with("Fix all "));
+    let direct_at =
+        titles.iter().position(|title| !title.starts_with("Add @mago-expect") && !title.starts_with("Fix all "));
 
     let direct_at = direct_at.unwrap_or_else(|| panic!("missing direct fix in {titles:?}"));
     let expect_at = expect_at.unwrap_or_else(|| panic!("missing @mago-expect action in {titles:?}"));
