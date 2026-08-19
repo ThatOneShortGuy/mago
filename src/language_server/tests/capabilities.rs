@@ -964,3 +964,338 @@ async fn multi_workspace_handles_dynamic_folder_add() {
         "beta should be added dynamically, got {after_names:?}"
     );
 }
+
+/// The enum from the bug report: a `case` declaration plus a `self::` use in a
+/// `match`. Both sites must rename together.
+const SERIES_ENUM: &str = "<?php\nenum Series: string {\n    case FrenchRailEC = 'french-rail-ec';\n    case EnergyPrime = 'energy-prime';\n\n    public function label(): string {\n        return match ($this) {\n            self::FrenchRailEC => 'French Rail EC',\n            self::EnergyPrime => 'Energy Prime',\n        };\n    }\n}\n";
+
+/// `(line, newText)` for every edit the rename produced in `name`.
+fn edits_in(result: &Value, uri: &str) -> Vec<(u64, String)> {
+    let mut edits: Vec<(u64, String)> = result["changes"][uri]
+        .as_array()
+        .unwrap_or_else(|| panic!("no edits for {uri} in {result}"))
+        .iter()
+        .map(|e| (e["range"]["start"]["line"].as_u64().unwrap(), e["newText"].as_str().unwrap_or("").to_owned()))
+        .collect();
+    edits.sort();
+    edits
+}
+
+#[tokio::test]
+async fn rename_enum_case_from_usage() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    // `self::EnergyPrime` in the match arm.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 8, "character": 20 },
+                "newName": "EnergyPremium",
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        edits_in(&result, &h.url("a.php")),
+        vec![(3, "EnergyPremium".to_owned()), (8, "EnergyPremium".to_owned())],
+    );
+}
+
+#[tokio::test]
+async fn rename_enum_case_from_declaration() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    // The `case EnergyPrime` declaration itself.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 3, "character": 12 },
+                "newName": "EnergyPremium",
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        edits_in(&result, &h.url("a.php")),
+        vec![(3, "EnergyPremium".to_owned()), (8, "EnergyPremium".to_owned())],
+    );
+}
+
+#[tokio::test]
+async fn prepare_rename_offers_enum_case() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    let prepare = h.at("textDocument/prepareRename", "a.php", 8, 20).await;
+    assert_eq!(prepare["placeholder"], "EnergyPrime");
+    assert_eq!(prepare["range"]["start"], json!({ "line": 8, "character": 18 }));
+    assert_eq!(prepare["range"]["end"], json!({ "line": 8, "character": 29 }));
+}
+
+#[tokio::test]
+async fn rename_enum_case_leaves_same_name_on_another_enum_alone() {
+    let a = "<?php\nenum Alpha: string {\n    case Same = 'a';\n}\n";
+    let b = "<?php\nenum Beta: string {\n    case Same = 'b';\n}\necho Beta::Same->value;\n";
+    let mut h = Harness::start(&[("a.php", a), ("b.php", b)]).await;
+    h.open("a.php", a).await;
+    h.open("b.php", b).await;
+
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 2, "character": 10 },
+                "newName": "Renamed",
+            }),
+        )
+        .await;
+
+    assert_eq!(edits_in(&result, &h.url("a.php")), vec![(2, "Renamed".to_owned())]);
+    assert!(result["changes"][&h.url("b.php")].is_null(), "Beta::Same must be untouched, got {result}");
+}
+
+#[tokio::test]
+async fn rename_class_constant_follows_inheritance_across_files() {
+    let a = "<?php\nclass Base { public const LIMIT = 10; }\n";
+    let b = "<?php\nclass Child extends Base {\n    public function get(): int { return parent::LIMIT; }\n}\necho Child::LIMIT;\necho Base::LIMIT;\n";
+    let mut h = Harness::start(&[("a.php", a), ("b.php", b)]).await;
+    h.open("a.php", a).await;
+    h.open("b.php", b).await;
+
+    // From `Child::LIMIT`, which resolves to the declaration on `Base`.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("b.php") },
+                "position": { "line": 4, "character": 13 },
+                "newName": "CEILING",
+            }),
+        )
+        .await;
+
+    assert_eq!(edits_in(&result, &h.url("a.php")), vec![(1, "CEILING".to_owned())]);
+    assert_eq!(
+        edits_in(&result, &h.url("b.php")),
+        vec![(2, "CEILING".to_owned()), (4, "CEILING".to_owned()), (5, "CEILING".to_owned())],
+    );
+}
+
+#[tokio::test]
+async fn rename_static_method() {
+    let code = "<?php\nclass Util { public static function make(): void {} }\nUtil::make();\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 2, "character": 7 },
+                "newName": "build",
+            }),
+        )
+        .await;
+
+    assert_eq!(edits_in(&result, &h.url("a.php")), vec![(1, "build".to_owned()), (2, "build".to_owned())]);
+}
+
+#[tokio::test]
+async fn rename_static_property_edits_the_name_not_the_dollar() {
+    let code = "<?php\nclass Registry { public static array $items = []; }\nRegistry::$items[] = 1;\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let prepare = h.at("textDocument/prepareRename", "a.php", 2, 12).await;
+    assert_eq!(prepare["placeholder"], "items");
+    assert_eq!(prepare["range"]["start"], json!({ "line": 2, "character": 11 }));
+
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 2, "character": 12 },
+                "newName": "entries",
+            }),
+        )
+        .await;
+
+    assert_eq!(edits_in(&result, &h.url("a.php")), vec![(1, "entries".to_owned()), (2, "entries".to_owned())]);
+}
+
+#[tokio::test]
+async fn references_finds_enum_case_uses() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    let result = h
+        .request(
+            "textDocument/references",
+            json!({
+                "textDocument": { "uri": h.url("a.php") },
+                "position": { "line": 8, "character": 20 },
+                "context": { "includeDeclaration": false },
+            }),
+        )
+        .await;
+
+    let lines: Vec<u64> =
+        result.as_array().unwrap().iter().map(|l| l["range"]["start"]["line"].as_u64().unwrap()).collect();
+    assert_eq!(lines, vec![8], "declaration should be excluded, got {result}");
+}
+
+#[tokio::test]
+async fn definition_jumps_to_enum_case_declaration() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    let result = h.at("textDocument/definition", "a.php", 8, 20).await;
+    let location = if result.is_array() { result[0].clone() } else { result };
+    assert_eq!(location["range"]["start"], json!({ "line": 3, "character": 9 }), "got {location}");
+}
+
+#[tokio::test]
+async fn hover_describes_enum_case() {
+    let mut h = Harness::start(&[("a.php", SERIES_ENUM)]).await;
+    h.open("a.php", SERIES_ENUM).await;
+
+    let result = h.at("textDocument/hover", "a.php", 8, 20).await;
+    let markdown = result["contents"]["value"].as_str().unwrap_or_default();
+    assert!(markdown.contains("Series::EnergyPrime"), "got {markdown:?}");
+}
+
+/// The real `App\\Enums\\Series` from the bug report. Its case names are riddled
+/// with shared prefixes (`EnergyPro` / `EnergyProEC` / `EnergyPrime`), which a
+/// substring-based search would happily confuse.
+const REAL_SERIES_ENUM: &str = r#"<?php
+
+namespace App\Enums;
+
+use Exception;
+
+enum Series: int
+{
+    case EnergyPro = 1;
+    case EnergyPlus = 2;
+    case Standard = 3;
+    case MiniBlinds = 4;
+    case FrenchRail = 5;
+    case MiniBlindsFrenchRail = 6;
+    case EnergyProEC = 7;
+    case MiniBlindsFrenchRailEC = 8;
+    case GardenWindow = 9;
+    case StandardEC = 10;
+    case FrenchRailEC = 11;
+    case EnergyPlusEC = 12;
+    case DogDoor = 13;
+    case EnergyPrime = 14;
+
+    public static function fromSalesforce(string $seriesName): self
+    {
+        $seriesName = match ($seriesName) {
+            'Plus Special' => 'Energy Plus',
+            'Pro Special' => 'Energy Pro',
+            'Pro Special EC' => 'Energy Pro EC',
+            default => $seriesName,
+        };
+
+        return match (strtolower($seriesName)) {
+            'energy pro' => self::EnergyPro,
+            'energy plus' => self::EnergyPlus,
+            'standard' => self::Standard,
+            'mini blinds' => self::MiniBlinds,
+            'french rail' => self::FrenchRail,
+            'mini blinds/french rail', 'mini blinds/ french rail' => self::MiniBlindsFrenchRail,
+            'energy pro ec' => self::EnergyProEC,
+            'mini blinds/ french rail ec' => self::MiniBlindsFrenchRailEC,
+            'garden window' => self::GardenWindow,
+            'standard ec' => self::StandardEC,
+            'french rail ec' => self::FrenchRailEC,
+            'energy plus ec' => self::EnergyPlusEC,
+            'dog door' => self::DogDoor,
+            default => throw new Exception("Unknown Series enum variant `{$seriesName}`"),
+        };
+    }
+
+    public function name(): string
+    {
+        return match ($this) {
+            self::EnergyPro => 'Energy Pro',
+            self::EnergyPlus => 'Energy Plus',
+            self::Standard => 'Standard',
+            self::MiniBlinds => 'Mini Blinds',
+            self::FrenchRail => 'French Rail',
+            self::MiniBlindsFrenchRail => 'Mini Blinds/French Rail',
+            self::EnergyProEC => 'Energy Pro EC',
+            self::MiniBlindsFrenchRailEC => 'Mini Blinds/French Rail EC',
+            self::GardenWindow => 'Garden Window',
+            self::StandardEC => 'Standard EC',
+            self::FrenchRailEC => 'French Rail EC',
+            self::EnergyPlusEC => 'Energy Plus EC',
+            self::DogDoor => 'Dog Door',
+            self::EnergyPrime => 'Energy Prime',
+        };
+    }
+}
+"#;
+
+#[tokio::test]
+async fn rename_enum_case_ignores_cases_sharing_a_prefix() {
+    let mut h = Harness::start(&[("Series.php", REAL_SERIES_ENUM)]).await;
+    h.open("Series.php", REAL_SERIES_ENUM).await;
+
+    // The `case EnergyPro = 1;` declaration.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("Series.php") },
+                "position": { "line": 8, "character": 12 },
+                "newName": "EnergyProfessional",
+            }),
+        )
+        .await;
+
+    // Only the declaration and its two `self::` uses; never `EnergyProEC`
+    // (line 14) or `EnergyPrime` (lines 21 and 66).
+    assert_eq!(
+        edits_in(&result, &h.url("Series.php")),
+        vec![
+            (8, "EnergyProfessional".to_owned()),
+            (33, "EnergyProfessional".to_owned()),
+            (53, "EnergyProfessional".to_owned()),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn rename_enum_case_in_namespaced_enum() {
+    let mut h = Harness::start(&[("Series.php", REAL_SERIES_ENUM)]).await;
+    h.open("Series.php", REAL_SERIES_ENUM).await;
+
+    // `self::EnergyPrime` in the `name()` match, exactly where the cursor was.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("Series.php") },
+                "position": { "line": 66, "character": 22 },
+                "newName": "EnergyPremium",
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        edits_in(&result, &h.url("Series.php")),
+        vec![(21, "EnergyPremium".to_owned()), (66, "EnergyPremium".to_owned())],
+    );
+}

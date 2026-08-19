@@ -388,8 +388,7 @@ impl LanguageServer for Backend {
             let result = self.with_workspace_mut_for_uri(&params.text_document.uri, |ws| {
                 let file = file_for_uri(ws, &params.text_document.uri)?;
                 let offset = offset_at_position(&file, params.position);
-                let analysis = ws.file_analysis_for(file.id)?;
-                rename::prepare(analysis.resolved(), &file, offset)
+                rename::prepare(ws, &file, offset)
             });
 
             Ok(result.flatten())

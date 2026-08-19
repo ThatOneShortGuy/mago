@@ -5,7 +5,8 @@
 //! is on resolved FQNs, so aliased imports are handled (`use Bar as Qux; Qux\G`
 //! resolves to `Bar\G`). A coarse byte filter skips files that can't mention the
 //! name. Variables aren't tracked by name resolution, so they fall back to a
-//! same-file token scan. Only `FileType::Host` files are searched.
+//! same-file token scan, and `::`-accessed class members fall back to
+//! [`crate::member`]. Only `FileType::Host` files are searched.
 
 use std::sync::Arc;
 
@@ -29,13 +30,23 @@ impl Server {
             return Vec::new();
         };
 
-        if let Some(var) = lookup::variable_at_offset(&file, offset) {
-            return same_file_variable_locations(&file, var.raw, var.start, file_id);
-        }
+        let resolved_fqn = self
+            .file_analysis_for(file_id)
+            .and_then(|analysis| analysis.resolved().at_offset(offset).map(|(_, _, fqn, _)| fqn.to_vec()));
 
-        let Some(cursor_analysis) = self.file_analysis_for(file_id) else { return Vec::new() };
-        let Some((_, _, target_fqn, _)) = cursor_analysis.resolved().at_offset(offset) else { return Vec::new() };
-        let target_fqn = target_fqn.to_vec();
+        let Some(target_fqn) = resolved_fqn else {
+            // Class members aren't names, so they never reach the resolution map.
+            // They're checked before variables because a static property's `$name`
+            // token is indistinguishable from a variable on its own.
+            if let Some((_, member)) = self.resolve_static_member(file_id, offset) {
+                return self.member_references(&member, include_declaration);
+            }
+
+            return match lookup::variable_at_offset(&file, offset) {
+                Some(var) => same_file_variable_locations(&file, var.raw, var.start, file_id),
+                None => Vec::new(),
+            };
+        };
 
         let local_lower = local_name(&target_fqn).to_ascii_lowercase();
         let declaration = if include_declaration { None } else { self.codebase().span_of(&target_fqn) };

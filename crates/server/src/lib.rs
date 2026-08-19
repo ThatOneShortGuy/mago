@@ -44,6 +44,7 @@ pub mod error;
 pub mod file_analysis;
 pub mod linter;
 pub mod lookup;
+pub mod member;
 pub mod server;
 pub mod settings;
 
@@ -73,6 +74,8 @@ pub use domain::WorkspaceSymbolItem;
 pub use error::ServerError;
 pub use file_analysis::FileAnalysis;
 pub use linter::LinterContext;
+pub use member::MemberKind;
+pub use member::MemberTarget;
 pub use server::ExpressionTypeIndex;
 pub use server::Server;
 pub use settings::Features;
