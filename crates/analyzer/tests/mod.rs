@@ -2694,6 +2694,9 @@ test_case!(issue_2206);
 test_case!(issue_2207);
 test_case!(issue_2212, property_reads = [("MissingInterface", "$config", 1)]);
 test_case!(issue_2213, references = [("MixedCaseHolder", "USED", 1), ("lowercaseholder", "USED", 1)]);
+test_case!(issue_2218);
+test_case!(issue_2219);
+test_case!(issue_2220);
 
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
 /// also carry a quickfix edit that scaffolds the missing case arms. This guards
