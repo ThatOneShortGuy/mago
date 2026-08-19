@@ -1299,3 +1299,29 @@ async fn rename_enum_case_in_namespaced_enum() {
         vec![(21, "EnergyPremium".to_owned()), (66, "EnergyPremium".to_owned())],
     );
 }
+
+#[tokio::test]
+async fn rename_enum_case_reaches_importing_files() {
+    // Mirrors the real layout: the enum in one file, an unrelated file that
+    // imports it and uses `Series::Case->value`.
+    let series = "<?php\n\nnamespace App\\Enums;\n\nenum Series: int\n{\n    case DogDoor = 13;\n    case EnergyPrime = 14;\n}\n";
+    let seeder = "<?php\n\nnamespace Database\\Seeders;\n\nuse App\\Enums\\Series;\n\nclass ColorSeeder\n{\n    public function run(): array\n    {\n        return [\n            Series::EnergyPrime->value => ['black'],\n        ];\n    }\n}\n";
+
+    let mut h = Harness::start(&[("Series.php", series), ("ColorSeeder.php", seeder)]).await;
+    h.open("Series.php", series).await;
+
+    // Rename from the declaration, with the seeder never opened in the editor.
+    let result = h
+        .request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": h.url("Series.php") },
+                "position": { "line": 7, "character": 12 },
+                "newName": "EnergyPlusElite",
+            }),
+        )
+        .await;
+
+    assert_eq!(edits_in(&result, &h.url("Series.php")), vec![(7, "EnergyPlusElite".to_owned())]);
+    assert_eq!(edits_in(&result, &h.url("ColorSeeder.php")), vec![(11, "EnergyPlusElite".to_owned())]);
+}
