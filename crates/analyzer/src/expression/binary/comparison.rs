@@ -29,6 +29,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::binary::utils::are_definitely_loosely_equal;
 use crate::expression::binary::utils::are_definitely_not_identical;
 use crate::expression::binary::utils::are_definitely_not_loosely_equal;
 use crate::expression::binary::utils::is_always_greater_than;
@@ -300,13 +301,20 @@ where
 
                 if !should_be_specific {
                     get_bool()
-                } else if are_expressions_always_identical(binary.lhs, binary.rhs, lhs_type, rhs_type, artifacts) {
+                } else if are_expressions_always_identical(binary.lhs, binary.rhs, lhs_type, rhs_type, artifacts)
+                    || are_definitely_loosely_equal(context.settings.version, lhs_type, rhs_type)
+                {
                     if !block_context.flags.inside_loop_expressions() {
                         report_redundant_comparison(context, artifacts, binary, "always equal to", "`true`");
                     }
 
                     get_true()
-                } else if are_definitely_not_loosely_equal(context.codebase, lhs_type, rhs_type) {
+                } else if are_definitely_not_loosely_equal(
+                    context.codebase,
+                    context.settings.version,
+                    lhs_type,
+                    rhs_type,
+                ) {
                     if !block_context.flags.inside_loop_expressions() {
                         report_redundant_comparison(context, artifacts, binary, "never equal to", "`false`");
                     }
@@ -322,7 +330,9 @@ where
 
                 if !should_be_specific {
                     get_bool()
-                } else if are_expressions_always_identical(binary.lhs, binary.rhs, lhs_type, rhs_type, artifacts) {
+                } else if are_expressions_always_identical(binary.lhs, binary.rhs, lhs_type, rhs_type, artifacts)
+                    || are_definitely_loosely_equal(context.settings.version, lhs_type, rhs_type)
+                {
                     if !block_context.flags.inside_loop_expressions() {
                         report_redundant_comparison(
                             context,
@@ -334,7 +344,12 @@ where
                     }
 
                     get_false()
-                } else if are_definitely_not_loosely_equal(context.codebase, lhs_type, rhs_type) {
+                } else if are_definitely_not_loosely_equal(
+                    context.codebase,
+                    context.settings.version,
+                    lhs_type,
+                    rhs_type,
+                ) {
                     if !block_context.flags.inside_loop_expressions() {
                         report_redundant_comparison(
                             context,
@@ -498,26 +513,10 @@ fn get_literal_array_key(expression: &Expression<'_>, artifacts: &AnalysisArtifa
     } else if let Some(value) = key_type.get_single_literal_int_value() {
         ArrayKey::Integer(value)
     } else if let Some(value) = key_type.get_single_literal_string_value() {
-        match get_numeric_array_key(value) {
-            Some(value) => ArrayKey::Integer(value),
-            None => ArrayKey::String(word(value)),
-        }
+        ArrayKey::from_string(word(value))
     } else {
         return key_type.get_single_class_string_value().map(ArrayKey::String);
     })
-}
-
-fn get_numeric_array_key(key: &[u8]) -> Option<i64> {
-    if key.starts_with(b"0") || key.starts_with(b"+") {
-        return None;
-    }
-
-    let key = std::str::from_utf8(key).ok()?;
-    if key.trim() != key {
-        return None;
-    }
-
-    key.parse().ok()
 }
 
 fn should_use_specific_equality_inference(

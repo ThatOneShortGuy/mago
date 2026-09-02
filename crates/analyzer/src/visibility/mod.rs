@@ -3,7 +3,10 @@ use mago_word::Word;
 use mago_word::word;
 
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::visibility::Visibility;
+use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -312,18 +315,7 @@ where
         return false;
     }
 
-    let visibility = if property_metadata.flags.is_readonly() {
-        if context.settings.version.is_supported(Feature::AsymmetricVisibility) {
-            match property_metadata.write_visibility {
-                Visibility::Public => Visibility::Protected,
-                visibility => visibility,
-            }
-        } else {
-            Visibility::Private
-        }
-    } else {
-        property_metadata.write_visibility
-    };
+    let visibility = effective_write_visibility(property_metadata, context.settings.version);
 
     let is_visible = is_visible_from_scope(
         context.codebase,
@@ -332,29 +324,131 @@ where
         block_context.scope.get_class_like_name(),
     );
     if !is_visible {
-        let issue_title = format!(
-            "Cannot write to {} property `{}` on class `{}`.",
-            visibility, property_name, declaring_class_metadata.original_name
-        );
+        if property_metadata.flags.is_readonly() {
+            report_readonly_write_scope_issue(
+                context,
+                block_context.scope.get_class_like_name(),
+                declaring_class_metadata,
+                property_metadata,
+                visibility,
+                access_span,
+                member_span,
+            );
+        } else {
+            let issue_title = format!(
+                "Cannot write to {} property `{}` on class `{}`.",
+                visibility, property_name, declaring_class_metadata.original_name
+            );
 
-        let help_text = format!(
-            "Make the property `{property_name}` writable (e.g., `public` or `public(set)`), or add a public setter method."
-        );
+            let help_text = format!(
+                "Make the property `{property_name}` writable (e.g., `public` or `public(set)`), or add a public setter method."
+            );
 
-        report_visibility_issue(
-            context,
-            block_context.scope.get_class_like_name(),
-            IssueCode::InvalidPropertyWrite,
-            issue_title,
-            visibility,
-            access_span,
-            member_span,
-            property_metadata.span.or(property_metadata.name_span),
-            help_text,
-        );
+            report_visibility_issue(
+                context,
+                block_context.scope.get_class_like_name(),
+                IssueCode::InvalidPropertyWrite,
+                issue_title,
+                visibility,
+                access_span,
+                member_span,
+                property_metadata.span.or(property_metadata.name_span),
+                help_text,
+            );
+        }
     }
 
     is_visible
+}
+
+/// Reports a write to a `readonly` property from a scope that cannot initialize it.
+///
+/// `readonly`, not the declared visibility, is what forbids the write here, so naming the
+/// effective write visibility would name one the declaration does not carry.
+#[allow(clippy::too_many_arguments)]
+fn report_readonly_write_scope_issue<A>(
+    context: &mut Context<'_, '_, A>,
+    calling_class: Option<Word>,
+    declaring_class: &ClassLikeMetadata,
+    property: &PropertyMetadata,
+    visibility: Visibility,
+    access_span: Span,
+    member_span: Option<Span>,
+) where
+    A: Arena,
+{
+    let class_name = &declaring_class.original_name;
+    let property_name = property.name.0;
+
+    let allowed_scope = if visibility == Visibility::Private {
+        format!("`{class_name}` itself")
+    } else {
+        format!("`{class_name}` or a class in its hierarchy")
+    };
+
+    let current_scope = match calling_class {
+        Some(current_class) => {
+            let current_class_name = context
+                .codebase
+                .get_class_like(current_class.as_bytes())
+                .map_or(current_class, |metadata| metadata.original_name);
+
+            format!("from within `{current_class_name}`")
+        }
+        None => "from the global scope".to_string(),
+    };
+
+    let mut issue =
+        Issue::error(format!("Cannot initialize readonly property `{class_name}::{property_name}` {current_scope}."))
+            .with_annotation(
+                Annotation::primary(member_span.unwrap_or(access_span))
+                    .with_message(format!("Only {allowed_scope} may initialize this readonly property")),
+            )
+            .with_annotation(
+                Annotation::secondary(access_span).with_message(format!("Invalid write occurs here, {current_scope}")),
+            );
+
+    if let Some(definition_span) = property.span.or(property.name_span) {
+        issue =
+            issue.with_annotation(Annotation::secondary(definition_span).with_message("Property is `readonly` here"));
+    }
+
+    let (note, help) = if visibility == Visibility::Private {
+        (
+            format!(
+                "Before PHP 8.4, a readonly property can only be initialized from the scope of `{class_name}`; every other write throws an `Error` at runtime."
+            ),
+            format!(
+                "Initialize the property in `{class_name}`, for example in its constructor, or add a method there that performs the write."
+            ),
+        )
+    } else {
+        (
+            "A readonly property that does not declare `public(set)` is limited to `protected(set)` writes; an assignment from an unrelated scope throws an `Error` at runtime.".to_string(),
+            format!(
+                "Initialize the property in `{class_name}` or a class derived from it, or declare it `public(set) readonly` to allow initialization from any scope."
+            ),
+        )
+    };
+
+    context.collector.report_with_code(IssueCode::InvalidPropertyWrite, issue.with_note(note).with_help(help));
+}
+
+/// The visibility that governs writes to `property`, which is narrower than the
+/// declared write visibility for `readonly` properties.
+pub(crate) fn effective_write_visibility(property: &PropertyMetadata, version: PHPVersion) -> Visibility {
+    if !property.flags.is_readonly() {
+        return property.write_visibility;
+    }
+
+    if !version.is_supported(Feature::AsymmetricVisibility) {
+        return Visibility::Private;
+    }
+
+    match property.write_visibility {
+        Visibility::Public => Visibility::Protected,
+        visibility => visibility,
+    }
 }
 
 pub(crate) fn is_visible_from_scope(

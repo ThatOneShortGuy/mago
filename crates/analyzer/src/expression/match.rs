@@ -30,6 +30,8 @@ use mago_text_edit::Safety;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
 use mago_word::WordSet;
+use mago_word::concat_word;
+use mago_word::u32_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -82,7 +84,7 @@ impl<'anlyz, 'ctx, 'ast, 'arena, A> MatchAnalyzer<'anlyz, 'ctx, 'ast, 'arena, A>
 where
     A: Arena,
 {
-    const SYNTHETIC_MATCH_VAR_PREFIX: &'static str = "$-tmp-match-";
+    const SYNTHETIC_MATCH_VAR_PREFIX: &'static [u8] = b"$-tmp-match-";
 
     fn new(
         stmt: &'ast Match<'arena>,
@@ -154,6 +156,7 @@ where
 
         let mut changed_variables = WordSet::default();
         let mut is_exhaustive = false;
+        let mut can_apply_original_subject_assertions = true;
         for (i, expression_arm) in expression_arms.iter().enumerate() {
             is_exhaustive = is_exhaustive || {
                 running_else_context.locals.get(&subject_id).is_some_and(|t| t.is_never())
@@ -163,6 +166,8 @@ where
             };
 
             let is_last_arm = i == last_expression_arm_index && first_default_arm.is_none();
+            let has_boolean_literal_conditions =
+                expression_arm.conditions.iter().all(|condition| condition.is_true() || condition.is_false());
             let (arm_status, new_else_clauses) = self.analyze_expression_arm(
                 &subject_for_conditions,
                 expression_arm,
@@ -171,8 +176,10 @@ where
                 &mut arm_exit_contexts,
                 is_last_arm,
                 is_exhaustive,
+                can_apply_original_subject_assertions && has_boolean_literal_conditions,
             )?;
 
+            can_apply_original_subject_assertions &= has_boolean_literal_conditions;
             if arm_status != ArmExecutionStatus::Never {
                 if previous_arms_executed == ArmExecutionStatus::Never {
                     previous_arms_executed = arm_status;
@@ -284,12 +291,11 @@ where
 
             (inserted, id, self.stmt.expression.clone())
         } else {
-            let subject_id_str =
-                format!("{}{}", Self::SYNTHETIC_MATCH_VAR_PREFIX, self.stmt.expression.span().start.offset);
-            let subject_id = mago_word::word(&subject_id_str);
+            let subject_id =
+                concat_word!(Self::SYNTHETIC_MATCH_VAR_PREFIX, u32_word(self.stmt.expression.start_offset()));
             self.block_context.locals.insert(subject_id, Rc::clone(subject_type));
             let subject_for_conditions =
-                new_synthetic_variable(self.context.arena, subject_id_str.as_bytes(), self.stmt.expression.span());
+                new_synthetic_variable(self.context.arena, subject_id.as_bytes(), self.stmt.expression.span());
 
             (true, subject_id, subject_for_conditions)
         }
@@ -305,6 +311,7 @@ where
         arm_exit_contexts: &mut Vec<BlockContext<'ctx>>,
         is_last: bool,
         is_exhaustive: bool,
+        apply_original_subject_assertions: bool,
     ) -> Result<(ArmExecutionStatus, Vec<Clause>), AnalysisError> {
         if is_exhaustive {
             self.report_unreachable_arm(
@@ -364,8 +371,35 @@ where
         )
         .unwrap_or_default();
 
+        let original_arm_condition = apply_original_subject_assertions.then(|| {
+            new_synthetic_disjunctive_identity(
+                self.context.arena,
+                self.stmt.expression,
+                expression_arm.conditions.get(0).unwrap(),
+                expression_arm.conditions.iter().skip(1).copied().collect(),
+            )
+        });
+
+        let original_arm_clauses = original_arm_condition
+            .as_ref()
+            .and_then(|condition| {
+                get_formula(
+                    expression_arm.span(),
+                    expression_arm.span(),
+                    condition,
+                    assertion_context,
+                    self.artifacts,
+                    &self.context.settings.algebra_thresholds(),
+                    self.context.settings.formula_size_threshold,
+                )
+            })
+            .unwrap_or_default();
+
         let combined_clauses: Vec<_> = saturate_clauses(
-            arm_clauses.iter().chain(arm_body_context.clauses.iter().map(Deref::deref)),
+            arm_clauses
+                .iter()
+                .chain(original_arm_clauses.iter())
+                .chain(arm_body_context.clauses.iter().map(Deref::deref)),
             &self.context.settings.algebra_thresholds(),
         )
         .into_iter()
@@ -404,9 +438,9 @@ where
                 .cloned()
                 .unwrap_or_else(|| Rc::new(get_mixed())),
         );
-        arm_exit_contexts.push(arm_body_context);
 
-        let negated_arm_clauses = negate_or_synthesize(
+        arm_exit_contexts.push(arm_body_context);
+        let mut negated_arm_clauses = negate_or_synthesize(
             arm_clauses,
             &arm_condition,
             self.context.get_assertion_context_from_block(running_else_context),
@@ -414,6 +448,17 @@ where
             &self.context.settings.algebra_thresholds(),
             self.context.settings.formula_size_threshold,
         );
+
+        if let Some(original_arm_condition) = original_arm_condition {
+            negated_arm_clauses.extend(negate_or_synthesize(
+                original_arm_clauses,
+                &original_arm_condition,
+                self.context.get_assertion_context_from_block(running_else_context),
+                self.artifacts,
+                &self.context.settings.algebra_thresholds(),
+                self.context.settings.formula_size_threshold,
+            ));
+        }
 
         running_else_context.clauses = saturate_clauses(
             running_else_context.clauses.iter().map(Deref::deref).chain(negated_arm_clauses.iter()),
