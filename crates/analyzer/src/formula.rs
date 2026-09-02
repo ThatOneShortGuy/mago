@@ -15,7 +15,6 @@ use mago_span::Span;
 use mago_syntax::cst::*;
 use mago_word::Word;
 use mago_word::WordMap;
-use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::assertion::OtherValuePosition;
@@ -23,6 +22,9 @@ use crate::assertion::has_null_variable;
 use crate::assertion::scrape_assertions;
 use crate::context::assertion::AssertionContext;
 use crate::context::scope::var_has_root;
+use crate::utils::expression::expression_is_nullsafe;
+use crate::utils::expression::get_non_nullsafe_expression_id;
+use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::misc::unwrap_expression;
 
 /// Recursively traverses a conditional expression to generate a corresponding logical formula.
@@ -94,7 +96,7 @@ where
         )]);
     }
 
-    let formula = get_formula(
+    let formula = get_base_formula(
         conditional_object_id,
         creating_object_id,
         other_side,
@@ -109,6 +111,40 @@ where
 }
 
 pub fn get_formula<A>(
+    conditional_object_id: Span,
+    creating_object_id: Span,
+    conditional: &Expression,
+    assertion_context: AssertionContext<'_, '_, A>,
+    artifacts: &AnalysisArtifacts,
+    algebra_thresholds: &AlgebraThresholds,
+    formula_size_threshold: u16,
+) -> Option<Vec<Clause>>
+where
+    A: Arena,
+{
+    let mut formula = get_base_formula(
+        conditional_object_id,
+        creating_object_id,
+        conditional,
+        assertion_context,
+        artifacts,
+        algebra_thresholds,
+        formula_size_threshold,
+    )?;
+
+    add_conditional_assertion_clauses(
+        conditional,
+        true,
+        &mut formula,
+        conditional_object_id,
+        creating_object_id,
+        artifacts,
+    );
+
+    if formula.len() > usize::from(formula_size_threshold) { None } else { Some(formula) }
+}
+
+fn get_base_formula<A>(
     conditional_object_id: Span,
     creating_object_id: Span,
     conditional: &Expression,
@@ -293,7 +329,7 @@ where
 
         let unary_operand_span = unary_prefix.operand.span();
         let negated = negate_formula(
-            get_formula(
+            get_base_formula(
                 conditional_object_id,
                 unary_operand_span,
                 unary_prefix.operand,
@@ -376,6 +412,42 @@ fn add_nullsafe_condition_clauses<A>(
 
             add_nullsafe_base_clauses(operand, formula, conditional_object_id, creating_object_id, assertion_context);
         }
+        Expression::Binary(binary)
+            if matches!(binary.operator, BinaryOperator::Equal(_) | BinaryOperator::Identical(_))
+                && let Some(position) = has_null_variable(binary.lhs, binary.rhs, artifacts) =>
+        {
+            let operand = match position {
+                OtherValuePosition::Left => binary.rhs,
+                OtherValuePosition::Right => binary.lhs,
+            };
+
+            add_nullsafe_null_equality_clauses(operand, formula, assertion_context);
+        }
+        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::Identical(_)) => {
+            let nullsafe_operand = if expression_is_nullsafe(binary.lhs)
+                && !expression_is_nullsafe(binary.rhs)
+                && artifacts.get_expression_type(binary.rhs).is_some_and(|ty| !ty.can_be_null())
+            {
+                Some(binary.lhs)
+            } else if expression_is_nullsafe(binary.rhs)
+                && !expression_is_nullsafe(binary.lhs)
+                && artifacts.get_expression_type(binary.lhs).is_some_and(|ty| !ty.can_be_null())
+            {
+                Some(binary.rhs)
+            } else {
+                None
+            };
+
+            if let Some(operand) = nullsafe_operand {
+                add_nullsafe_base_clauses(
+                    operand,
+                    formula,
+                    conditional_object_id,
+                    creating_object_id,
+                    assertion_context,
+                );
+            }
+        }
         Expression::Construct(Construct::Isset(isset)) => {
             for value in isset.values.iter() {
                 add_nullsafe_base_clauses(value, formula, conditional_object_id, creating_object_id, assertion_context);
@@ -387,7 +459,140 @@ fn add_nullsafe_condition_clauses<A>(
     }
 }
 
-fn add_nullsafe_base_clauses<A>(
+fn add_conditional_assertion_clauses(
+    expression: &Expression,
+    when_true: bool,
+    formula: &mut Vec<Clause>,
+    conditional_object_id: Span,
+    creating_object_id: Span,
+    artifacts: &AnalysisArtifacts,
+) {
+    let assertions = collect_conditional_assertions(expression, when_true, artifacts);
+    for (variable, assertion_set) in assertions {
+        for assertions in assertion_set {
+            let Some(first_assertion) = assertions.first() else {
+                continue;
+            };
+
+            let generated = first_assertion.has_equality();
+            let possibilities = IndexMap::from([(
+                variable,
+                assertions.into_iter().map(|assertion| (assertion.to_hash(), assertion)).collect(),
+            )]);
+
+            formula.push(Clause::new(
+                possibilities,
+                conditional_object_id,
+                creating_object_id,
+                Some(false),
+                Some(true),
+                Some(generated),
+            ));
+        }
+    }
+}
+
+fn collect_conditional_assertions(
+    expression: &Expression,
+    when_true: bool,
+    artifacts: &AnalysisArtifacts,
+) -> WordMap<AssertionSet> {
+    collect_conditional_assertions_inner(expression, when_true, artifacts, false)
+}
+
+fn collect_conditional_assertions_inner(
+    expression: &Expression,
+    when_true: bool,
+    artifacts: &AnalysisArtifacts,
+    include_non_equality: bool,
+) -> WordMap<AssertionSet> {
+    let expression = unwrap_expression(expression);
+    match expression {
+        Expression::Call(call) => {
+            let range = (call.span().start.offset, call.span().end.offset);
+            if when_true {
+                let mut assertions = artifacts.if_true_assertions.get(&range).cloned().unwrap_or_default();
+                if !include_non_equality {
+                    assertions.retain(|_, assertion_set| {
+                        assertion_set.retain(|assertions| assertions.iter().any(Assertion::has_equality));
+                        !assertion_set.is_empty()
+                    });
+                }
+
+                assertions
+            } else {
+                artifacts.if_false_assertions.get(&range).cloned().unwrap_or_default()
+            }
+        }
+        Expression::UnaryPrefix(unary) if unary.operator.is_not() => {
+            collect_conditional_assertions_inner(unary.operand, !when_true, artifacts, include_non_equality)
+        }
+        Expression::Assignment(assignment) if matches!(assignment.operator, AssignmentOperator::Assign(_)) => {
+            collect_conditional_assertions_inner(assignment.rhs, when_true, artifacts, include_non_equality)
+        }
+        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) => {
+            if !when_true {
+                return WordMap::default();
+            }
+
+            let mut assertions =
+                collect_conditional_assertions_inner(binary.lhs, true, artifacts, include_non_equality);
+            extend_conditional_assertions(
+                &mut assertions,
+                collect_conditional_assertions_inner(binary.rhs, true, artifacts, include_non_equality),
+            );
+            assertions
+        }
+        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) => {
+            if when_true {
+                return WordMap::default();
+            }
+
+            let mut assertions =
+                collect_conditional_assertions_inner(binary.lhs, false, artifacts, include_non_equality);
+            extend_conditional_assertions(
+                &mut assertions,
+                collect_conditional_assertions_inner(binary.rhs, false, artifacts, include_non_equality),
+            );
+            assertions
+        }
+        Expression::Binary(binary)
+            if matches!(binary.operator, BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_)) =>
+        {
+            let (other, literal) = if binary.lhs.is_true() {
+                (binary.rhs, true)
+            } else if binary.lhs.is_false() {
+                (binary.rhs, false)
+            } else if binary.rhs.is_true() {
+                (binary.lhs, true)
+            } else if binary.rhs.is_false() {
+                (binary.lhs, false)
+            } else {
+                return WordMap::default();
+            };
+
+            let other_when_true = if matches!(binary.operator, BinaryOperator::Identical(_)) {
+                when_true == literal
+            } else {
+                when_true != literal
+            };
+
+            let include_non_equality = matches!(binary.operator, BinaryOperator::Identical(_)) == when_true
+                || artifacts.get_expression_type(other).is_some_and(|ty| ty.is_bool());
+
+            collect_conditional_assertions_inner(other, other_when_true, artifacts, include_non_equality)
+        }
+        _ => WordMap::default(),
+    }
+}
+
+fn extend_conditional_assertions(target: &mut WordMap<AssertionSet>, assertions: WordMap<AssertionSet>) {
+    for (variable, assertion_set) in assertions {
+        target.entry(variable).or_default().extend(assertion_set);
+    }
+}
+
+pub(crate) fn add_nullsafe_base_clauses<A>(
     expression: &Expression,
     formula: &mut Vec<Clause>,
     conditional_object_id: Span,
@@ -396,34 +601,7 @@ fn add_nullsafe_base_clauses<A>(
 ) where
     A: Arena,
 {
-    let mut bases = vec![];
-    let mut current = Some(unwrap_expression(expression));
-    while let Some(expr) = current {
-        match expr {
-            Expression::Access(Access::NullSafeProperty(access)) => {
-                bases.push(access.object);
-                current = Some(unwrap_expression(access.object));
-            }
-            Expression::Access(Access::Property(access)) => {
-                current = Some(unwrap_expression(access.object));
-            }
-            Expression::Call(Call::NullSafeMethod(call)) => {
-                bases.push(call.object);
-                current = Some(unwrap_expression(call.object));
-            }
-            Expression::Call(Call::Method(call)) => {
-                current = Some(unwrap_expression(call.object));
-            }
-            Expression::ArrayAccess(access) => {
-                current = Some(unwrap_expression(access.array));
-            }
-            _ => {
-                current = None;
-            }
-        }
-    }
-
-    for base in bases.into_iter().rev() {
+    for base in get_nullsafe_base_expressions(expression).into_iter().rev() {
         push_not_null_clause(base, formula, conditional_object_id, creating_object_id, assertion_context);
     }
 
@@ -434,6 +612,75 @@ fn add_nullsafe_base_clauses<A>(
         creating_object_id,
         assertion_context,
     );
+}
+
+fn add_nullsafe_null_equality_clauses<A>(
+    expression: &Expression,
+    formula: &mut Vec<Clause>,
+    assertion_context: AssertionContext<'_, '_, A>,
+) where
+    A: Arena,
+{
+    let base_ids = get_nullsafe_base_expressions(expression)
+        .into_iter()
+        .filter_map(|base| assertion_context.get_expression_id(base))
+        .map(|id| get_non_nullsafe_expression_id(id).unwrap_or(id))
+        .collect::<Vec<_>>();
+
+    if base_ids.is_empty() {
+        return;
+    }
+
+    let mut modified = false;
+    if let Some(expression_id) = assertion_context.get_expression_id(expression)
+        && let Some(non_nullsafe_id) = get_non_nullsafe_expression_id(expression_id)
+    {
+        for clause in formula.iter_mut() {
+            let Some(expression_assertions) = clause.possibilities.get(&expression_id).cloned() else {
+                continue;
+            };
+
+            let mut possibilities = clause.possibilities.clone();
+            possibilities.shift_remove(&expression_id);
+            possibilities.entry(non_nullsafe_id).or_default().extend(expression_assertions);
+            for base_id in &base_ids {
+                let assertion = Assertion::IsType(TAtomic::Null);
+                possibilities.entry(*base_id).or_default().insert(assertion.to_hash(), assertion);
+            }
+
+            *clause = Clause::new(
+                possibilities,
+                clause.condition_span,
+                clause.span,
+                Some(clause.wedge),
+                Some(clause.reconcilable),
+                Some(clause.generated),
+            );
+            modified = true;
+        }
+    }
+
+    if modified {
+        return;
+    }
+
+    let Some(template) = formula.first() else {
+        return;
+    };
+
+    let condition_span = template.condition_span;
+    let span = template.span;
+    let placeholder =
+        Word::from(format!("*nullsafe-{}-{}", expression.start_offset(), expression.end_offset()).as_str());
+    let null = Assertion::IsType(TAtomic::Null);
+    let mut possibilities = IndexMap::from([(placeholder, IndexMap::from([(null.to_hash(), null)]))]);
+    for base_id in base_ids {
+        let null = Assertion::IsType(TAtomic::Null);
+        possibilities.entry(base_id).or_default().insert(null.to_hash(), null);
+    }
+
+    formula.clear();
+    formula.push(Clause::new(possibilities, condition_span, span, Some(false), Some(true), Some(true)));
 }
 
 fn push_not_null_clause<A>(
@@ -449,7 +696,7 @@ fn push_not_null_clause<A>(
         return;
     };
 
-    if let Some(non_nullsafe_id) = get_non_nullsafe_id(base_id) {
+    if let Some(non_nullsafe_id) = get_non_nullsafe_expression_id(base_id) {
         push_not_null_clause_for_id(non_nullsafe_id, formula, conditional_object_id, creating_object_id);
     } else {
         push_not_null_clause_for_id(base_id, formula, conditional_object_id, creating_object_id);
@@ -469,32 +716,11 @@ fn push_non_nullsafe_not_null_clause<A>(
         return;
     };
 
-    let Some(non_nullsafe_id) = get_non_nullsafe_id(expression_id) else {
+    let Some(non_nullsafe_id) = get_non_nullsafe_expression_id(expression_id) else {
         return;
     };
 
     push_not_null_clause_for_id(non_nullsafe_id, formula, conditional_object_id, creating_object_id);
-}
-
-fn get_non_nullsafe_id(id: Word) -> Option<Word> {
-    let bytes = id.as_bytes();
-    if !bytes.windows(3).any(|window| window == b"?->") {
-        return None;
-    }
-
-    let mut result = Vec::with_capacity(bytes.len());
-    let mut offset = 0;
-    while offset < bytes.len() {
-        if bytes.get(offset..offset + 3) == Some(b"?->") {
-            result.extend_from_slice(b"->");
-            offset += 3;
-        } else {
-            result.push(bytes[offset]);
-            offset += 1;
-        }
-    }
-
-    Some(word(result))
 }
 
 fn push_not_null_clause_for_id(
@@ -599,8 +825,34 @@ pub fn negate_or_synthesize<A>(
 where
     A: Arena,
 {
-    match negate_formula(clauses, algebra_thresholds) {
-        Some(negated_clauses) => negated_clauses,
+    let negated_clauses = if collect_conditional_assertions(conditional, true, artifacts).is_empty() {
+        negate_formula(clauses, algebra_thresholds)
+    } else {
+        get_base_formula(
+            conditional.span(),
+            conditional.span(),
+            conditional,
+            assertion_context,
+            artifacts,
+            algebra_thresholds,
+            formula_size_threshold,
+        )
+        .and_then(|formula| negate_formula(formula, algebra_thresholds))
+    };
+
+    match negated_clauses {
+        Some(mut negated_clauses) => {
+            add_conditional_assertion_clauses(
+                conditional,
+                false,
+                &mut negated_clauses,
+                conditional.span(),
+                conditional.span(),
+                artifacts,
+            );
+
+            negated_clauses
+        }
         None => match get_formula(
             conditional.span(),
             conditional.span(),
@@ -636,7 +888,7 @@ fn handle_binary_or_operation<A>(
 where
     A: Arena,
 {
-    let left_clauses = get_formula(
+    let left_clauses = get_base_formula(
         conditional_object_id,
         left.span(),
         left,
@@ -645,7 +897,7 @@ where
         algebra_thresholds,
         formula_size_threshold,
     )?;
-    let right_clauses = get_formula(
+    let right_clauses = get_base_formula(
         conditional_object_id,
         right.span(),
         right,
@@ -672,7 +924,7 @@ fn handle_binary_and_operation<A>(
 where
     A: Arena,
 {
-    let mut clauses = get_formula(
+    let mut clauses = get_base_formula(
         conditional_object_id,
         left.span(),
         left,
@@ -681,7 +933,7 @@ where
         algebra_thresholds,
         formula_size_threshold,
     )?;
-    clauses.extend(get_formula(
+    clauses.extend(get_base_formula(
         conditional_object_id,
         right.span(),
         right,

@@ -280,6 +280,7 @@ test_case!(by_reference_invalidation);
 test_case!(callable_template_inference);
 test_case!(class_like_constant_access);
 test_case!(class_probe_allow_string_result);
+test_case!(class_probe_dynamic_class_argument);
 test_case!(collection_types);
 test_case!(condition_is_too_complex);
 test_case!(conditional_if_else);
@@ -2714,10 +2715,22 @@ test_case!(issue_2232);
 test_case!(issue_2233);
 test_case!(issue_2249);
 test_case!(issue_2250);
+test_case!(issue_2251);
 test_case!(issue_2254);
 test_case!(issue_2256);
 test_case!(issue_2258);
 test_case!(issue_2259);
+test_case!(issue_2261);
+test_case!(issue_2262);
+test_case!(issue_2277);
+test_case!(issue_2278);
+test_case!(issue_2281);
+test_case!(issue_2282);
+test_case!(issue_2287);
+test_case!(issue_2289);
+test_case!(issue_2293);
+test_case!(issue_2294);
+test_case!(issue_2295);
 
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
 /// also carry a quickfix edit that scaffolds the missing case arms. This guards

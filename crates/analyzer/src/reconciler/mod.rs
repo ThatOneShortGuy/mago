@@ -112,7 +112,18 @@ pub fn reconcile_keyed_types<'ctx, A>(
     let old_new_types = new_types.clone();
     let mut new_types = new_types.clone();
 
+    for (derived_local, source) in &block_context.derived_local_sources {
+        if let Some(assertions) = old_new_types.get(derived_local) {
+            new_types.entry(*source).or_insert_with(|| assertions.clone());
+        }
+    }
+
     add_nested_assertions(&mut new_types, &mut active_new_types, block_context);
+    if new_types.len() > 1 {
+        new_types.sort_by_cached_key(|key, _| {
+            (old_new_types.get(key).is_none(), break_up_path_into_parts(key.as_bytes()).len())
+        });
+    }
 
     let original_types = can_report_issues.then(|| {
         new_types

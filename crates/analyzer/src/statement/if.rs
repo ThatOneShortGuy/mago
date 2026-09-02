@@ -12,9 +12,9 @@ use mago_word::WordSet;
 use mago_algebra::clause::Clause;
 use mago_algebra::disjoin_clauses;
 use mago_algebra::find_satisfying_assignments;
-use mago_algebra::negate_formula;
 use mago_algebra::saturate_clauses;
 use mago_codex::assertion::Assertion;
+use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combiner::CombinerOptions;
@@ -348,9 +348,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
         block_context.possibly_assigned_variable_ids.extend(if_scope.possibly_assigned_variable_ids);
         block_context.assigned_variable_ids.extend(if_scope.assigned_variable_ids.unwrap_or_default());
 
+        for (variable_id, variable_type) in if_scope.possibly_defined_variable_types {
+            if block_context.locals.contains_key(&variable_id) {
+                continue;
+            }
+
+            let mut variable_type = Rc::unwrap_or_clone(variable_type);
+            variable_type.set_possibly_undefined(true, None);
+            block_context.locals.insert(variable_id, Rc::new(variable_type));
+            block_context.possibly_undefined_variable_ids.insert(variable_id);
+        }
+
         if let Some(new_variables) = if_scope.new_variables {
             for (variable_id, variable_type) in new_variables {
                 block_context.locals.insert(variable_id, variable_type);
+                block_context.possibly_undefined_variable_ids.remove(&variable_id);
             }
         }
 
@@ -745,7 +757,9 @@ where
     for mut clause in if_conditional_scope.entry_clauses {
         'set_clause: for key in clause.possibilities.keys() {
             for conditional_assigned_variable_id in assigned_in_conditional_variable_ids.keys() {
-                if !is_derived_access_path(*key, *conditional_assigned_variable_id) {
+                if key != conditional_assigned_variable_id
+                    && !is_derived_access_path(*key, *conditional_assigned_variable_id)
+                {
                     continue;
                 }
 
@@ -983,13 +997,19 @@ where
         }
     }
 
-    if_scope.negated_clauses = match negate_formula(else_if_clauses, &context.settings.algebra_thresholds()) {
-        Some(negated_formula) => saturate_clauses(
-            if_scope.negated_clauses.iter().chain(negated_formula.iter()),
-            &context.settings.algebra_thresholds(),
-        ),
-        None => vec![],
-    };
+    let negated_formula = negate_or_synthesize(
+        else_if_clauses,
+        else_if_clause.0,
+        context.get_assertion_context_from_block(&else_if_block_context),
+        artifacts,
+        &context.settings.algebra_thresholds(),
+        context.settings.formula_size_threshold,
+    );
+
+    if_scope.negated_clauses = saturate_clauses(
+        if_scope.negated_clauses.iter().chain(negated_formula.iter()),
+        &context.settings.algebra_thresholds(),
+    );
 
     outer_block_context.update_references_possibly_from_confusing_scope(&else_if_block_context);
 
@@ -1308,6 +1328,29 @@ fn update_if_scope<'ctx, A>(
     }
     let mut redefined_variables =
         if_block_context.get_redefined_locals(&outer_block_context.locals, false, &mut WordSet::default());
+
+    for (variable_id, variable_type) in &if_block_context.locals {
+        if outer_block_context.locals.contains_key(variable_id) {
+            continue;
+        }
+
+        let variable_id_bytes = variable_id.as_bytes();
+        if !variable_id_bytes.starts_with(b"$")
+            || variable_id_bytes.contains(&b'[')
+            || memchr::memmem::find(variable_id_bytes, b"->").is_some()
+            || memchr::memmem::find(variable_id_bytes, b"::").is_some()
+            || variable_id_bytes.ends_with(b"()")
+        {
+            continue;
+        }
+
+        let combined = add_optional_union_type(
+            (**variable_type).clone(),
+            if_scope.possibly_defined_variable_types.get(variable_id).map(Rc::as_ref),
+            context.codebase,
+        );
+        if_scope.possibly_defined_variable_types.insert(*variable_id, Rc::new(combined));
+    }
 
     match &mut if_scope.new_variables {
         Some(new_variables) => {
