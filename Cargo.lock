@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "mago-server"
-version = "1.47.2"
+version = "1.47.4"
 dependencies = [
  "foldhash",
  "mago-allocator",

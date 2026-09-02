@@ -448,6 +448,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPostfix<'arena> {
         self.operand.analyze(context, block_context, artifacts)?;
         block_context.flags.set_inside_general_use(was_in_general_use);
 
+        // A postfix operator evaluates to the operand's value *before* the operation,
+        // so capture it now: the increment/decrement assigns the new type back onto the
+        // operand's span, overwriting what is recorded for it in the artifacts.
+        let previous_operand_type = artifacts.get_rc_expression_type(&self.operand).cloned();
+
         match self.operator {
             UnaryPostfixOperator::PostIncrement(span) => {
                 increment_operand(context, block_context, artifacts, self.operand, span)?;
@@ -457,7 +462,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPostfix<'arena> {
             }
         }
 
-        if let Some(operand_type) = artifacts.get_rc_expression_type(&self.operand).cloned() {
+        if let Some(operand_type) = previous_operand_type {
             artifacts.set_rc_expression_type(self, operand_type);
         }
 
