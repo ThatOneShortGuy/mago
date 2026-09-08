@@ -40,6 +40,17 @@ pub struct AnalysisArtifacts {
     pub if_false_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub true_branch_only_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub inferred_return_types: Vec<Rc<TUnion>>,
+    /// The return type inferred from each analyzed function-like's body, keyed
+    /// by the function-like's declaration `(start, end)` byte span (the same
+    /// span as its [`FunctionLikeMetadata::span`]).
+    ///
+    /// Unlike [`Self::inferred_return_types`], which is scoped to one body and
+    /// consumed by the enclosing analysis, these entries are merged into the
+    /// parent artifacts and so survive to the top level. Editor integrations
+    /// use them to answer "what does this function actually return?" without
+    /// re-analyzing; the analyzer itself still resolves call sites from the
+    /// *declared* signature, so nothing here feeds back into type checking.
+    pub inferred_return_types_by_function_like: HashMap<(u32, u32), Rc<TUnion>>,
     pub inferred_yield_key_types: Vec<TUnion>,
     pub inferred_yield_value_types: Vec<TUnion>,
     pub symbol_references: SymbolReferences,
@@ -68,6 +79,7 @@ impl AnalysisArtifacts {
         Self {
             expression_types: HashMap::default(),
             inferred_return_types: Vec::new(),
+            inferred_return_types_by_function_like: HashMap::default(),
             inferred_yield_key_types: Vec::new(),
             inferred_yield_value_types: Vec::new(),
             if_true_assertions: HashMap::default(),

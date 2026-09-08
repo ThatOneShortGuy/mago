@@ -87,6 +87,69 @@ impl HasSpan for FunctionLikeBody<'_, '_> {
     }
 }
 
+/// Fold the return types observed across one function-like body into the single
+/// union a declared return type would name.
+///
+/// An empty body-return set means the body never produced a value: `never` when
+/// every path exited (`throw`, `exit`), `void` when it simply fell off the end.
+fn fold_inferred_return_type<A>(
+    context: &Context<'_, '_, A>,
+    inferred_return_types: impl IntoIterator<Item = Rc<TUnion>>,
+    has_returned: bool,
+) -> TUnion
+where
+    A: Arena,
+{
+    let mut folded = None;
+    for inferred_return in inferred_return_types {
+        folded = Some(add_optional_union_type((*inferred_return).clone(), folded.as_ref(), context.codebase));
+    }
+
+    match folded {
+        Some(folded) => folded,
+        None if has_returned => get_never(),
+        None => get_void(),
+    }
+}
+
+/// Fold a generator body's observed yields and returns into `Generator<K, V, mixed, R>`.
+fn fold_inferred_generator_type<A>(
+    context: &Context<'_, '_, A>,
+    inferred_yield_key_types: impl IntoIterator<Item = TUnion>,
+    inferred_yield_value_types: impl IntoIterator<Item = TUnion>,
+    inferred_return_types: impl IntoIterator<Item = Rc<TUnion>>,
+) -> TUnion
+where
+    A: Arena,
+{
+    let mut key_type = None;
+    for k in inferred_yield_key_types {
+        key_type = Some(add_optional_union_type(k, key_type.as_ref(), context.codebase));
+    }
+
+    let mut value_type = None;
+    for v in inferred_yield_value_types {
+        value_type = Some(add_optional_union_type(v, value_type.as_ref(), context.codebase));
+    }
+
+    let mut return_type = None;
+    for r in inferred_return_types {
+        return_type = Some(add_optional_union_type((*r).clone(), return_type.as_ref(), context.codebase));
+    }
+
+    let generator = TNamedObject::new_with_type_parameters(
+        word("Generator"),
+        Some(vec![
+            key_type.unwrap_or_else(get_mixed),
+            value_type.unwrap_or_else(get_mixed),
+            get_mixed(),
+            return_type.unwrap_or_else(get_void),
+        ]),
+    );
+
+    TUnion::from_atomic(TAtomic::Object(TObject::Named(generator)))
+}
+
 pub fn resolve_closure_like_type<A>(
     context: &Context<'_, '_, A>,
     closure_span: Span,
@@ -108,49 +171,18 @@ where
 
     if function_metadata.template_types.is_empty() {
         if function_metadata.flags.has_yield() && function_metadata.return_type_metadata.is_none() {
-            let mut key_type = None;
-            for k in inner_artifacts.inferred_yield_key_types {
-                key_type = Some(add_optional_union_type(k, key_type.as_ref(), context.codebase));
-            }
-
-            let mut value_type = None;
-            for v in inner_artifacts.inferred_yield_value_types {
-                value_type = Some(add_optional_union_type(v, value_type.as_ref(), context.codebase));
-            }
-
-            let mut return_type = None;
-            for r in inner_artifacts.inferred_return_types {
-                return_type = Some(add_optional_union_type((*r).clone(), return_type.as_ref(), context.codebase));
-            }
-
-            let generator = TNamedObject::new_with_type_parameters(
-                word("Generator"),
-                Some(vec![
-                    key_type.unwrap_or_else(get_mixed),
-                    value_type.unwrap_or_else(get_mixed),
-                    get_mixed(),
-                    return_type.unwrap_or_else(get_void),
-                ]),
-            );
-
-            signature.return_type = Some(Arc::new(TUnion::from_atomic(TAtomic::Object(TObject::Named(generator)))));
+            signature.return_type = Some(Arc::new(fold_inferred_generator_type(
+                context,
+                inner_artifacts.inferred_yield_key_types,
+                inner_artifacts.inferred_yield_value_types,
+                inner_artifacts.inferred_return_types,
+            )));
         } else if !function_metadata.flags.has_yield() {
-            let mut inferred_return_type = None;
-            for inferred_return in inner_artifacts.inferred_return_types {
-                inferred_return_type = Some(add_optional_union_type(
-                    (*inferred_return).clone(),
-                    inferred_return_type.as_ref(),
-                    context.codebase,
-                ));
-            }
-
-            if let Some(inferred_return_type) = inferred_return_type {
-                signature.return_type = Some(Arc::new(inferred_return_type));
-            } else if inner_has_returned {
-                signature.return_type = Some(Arc::new(get_never()));
-            } else {
-                signature.return_type = Some(Arc::new(get_void()));
-            }
+            signature.return_type = Some(Arc::new(fold_inferred_return_type(
+                context,
+                inner_artifacts.inferred_return_types,
+                inner_has_returned,
+            )));
         }
     }
 
@@ -338,11 +370,16 @@ where
     check_return_type_width(context, block_context, &mut artifacts, function_like_metadata);
     check_thrown_types(context, block_context, &mut artifacts, function_like_metadata);
 
+    record_inferred_return_type(context, block_context, &mut artifacts, function_like_metadata);
+
     std::mem::swap(&mut context.type_resolution_context, &mut previous_type_resolution_context);
     parent_artifacts.expression_types.extend(std::mem::take(&mut artifacts.expression_types));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
+    parent_artifacts
+        .inferred_return_types_by_function_like
+        .extend(std::mem::take(&mut artifacts.inferred_return_types_by_function_like));
 
     Ok(artifacts)
 }
@@ -893,6 +930,48 @@ fn add_symbol_references(
             }
         }
     }
+}
+
+/// Record the type this body actually returns, keyed by the function-like's
+/// declaration span, so editor integrations can offer it as a `@return`.
+///
+/// This is observational only: it never feeds back into call-site resolution,
+/// which continues to read the *declared* signature. Bodies the analyzer did
+/// not check (`@mago-unchecked`) have nothing to report, and templated
+/// signatures are skipped because a body-level fold cannot reconstruct the
+/// template bindings a caller would supply.
+fn record_inferred_return_type<'ctx, A>(
+    context: &Context<'ctx, '_, A>,
+    block_context: &BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    function_like_metadata: &'ctx FunctionLikeMetadata,
+) where
+    A: Arena,
+{
+    if function_like_metadata.flags.is_abstract()
+        || function_like_metadata.flags.is_unchecked()
+        || !function_like_metadata.template_types.is_empty()
+    {
+        return;
+    }
+
+    let inferred = if function_like_metadata.flags.has_yield() {
+        fold_inferred_generator_type(
+            context,
+            artifacts.inferred_yield_key_types.iter().cloned(),
+            artifacts.inferred_yield_value_types.iter().cloned(),
+            artifacts.inferred_return_types.iter().cloned(),
+        )
+    } else {
+        fold_inferred_return_type(
+            context,
+            artifacts.inferred_return_types.iter().cloned(),
+            block_context.flags.has_returned(),
+        )
+    };
+
+    let span = function_like_metadata.span;
+    artifacts.inferred_return_types_by_function_like.insert((span.start.offset, span.end.offset), Rc::new(inferred));
 }
 
 /// Flags declared return types that are strictly wider than the union of every

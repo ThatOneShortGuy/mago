@@ -14,6 +14,7 @@ use mago_codex::reference::SymbolReferences;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::union::TUnion;
 use mago_database::Database;
 use mago_database::DatabaseReader;
 use mago_database::file::FileId;
@@ -39,6 +40,13 @@ pub struct ExpressionTypeIndex {
     pub by_span: HashMap<(u32, u32), Vec<Word>>,
     /// Maps an expression's `(start, end)` byte span to its rendered inferred type.
     pub display_by_span: HashMap<(u32, u32), String>,
+    /// Maps a function-like declaration's `(start, end)` byte span to the return
+    /// type inferred from its body.
+    ///
+    /// This is *observational*: the analyzer resolves call sites from declared
+    /// signatures and never consults these. It exists so the editor can offer
+    /// the inferred type as a `@return` for a human to accept.
+    pub inferred_returns_by_span: HashMap<(u32, u32), TUnion>,
 }
 
 /// A transport-agnostic backend for a single workspace.
@@ -240,6 +248,8 @@ impl Server {
 fn build_index(artifacts: &AnalysisArtifacts) -> ExpressionTypeIndex {
     let mut by_span: HashMap<(u32, u32), Vec<Word>> = HashMap::default();
     let mut display_by_span: HashMap<(u32, u32), String> = HashMap::default();
+    let inferred_returns_by_span =
+        artifacts.inferred_return_types_by_function_like.iter().map(|(span, ty)| (*span, (**ty).clone())).collect();
     for (span, ty) in artifacts.expression_types.iter() {
         display_by_span.insert(*span, ty.get_id().to_string());
 
@@ -257,5 +267,5 @@ fn build_index(artifacts: &AnalysisArtifacts) -> ExpressionTypeIndex {
         }
     }
 
-    ExpressionTypeIndex { by_span, display_by_span }
+    ExpressionTypeIndex { by_span, display_by_span, inferred_returns_by_span }
 }

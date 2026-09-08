@@ -120,6 +120,38 @@ pub struct CodeActionItem {
     pub edits: HashMap<FileId, Vec<TextReplacement>>,
     /// The diagnostic this action resolves, if any.
     pub diagnostic: Option<DiagnosticData>,
+    /// How the editor should classify and rank this action.
+    pub kind: CodeActionKind,
+}
+
+/// How an editor should classify a [`CodeActionItem`].
+///
+/// The distinction is not cosmetic: editors surface quickfixes automatically
+/// (lightbulb on a diagnostic, "fix all on save") but require an explicit
+/// request for refactors. An action that rewrites code the user never
+/// complained about must not be a quickfix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodeActionKind {
+    /// Resolves a reported diagnostic.
+    #[default]
+    QuickFix,
+    /// Rewrites correct code at the user's request.
+    RefactorRewrite,
+}
+
+/// A named function-like declaration (free function or method) in a file.
+#[derive(Debug, Clone)]
+pub struct FunctionLikeSite {
+    /// The declaration's `(start, end)` byte span. This is the same span the
+    /// analyzer keys `inferred_return_types_by_function_like` by, so it doubles
+    /// as the join key between syntax and analysis.
+    pub span: (u32, u32),
+    /// The declared name, for use in action titles.
+    pub name: String,
+    /// Whether the declaration carries a native return type hint.
+    pub has_return_hint: bool,
+    /// The `(start, end)` span of the docblock attached to this declaration.
+    pub docblock: Option<(u32, u32)>,
 }
 
 /// The semantic-token classification of a source token.

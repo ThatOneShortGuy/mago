@@ -21,6 +21,7 @@ mago-formatter = { workspace = true }
 mago-linter = { workspace = true }
 mago-names = { workspace = true }
 mago-orchestrator = { workspace = true }
+mago-phpdoc-syntax = { workspace = true }
 mago-php-version = { workspace = true }
 mago-reporting = { workspace = true }
 mago-semantics = { workspace = true }

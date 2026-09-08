@@ -88,7 +88,7 @@ pub fn server_capabilities(config: &super::ServerConfig) -> ServerCapabilities {
             completion_item: None,
         }),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::REFACTOR_REWRITE]),
             work_done_progress_options: WorkDoneProgressOptions::default(),
             resolve_provider: Some(false),
         })),

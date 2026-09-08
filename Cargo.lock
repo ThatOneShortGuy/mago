@@ -1963,6 +1963,7 @@ dependencies = [
  "mago-names",
  "mago-orchestrator",
  "mago-php-version",
+ "mago-phpdoc-syntax",
  "mago-reporting",
  "mago-semantics",
  "mago-span",

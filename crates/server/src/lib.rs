@@ -49,6 +49,7 @@ pub mod server;
 pub mod settings;
 
 pub use domain::CodeActionItem;
+pub use domain::CodeActionKind;
 pub use domain::CodeLensItem;
 pub use domain::CompletionEntry;
 pub use domain::CompletionKind;
@@ -58,6 +59,7 @@ pub use domain::DocumentLinkItem;
 pub use domain::FoldKind;
 pub use domain::FoldRange;
 pub use domain::FormattedDocument;
+pub use domain::FunctionLikeSite;
 pub use domain::HintKind;
 pub use domain::HoverInfo;
 pub use domain::InlayHintItem;

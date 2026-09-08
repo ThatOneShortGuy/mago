@@ -1325,3 +1325,125 @@ async fn rename_enum_case_reaches_importing_files() {
     assert_eq!(edits_in(&result, &h.url("Series.php")), vec![(7, "EnergyPlusElite".to_owned())]);
     assert_eq!(edits_in(&result, &h.url("ColorSeeder.php")), vec![(11, "EnergyPlusElite".to_owned())]);
 }
+
+/// Request code actions for the whole of `line`, which is how an editor asks
+/// with the cursor resting on that line.
+async fn code_actions_on_line(h: &mut Harness, path: &str, line: u32) -> Value {
+    h.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": h.url(path) },
+            "range": {
+                "start": { "line": line, "character": 4 },
+                "end": { "line": line, "character": 4 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+    )
+    .await
+}
+
+fn find_return_action(result: &Value) -> Option<&Value> {
+    result.as_array()?.iter().find(|action| {
+        action["title"].as_str().is_some_and(|title| title.starts_with("Document inferred return type:"))
+    })
+}
+
+#[tokio::test]
+async fn code_action_documents_inferred_return_type() {
+    // The declared `: array` tells callers nothing; the body says exactly what
+    // comes back. The action offers to write that down.
+    let code = "<?php\n\nfinal class Demo\n{\n    public function shape(int $x): array\n    {\n        if ($x > 1) {\n            return ['cost' => 1.5, 'ok' => true];\n        }\n\n        return ['cost' => 2.5, 'ok' => false];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 4).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    assert_eq!(action["kind"], "refactor.rewrite");
+    assert_eq!(action["isPreferred"], false, "a refactor must not outrank a real fix");
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    assert_eq!(edits.len(), 1, "got {edits:?}");
+
+    // `float(1.5)|float(2.5)` is precise but does not survive a round-trip
+    // through the PHPDoc type parser once nested in a shape, so the widened
+    // form is offered instead of nothing.
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(new_text, "    /** @return array{'cost': float, 'ok': bool} */\n", "got {new_text:?}");
+    // Inserted on its own line above the declaration, at the declaration's indent.
+    assert_eq!(edits[0]["range"]["start"], json!({ "line": 4, "character": 0 }));
+    assert_eq!(edits[0]["range"]["end"], json!({ "line": 4, "character": 0 }));
+}
+
+#[tokio::test]
+async fn code_action_splices_return_tag_into_existing_docblock() {
+    let code = "<?php\n\nfinal class Demo\n{\n    /**\n     * Does a thing.\n     */\n    public function shape(): array\n    {\n        return ['ok' => true];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 7).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    // The literal `true` is kept: it parses, so the precise type is offered and
+    // widening it to `bool` is left to the author's judgement.
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(new_text, "     * @return array{'ok': true}\n", "got {new_text:?}");
+    // Spliced ahead of the closing delimiter, leaving the prose untouched.
+    assert_eq!(edits[0]["range"]["start"], json!({ "line": 6, "character": 0 }));
+}
+
+#[tokio::test]
+async fn code_action_leaves_an_existing_return_tag_alone() {
+    // Narrowing a hand-written contract is `overly-wide-return-type`'s job;
+    // this action never rewrites what someone already declared.
+    let code = "<?php\n\nfinal class Demo\n{\n    /** @return array<array-key, mixed> */\n    public function shape(): array\n    {\n        return ['ok' => true];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 5).await;
+    assert!(find_return_action(&result).is_none(), "should not offer a tag, got {result:?}");
+}
+
+#[tokio::test]
+async fn code_action_merges_return_shapes_across_branches() {
+    // Three returns, two of them the same variable, with a key that is `null`
+    // on some paths and a `float` on others. The offered tag is the union of
+    // all three, merged key-by-key rather than listed as three separate shapes.
+    let code = "<?php\n\nfinal class Demo\n{\n    private const PCT = 0.15;\n\n    private function resolve(int $jobId): array\n    {\n        if ($jobId < 1) {\n            return ['cost' => 0.0, 'isFallback' => false, 'fallbackPct' => null];\n        }\n\n        $pct = self::PCT;\n        $fallback = ['cost' => 12.0 * $pct, 'isFallback' => true, 'fallbackPct' => $pct];\n        if ($jobId < 5) {\n            return $fallback;\n        }\n\n        return ['cost' => 3.5, 'isFallback' => false, 'fallbackPct' => null];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 6).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(
+        new_text, "    /** @return array{'cost': float, 'fallbackPct': float|null, 'isFallback': bool} */\n",
+        "got {new_text:?}"
+    );
+}
+
+#[tokio::test]
+async fn code_action_reflows_a_single_line_docblock() {
+    // A tag has to start its own line to parse, so a one-line block is rewritten
+    // as a multi-line one rather than having the tag appended inside it.
+    let code = "<?php\n\nfinal class Demo\n{\n    /** Does a thing. */\n    public function shape(): array\n    {\n        return ['ok' => true];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 5).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(
+        new_text, "    /**\n     * Does a thing.\n     * @return array{'ok': true}\n     */",
+        "got {new_text:?}"
+    );
+    // Replaces the old block exactly, preserving the prose.
+    assert_eq!(edits[0]["range"]["start"], json!({ "line": 4, "character": 4 }));
+    assert_eq!(edits[0]["range"]["end"], json!({ "line": 4, "character": 24 }));
+}

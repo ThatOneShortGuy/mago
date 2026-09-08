@@ -1,21 +1,36 @@
-//! `get_code_actions`: quickfixes from analyzer/linter autofixes.
+//! `get_code_actions`: quickfixes from analyzer/linter autofixes, plus
+//! cursor-driven refactors.
 //!
 //! For each issue with edits whose primary annotation overlaps the requested
 //! byte range (in the requested file), emit one quickfix carrying the issue's
 //! edits.
+//!
+//! Separately, and not driven by any issue, the function-like under the cursor
+//! gets an offer to record its inferred return type as a `@return` tag. See
+//! [`inferred_return_action`].
+
+use std::fmt::Write;
 
 use foldhash::HashMap;
 
+use mago_allocator::LocalArena;
+use mago_codex::ttype::TType;
+use mago_codex::ttype::union::TUnion;
 use mago_database::DatabaseReader;
+use mago_database::file::File as MagoFile;
 use mago_database::file::FileId;
+use mago_phpdoc_syntax::parser::parse_type;
 use mago_reporting::Annotation;
 use mago_reporting::AnnotationKind;
 use mago_reporting::Issue;
 use mago_reporting::Level;
+use mago_span::Span;
 
 use crate::Server;
 use crate::domain::CodeActionItem;
+use crate::domain::CodeActionKind;
 use crate::domain::DiagnosticData;
+use crate::domain::FunctionLikeSite;
 use crate::domain::Range;
 use crate::domain::Severity;
 use crate::domain::TextReplacement;
@@ -27,13 +42,16 @@ struct FileWideFix {
 }
 
 impl Server {
-    /// Quickfix code actions for issues anchored within `[start, end]` of
-    /// `file_id`.
+    /// Code actions for `[start, end]` of `file_id`.
     ///
     /// Ordered so the most specific actions come first: direct fixes, then
-    /// `@mago-expect` suppressions, then file-wide "fix all" actions.
-    #[must_use]
-    pub fn get_code_actions(&self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
+    /// `@mago-expect` suppressions, then file-wide "fix all" actions, and
+    /// finally refactors, which resolve no diagnostic and so should never
+    /// outrank something that does.
+    ///
+    /// Takes `&mut self` because the refactors consult the analyzer's
+    /// expression-type index, which is built lazily per content hash.
+    pub fn get_code_actions(&mut self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
         let mut direct_actions = Vec::new();
         let mut expect_actions = Vec::new();
         let mut file_wide_fixes: HashMap<String, FileWideFix> = HashMap::default();
@@ -74,15 +92,183 @@ impl Server {
                     .into_iter()
                     .map(|(code, fix)| file_action(file_id, format!("Fix all `{code}` issues in file"), fix.edits)),
             )
+            .chain(inferred_return_action(self, file_id, start, end))
             .collect()
     }
+}
+
+/// Offer to record the return type inferred from a function-like's body as a
+/// `@return` tag on its docblock.
+///
+/// The analyzer resolves call sites from *declared* signatures and never from
+/// bodies, so a method with no `@return` is `array` (or `mixed`) to every
+/// caller no matter how precisely its body is understood. This action is the
+/// bridge: it takes what the analyzer already worked out while checking the
+/// body and offers it to the author as a declaration they can accept, edit, or
+/// ignore. Nothing is inferred behind their back; the contract only changes
+/// when a human writes it down.
+///
+/// Deliberately not offered when an `@return` is already present. Silently
+/// rewriting a contract someone wrote by hand is the action-at-a-distance this
+/// design exists to avoid, and narrowing an over-wide declaration is already
+/// covered by the analyzer's `overly-wide-return-type` fix.
+fn inferred_return_action(server: &mut Server, file_id: FileId, start: u32, end: u32) -> Option<CodeActionItem> {
+    let analysis = server.file_analysis_for(file_id)?;
+    let site = innermost_function_like(&analysis.function_like_sites, start, end)?.clone();
+
+    let inferred = server.type_index_for(file_id)?.inferred_returns_by_span.get(&site.span)?;
+    let rendered = render_docblock_type(inferred)?;
+
+    let file = server.database().get(&file_id).ok()?;
+    let replacement = return_tag_edit(&file, &site, &rendered)?;
+
+    let mut edits = HashMap::default();
+    edits.insert(file_id, vec![replacement]);
+
+    Some(CodeActionItem {
+        title: format!("Document inferred return type: @return {}", abbreviate(&rendered)),
+        edits,
+        diagnostic: None,
+        kind: CodeActionKind::RefactorRewrite,
+    })
+}
+
+/// The tightest function-like declaration wholly containing `[start, end]`.
+///
+/// Innermost rather than first so that a cursor inside a method of a class
+/// resolves to the method, and a nested declaration wins over its parent.
+fn innermost_function_like(sites: &[FunctionLikeSite], start: u32, end: u32) -> Option<&FunctionLikeSite> {
+    sites.iter().filter(|site| site.span.0 <= start && end <= site.span.1).min_by_key(|site| site.span.1 - site.span.0)
+}
+
+/// Render `ty` as text fit for a `@return` tag, or `None` when it says nothing
+/// worth writing down.
+///
+/// [`TType::get_id`] is a *display* form, and not every display form is valid
+/// PHPDoc: a literal atomic nested inside an array shape renders as
+/// `array{'a': int(1)}`, which mago's own type parser rejects. So the rendered
+/// text is re-parsed before it is offered, and only widening the literals away
+/// is attempted as a fallback. Anything still unparseable is dropped rather
+/// than written into the user's source; a code action that breaks the file it
+/// edits is worse than no code action.
+///
+/// The precise type is preferred whenever it round-trips, on the view that a
+/// too-narrow suggestion is easy for the author to widen by hand and a
+/// too-wide one gives them nothing to work from.
+fn render_docblock_type(ty: &TUnion) -> Option<String> {
+    if ty.is_mixed() {
+        return None;
+    }
+
+    let precise = ty.get_id().to_string();
+    if parses_as_phpdoc_type(&precise) {
+        return Some(precise);
+    }
+
+    let mut widened = ty.clone();
+    widened.widen_literals();
+    let widened = widened.get_id().to_string();
+
+    parses_as_phpdoc_type(&widened).then_some(widened)
+}
+
+/// Whether `text` round-trips through mago's PHPDoc type parser.
+fn parses_as_phpdoc_type(text: &str) -> bool {
+    let arena = LocalArena::new();
+
+    parse_type(&arena, text.as_bytes(), Span::zero()).is_ok()
+}
+
+/// Build the edit that records `@return {rendered}` for `site`, or `None` when
+/// the declaration already documents a return type.
+fn return_tag_edit(file: &MagoFile, site: &FunctionLikeSite, rendered: &str) -> Option<TextReplacement> {
+    let declaration_line = file.line_number(site.span.0);
+    let declaration_line_start = file.get_line_start_offset(declaration_line)?;
+    let indent = line_indent(&file.contents[declaration_line_start as usize..]);
+
+    let Some((docblock_start, docblock_end)) = site.docblock else {
+        // No docblock at all: introduce one on its own line above the
+        // declaration, matching the declaration's indentation.
+        return Some(TextReplacement {
+            range: Range::new(declaration_line_start, declaration_line_start),
+            new_text: format!("{indent}/** @return {rendered} */\n"),
+        });
+    };
+
+    let docblock = file.contents.get(docblock_start as usize..docblock_end as usize)?;
+    if contains_return_tag(docblock) {
+        return None;
+    }
+
+    let docblock = std::str::from_utf8(docblock).ok()?;
+    match docblock.rfind('\n') {
+        // Multi-line: splice a tag line in ahead of the closing delimiter,
+        // taking the star column from the closing line so the block stays
+        // aligned however the author indented it.
+        Some(last_newline) => {
+            let closing_line_start = docblock_start + (last_newline as u32) + 1;
+            let closing_indent = line_indent(&file.contents[closing_line_start as usize..]);
+
+            Some(TextReplacement {
+                range: Range::new(closing_line_start, closing_line_start),
+                new_text: format!("{closing_indent}* @return {rendered}\n"),
+            })
+        }
+        // Single-line: a tag has to start its own line to parse, so the block
+        // is reflowed rather than appended to.
+        None => {
+            let body = docblock.strip_prefix("/**")?.strip_suffix("*/")?.trim();
+            let mut expanded = format!("{indent}/**\n");
+            if !body.is_empty() {
+                let _ = writeln!(expanded, "{indent} * {body}");
+            }
+            let _ = write!(expanded, "{indent} * @return {rendered}\n{indent} */");
+
+            Some(TextReplacement { range: Range::new(docblock_start, docblock_end), new_text: expanded })
+        }
+    }
+}
+
+/// Whether a docblock already carries a `@return` tag.
+///
+/// Matched on a word boundary so `@returns` (which mago does not honour) and
+/// prose mentioning `@return` inside a longer word do not count as one.
+fn contains_return_tag(docblock: &[u8]) -> bool {
+    let mut haystack = docblock;
+    while let Some(at) = memchr::memmem::find(haystack, b"@return") {
+        let after = at + b"@return".len();
+        match haystack.get(after) {
+            None => return true,
+            Some(byte) if !byte.is_ascii_alphanumeric() && *byte != b'-' && *byte != b'_' => return true,
+            Some(_) => haystack = &haystack[after..],
+        }
+    }
+
+    false
+}
+
+/// Shorten a rendered type for use in an action title, which editors show on a
+/// single line.
+fn abbreviate(rendered: &str) -> String {
+    const LIMIT: usize = 60;
+
+    if rendered.len() <= LIMIT {
+        return rendered.to_string();
+    }
+
+    let mut cut = LIMIT;
+    while cut > 0 && !rendered.is_char_boundary(cut) {
+        cut -= 1;
+    }
+
+    format!("{}...", &rendered[..cut])
 }
 
 fn file_action(file_id: FileId, title: String, edits: Vec<TextReplacement>) -> CodeActionItem {
     let mut grouped = HashMap::default();
     grouped.insert(file_id, edits);
 
-    CodeActionItem { title, edits: grouped, diagnostic: None }
+    CodeActionItem { title, edits: grouped, diagnostic: None, kind: CodeActionKind::QuickFix }
 }
 
 fn collect_file_wide_fix(issue: &Issue, file_id: FileId, fixes: &mut HashMap<String, FileWideFix>) {
@@ -138,7 +324,12 @@ fn expect_action_for(
         message: issue.message.clone(),
     });
 
-    Some(CodeActionItem { title: format!("Add @mago-expect {qualified_code}"), edits, diagnostic })
+    Some(CodeActionItem {
+        title: format!("Add @mago-expect {qualified_code}"),
+        edits,
+        diagnostic,
+        kind: CodeActionKind::QuickFix,
+    })
 }
 
 fn line_indent(line: &[u8]) -> String {
@@ -180,7 +371,7 @@ fn action_for(issue: &Issue, file_id: FileId, start: u32, end: u32) -> Option<Co
         message: issue.message.clone(),
     });
 
-    Some(CodeActionItem { title, edits, diagnostic })
+    Some(CodeActionItem { title, edits, diagnostic, kind: CodeActionKind::QuickFix })
 }
 
 /// Whether `issue`'s primary annotation is in `file_id` and overlaps `[start, end]`.

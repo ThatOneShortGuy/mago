@@ -50,6 +50,7 @@ use mago_database::Database;
 use mago_database::DatabaseReader;
 use mago_database::file::File as MagoFile;
 use mago_server::CodeActionItem;
+use mago_server::CodeActionKind as ServerCodeActionKind;
 use mago_server::CodeLensItem;
 use mago_server::CompletionEntry;
 use mago_server::CompletionKind;
@@ -268,9 +269,16 @@ pub fn code_actions(database: &Database<'_>, items: Vec<CodeActionItem>) -> Vec<
 
             let diagnostics = item.diagnostic.and_then(|data| diagnostic(database, data)).map(|d| vec![d]);
 
+            // Only a fix for a reported problem earns `is_preferred`: it is what
+            // editors auto-apply for "fix all on save" and offer first on a
+            // lightbulb, which a refactor of code nobody complained about must
+            // not do.
+            let is_quickfix = item.kind == ServerCodeActionKind::QuickFix;
+            let kind = if is_quickfix { CodeActionKind::QUICKFIX } else { CodeActionKind::REFACTOR_REWRITE };
+
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: item.title,
-                kind: Some(CodeActionKind::QUICKFIX),
+                kind: Some(kind),
                 diagnostics,
                 edit: Some(WorkspaceEdit {
                     changes: Some(changes.into_iter().collect()),
@@ -278,7 +286,7 @@ pub fn code_actions(database: &Database<'_>, items: Vec<CodeActionItem>) -> Vec<
                     change_annotations: None,
                 }),
                 command: None,
-                is_preferred: Some(true),
+                is_preferred: Some(is_quickfix),
                 disabled: None,
                 data: None,
             }))

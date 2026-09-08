@@ -351,8 +351,24 @@ impl TUnion {
     }
 
     fn widen(&mut self, kind: WidenKind) {
-        for atomic in self.types.to_mut() {
+        let types = self.types.to_mut();
+        for atomic in types.iter_mut() {
             widen_atomic(atomic, kind);
+        }
+
+        // Widening maps distinct atomics onto a shared general form, so a union
+        // that was `float(1.5)|float(2.5)` becomes `float|float`. Collapse those
+        // duplicates: a union listing the same type twice renders wrong and
+        // compares no better than the single-atomic form.
+        if types.len() > 1 {
+            let mut widened: Vec<TAtomic> = Vec::with_capacity(types.len());
+            for atomic in types.drain(..) {
+                if !widened.contains(&atomic) {
+                    widened.push(atomic);
+                }
+            }
+
+            *types = widened;
         }
     }
 

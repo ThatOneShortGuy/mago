@@ -298,7 +298,7 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> JsonRpcResult<Option<CodeActionResponse>> {
         traced("code_action", || {
-            let result = self.with_workspace_for_uri(&params.text_document.uri, |ws| {
+            let result = self.with_workspace_mut_for_uri(&params.text_document.uri, |ws| {
                 let file = file_for_uri(ws, &params.text_document.uri)?;
                 let start = offset_at_position(&file, params.range.start);
                 let end = offset_at_position(&file, params.range.end);
