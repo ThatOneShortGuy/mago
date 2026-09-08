@@ -51,6 +51,7 @@ use crate::context::assertion::AssertionContext;
 use crate::resolver::class_name::get_class_name_from_atomic;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_index_id;
+use crate::utils::expression::get_non_nullsafe_expression_id;
 use crate::utils::misc::unwrap_expression;
 
 #[derive(Debug, Clone, Copy)]
@@ -1290,6 +1291,30 @@ where
 
     let mut if_types: WordMap<AssertionSet> = WordMap::default();
 
+    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value)
+        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left)
+    {
+        let bound = if matches!(operator, BinaryOperator::LessThanOrEqual(_)) {
+            right_value.saturating_add(1)
+        } else {
+            right_value
+        };
+
+        if_types.insert(argument_id, vec![vec![Assertion::StringLengthLessThan(bound)]]);
+    }
+
+    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value)
+        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right)
+    {
+        let bound = if matches!(operator, BinaryOperator::LessThanOrEqual(_)) {
+            left_value
+        } else {
+            left_value.saturating_add(1)
+        };
+
+        if_types.insert(argument_id, vec![vec![Assertion::StringLengthGreaterThanOrEqual(bound)]]);
+    }
+
     let left_id = assertion_context.get_expression_id(left);
 
     let right_id = assertion_context.get_expression_id(right);
@@ -1479,6 +1504,30 @@ where
 
     let mut if_types: WordMap<AssertionSet> = WordMap::default();
 
+    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value)
+        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left)
+    {
+        let bound = if matches!(operator, BinaryOperator::GreaterThanOrEqual(_)) {
+            right_value
+        } else {
+            right_value.saturating_add(1)
+        };
+
+        if_types.insert(argument_id, vec![vec![Assertion::StringLengthGreaterThanOrEqual(bound)]]);
+    }
+
+    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value)
+        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right)
+    {
+        let bound = if matches!(operator, BinaryOperator::GreaterThanOrEqual(_)) {
+            left_value.saturating_add(1)
+        } else {
+            left_value
+        };
+
+        if_types.insert(argument_id, vec![vec![Assertion::StringLengthLessThan(bound)]]);
+    }
+
     let left_id = assertion_context.get_expression_id(left);
     let right_id = assertion_context.get_expression_id(right);
 
@@ -1622,7 +1671,8 @@ where
     };
 
     let variable_id =
-        get_expression_id(assertion_target, context.this_class_name, context.resolved_names, Some(context.codebase));
+        get_expression_id(assertion_target, context.this_class_name, context.resolved_names, Some(context.codebase))
+            .map(|id| get_non_nullsafe_expression_id(id).unwrap_or(id));
 
     if let Some(counter_variable_id) = variable_id {
         match right {
@@ -1767,6 +1817,20 @@ where
     A: Arena,
 {
     is_function_call_to_one_of(expression, assertion_context, &[b"count", b"sizeof", b"Psl\\Iter\\count"])
+}
+
+fn get_strlen_argument_expression_id<A>(
+    assertion_context: AssertionContext<'_, '_, A>,
+    expression: &Expression,
+) -> Option<Word>
+where
+    A: Arena,
+{
+    if !is_function_call_to(expression, assertion_context, b"strlen") {
+        return None;
+    }
+
+    get_first_argument_expression_id(assertion_context, expression)
 }
 
 fn is_function_call_to<A>(

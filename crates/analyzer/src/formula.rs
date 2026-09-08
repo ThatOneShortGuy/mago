@@ -76,10 +76,15 @@ where
     A: Arena,
 {
     if let Some(var_name) = assertion_context.get_expression_id(other_side) {
-        let literal_atomic =
-            if literal_is_true { TAtomic::Scalar(TScalar::r#true()) } else { TAtomic::Scalar(TScalar::r#false()) };
-        let assertion =
-            if is_identical { Assertion::IsType(literal_atomic) } else { Assertion::IsNotType(literal_atomic) };
+        let matches_literal = is_identical == literal_is_true;
+        let assertion = if artifacts.get_expression_type(other_side).is_some_and(|ty| ty.is_bool()) {
+            if matches_literal { Assertion::Truthy } else { Assertion::Falsy }
+        } else {
+            let literal_atomic =
+                if literal_is_true { TAtomic::Scalar(TScalar::r#true()) } else { TAtomic::Scalar(TScalar::r#false()) };
+
+            if is_identical { Assertion::IsType(literal_atomic) } else { Assertion::IsNotType(literal_atomic) }
+        };
 
         let mut clause_map = IndexMap::new();
         let mut type_map = IndexMap::new();
@@ -139,6 +144,7 @@ where
         conditional_object_id,
         creating_object_id,
         artifacts,
+        formula_size_threshold,
     );
 
     if formula.len() > usize::from(formula_size_threshold) { None } else { Some(formula) }
@@ -208,34 +214,35 @@ where
             let (left_is_true, left_is_false) = check_boolean(binary.lhs);
             let (right_is_true, right_is_false) = check_boolean(binary.rhs);
 
-            match (left_is_true || left_is_false, right_is_true || right_is_false) {
-                (true, _) => {
-                    return get_boolean_literal_comparison_formula(
-                        conditional_object_id,
-                        creating_object_id,
-                        binary.rhs,
-                        left_is_true,
-                        is_identical,
-                        assertion_context,
-                        artifacts,
-                        algebra_thresholds,
-                        formula_size_threshold,
-                    );
-                }
-                (_, true) => {
-                    return get_boolean_literal_comparison_formula(
-                        conditional_object_id,
-                        creating_object_id,
-                        binary.lhs,
-                        right_is_true,
-                        is_identical,
-                        assertion_context,
-                        artifacts,
-                        algebra_thresholds,
-                        formula_size_threshold,
-                    );
-                }
-                _ => {}
+            let boolean_comparison = match (left_is_true || left_is_false, right_is_true || right_is_false) {
+                (true, _) => Some((binary.rhs, left_is_true)),
+                (_, true) => Some((binary.lhs, right_is_true)),
+                _ => None,
+            };
+
+            if let Some((other_side, literal_is_true)) = boolean_comparison {
+                let mut formula = get_boolean_literal_comparison_formula(
+                    conditional_object_id,
+                    creating_object_id,
+                    other_side,
+                    literal_is_true,
+                    is_identical,
+                    assertion_context,
+                    artifacts,
+                    algebra_thresholds,
+                    formula_size_threshold,
+                )?;
+
+                add_nullsafe_condition_clauses(
+                    expression,
+                    &mut formula,
+                    conditional_object_id,
+                    creating_object_id,
+                    assertion_context,
+                    artifacts,
+                );
+
+                return Some(formula);
             }
         }
     }
@@ -466,8 +473,9 @@ fn add_conditional_assertion_clauses(
     conditional_object_id: Span,
     creating_object_id: Span,
     artifacts: &AnalysisArtifacts,
+    formula_size_threshold: u16,
 ) {
-    let assertions = collect_conditional_assertions(expression, when_true, artifacts);
+    let assertions = collect_conditional_assertions(expression, when_true, artifacts, formula_size_threshold);
     for (variable, assertion_set) in assertions {
         for assertions in assertion_set {
             let Some(first_assertion) = assertions.first() else {
@@ -496,8 +504,9 @@ fn collect_conditional_assertions(
     expression: &Expression,
     when_true: bool,
     artifacts: &AnalysisArtifacts,
+    formula_size_threshold: u16,
 ) -> WordMap<AssertionSet> {
-    collect_conditional_assertions_inner(expression, when_true, artifacts, false)
+    collect_conditional_assertions_inner(expression, when_true, artifacts, false, formula_size_threshold)
 }
 
 fn collect_conditional_assertions_inner(
@@ -505,6 +514,7 @@ fn collect_conditional_assertions_inner(
     when_true: bool,
     artifacts: &AnalysisArtifacts,
     include_non_equality: bool,
+    formula_size_threshold: u16,
 ) -> WordMap<AssertionSet> {
     let expression = unwrap_expression(expression);
     match expression {
@@ -524,36 +534,50 @@ fn collect_conditional_assertions_inner(
                 artifacts.if_false_assertions.get(&range).cloned().unwrap_or_default()
             }
         }
-        Expression::UnaryPrefix(unary) if unary.operator.is_not() => {
-            collect_conditional_assertions_inner(unary.operand, !when_true, artifacts, include_non_equality)
-        }
+        Expression::UnaryPrefix(unary) if unary.operator.is_not() => collect_conditional_assertions_inner(
+            unary.operand,
+            !when_true,
+            artifacts,
+            include_non_equality,
+            formula_size_threshold,
+        ),
         Expression::Assignment(assignment) if matches!(assignment.operator, AssignmentOperator::Assign(_)) => {
-            collect_conditional_assertions_inner(assignment.rhs, when_true, artifacts, include_non_equality)
+            collect_conditional_assertions_inner(
+                assignment.rhs,
+                when_true,
+                artifacts,
+                include_non_equality,
+                formula_size_threshold,
+            )
         }
-        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) => {
-            if !when_true {
-                return WordMap::default();
+        Expression::Binary(binary)
+            if matches!(
+                binary.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_) | BinaryOperator::Or(_) | BinaryOperator::LowOr(_)
+            ) =>
+        {
+            let mut assertions = collect_conditional_assertions_inner(
+                binary.lhs,
+                when_true,
+                artifacts,
+                include_non_equality,
+                formula_size_threshold,
+            );
+            let right_assertions = collect_conditional_assertions_inner(
+                binary.rhs,
+                when_true,
+                artifacts,
+                include_non_equality,
+                formula_size_threshold,
+            );
+
+            let is_conjunction = matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_));
+            if is_conjunction == when_true {
+                extend_conditional_assertions(&mut assertions, right_assertions);
+            } else {
+                disjoin_conditional_assertions(&mut assertions, right_assertions, formula_size_threshold);
             }
 
-            let mut assertions =
-                collect_conditional_assertions_inner(binary.lhs, true, artifacts, include_non_equality);
-            extend_conditional_assertions(
-                &mut assertions,
-                collect_conditional_assertions_inner(binary.rhs, true, artifacts, include_non_equality),
-            );
-            assertions
-        }
-        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) => {
-            if when_true {
-                return WordMap::default();
-            }
-
-            let mut assertions =
-                collect_conditional_assertions_inner(binary.lhs, false, artifacts, include_non_equality);
-            extend_conditional_assertions(
-                &mut assertions,
-                collect_conditional_assertions_inner(binary.rhs, false, artifacts, include_non_equality),
-            );
             assertions
         }
         Expression::Binary(binary)
@@ -580,7 +604,13 @@ fn collect_conditional_assertions_inner(
             let include_non_equality = matches!(binary.operator, BinaryOperator::Identical(_)) == when_true
                 || artifacts.get_expression_type(other).is_some_and(|ty| ty.is_bool());
 
-            collect_conditional_assertions_inner(other, other_when_true, artifacts, include_non_equality)
+            collect_conditional_assertions_inner(
+                other,
+                other_when_true,
+                artifacts,
+                include_non_equality,
+                formula_size_threshold,
+            )
         }
         _ => WordMap::default(),
     }
@@ -590,6 +620,32 @@ fn extend_conditional_assertions(target: &mut WordMap<AssertionSet>, assertions:
     for (variable, assertion_set) in assertions {
         target.entry(variable).or_default().extend(assertion_set);
     }
+}
+
+fn disjoin_conditional_assertions(
+    target: &mut WordMap<AssertionSet>,
+    assertions: WordMap<AssertionSet>,
+    formula_size_threshold: u16,
+) {
+    target.retain(|variable, left| {
+        let Some(right) = assertions.get(variable) else {
+            return false;
+        };
+
+        if left.len().saturating_mul(right.len()) > usize::from(formula_size_threshold) {
+            return false;
+        }
+
+        // Either operand can establish the condition, so retain only shared variables
+        // and distribute OR over their conjunctions without negating one-way assertions.
+        *left = left
+            .iter()
+            .cartesian_product(right)
+            .map(|(left, right)| left.iter().chain(right).cloned().collect())
+            .collect();
+
+        !left.is_empty()
+    });
 }
 
 pub(crate) fn add_nullsafe_base_clauses<A>(
@@ -825,20 +881,21 @@ pub fn negate_or_synthesize<A>(
 where
     A: Arena,
 {
-    let negated_clauses = if collect_conditional_assertions(conditional, true, artifacts).is_empty() {
-        negate_formula(clauses, algebra_thresholds)
-    } else {
-        get_base_formula(
-            conditional.span(),
-            conditional.span(),
-            conditional,
-            assertion_context,
-            artifacts,
-            algebra_thresholds,
-            formula_size_threshold,
-        )
-        .and_then(|formula| negate_formula(formula, algebra_thresholds))
-    };
+    let negated_clauses =
+        if collect_conditional_assertions(conditional, true, artifacts, formula_size_threshold).is_empty() {
+            negate_formula(clauses, algebra_thresholds)
+        } else {
+            get_base_formula(
+                conditional.span(),
+                conditional.span(),
+                conditional,
+                assertion_context,
+                artifacts,
+                algebra_thresholds,
+                formula_size_threshold,
+            )
+            .and_then(|formula| negate_formula(formula, algebra_thresholds))
+        };
 
     match negated_clauses {
         Some(mut negated_clauses) => {
@@ -849,6 +906,7 @@ where
                 conditional.span(),
                 conditional.span(),
                 artifacts,
+                formula_size_threshold,
             );
 
             negated_clauses
@@ -963,4 +1021,52 @@ pub fn remove_clauses_with_mixed_variables(
             c
         })
         .collect::<Vec<Clause>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use mago_codex::assertion::Assertion;
+    use mago_word::WordMap;
+    use mago_word::word;
+
+    use super::disjoin_conditional_assertions;
+
+    #[test]
+    fn conditional_assertion_disjunction_respects_formula_size_threshold() {
+        let range = word("$range");
+        let shared = word("$shared");
+        let left = WordMap::from_iter([
+            (range, vec![vec![Assertion::IsGreaterThan(0)], vec![Assertion::IsLessThan(10)]]),
+            (shared, vec![vec![Assertion::IsGreaterThan(5)]]),
+            (word("$left_only"), vec![vec![Assertion::Truthy]]),
+        ]);
+        let right = WordMap::from_iter([
+            (range, vec![vec![Assertion::IsGreaterThan(20)], vec![Assertion::IsLessThan(30)]]),
+            (shared, vec![vec![Assertion::IsGreaterThan(15)]]),
+            (word("$right_only"), vec![vec![Assertion::Truthy]]),
+        ]);
+        let shared_assertions = vec![vec![Assertion::IsGreaterThan(5), Assertion::IsGreaterThan(15)]];
+
+        let mut at_limit = left.clone();
+        disjoin_conditional_assertions(&mut at_limit, right.clone(), 4);
+        assert_eq!(
+            at_limit,
+            WordMap::from_iter([
+                (
+                    range,
+                    vec![
+                        vec![Assertion::IsGreaterThan(0), Assertion::IsGreaterThan(20)],
+                        vec![Assertion::IsGreaterThan(0), Assertion::IsLessThan(30)],
+                        vec![Assertion::IsLessThan(10), Assertion::IsGreaterThan(20)],
+                        vec![Assertion::IsLessThan(10), Assertion::IsLessThan(30)],
+                    ],
+                ),
+                (shared, shared_assertions.clone()),
+            ]),
+        );
+
+        let mut over_limit = left;
+        disjoin_conditional_assertions(&mut over_limit, right, 3);
+        assert_eq!(over_limit, WordMap::from_iter([(shared, shared_assertions)]));
+    }
 }

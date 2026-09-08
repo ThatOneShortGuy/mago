@@ -272,6 +272,10 @@ where
         | Assertion::IsLessThanOrEqualVariable(_)
         | Assertion::IsGreaterThanVariable(_)
         | Assertion::IsGreaterThanOrEqualVariable(_) => Some(existing_var_type.clone()),
+        Assertion::StringLengthLessThan(_) => Some(existing_var_type.clone()),
+        Assertion::StringLengthGreaterThanOrEqual(length) => {
+            Some(reconcile_string_length_greater_than_or_equal(existing_var_type, *length))
+        }
         Assertion::Truthy | Assertion::NonEmpty => {
             Some(reconcile_truthy_or_non_empty(context, assertion, existing_var_type, key, negated, span))
         }
@@ -374,6 +378,39 @@ where
         Assertion::Countable => Some(reconcile_countable(context, assertion, existing_var_type, key, negated, span)),
         _ => None,
     }
+}
+
+fn reconcile_string_length_greater_than_or_equal(existing_var_type: &TUnion, length: i64) -> TUnion {
+    if length <= 0 {
+        return existing_var_type.clone();
+    }
+
+    let mut new_var_type = existing_var_type.clone();
+    let mut acceptable_types = Vec::new();
+
+    for atomic in std::mem::take(new_var_type.types.to_mut()) {
+        match atomic {
+            TAtomic::Scalar(TScalar::String(mut string)) => {
+                if string.is_empty() {
+                    continue;
+                }
+
+                string.is_non_empty = true;
+                acceptable_types.push(TAtomic::Scalar(TScalar::String(string)));
+            }
+            TAtomic::GenericParameter(generic_parameter) => {
+                if let Some(atomic) = map_concrete_generic_constraint(&generic_parameter, |constraint| {
+                    reconcile_string_length_greater_than_or_equal(constraint, length)
+                }) {
+                    acceptable_types.push(atomic);
+                }
+            }
+            atomic => acceptable_types.push(atomic),
+        }
+    }
+
+    new_var_type.types = Cow::Owned(acceptable_types);
+    new_var_type
 }
 
 pub(crate) fn intersect_null<A>(
@@ -1211,8 +1248,12 @@ where
 
     for atomic in existing_var_type.types.as_ref() {
         match atomic {
-            TAtomic::Scalar(TScalar::Integer(_)) => {
-                acceptable_types.push(TAtomic::Scalar(TScalar::Integer(*integer)));
+            TAtomic::Scalar(TScalar::Integer(existing_integer)) => {
+                if let Some(intersection) = intersect_integer_types(*existing_integer, *integer) {
+                    acceptable_types.push(TAtomic::Scalar(TScalar::Integer(intersection)));
+                } else {
+                    did_remove_type = true;
+                }
             }
             TAtomic::Scalar(TScalar::String(string)) if is_equality => {
                 if context.settings.version < PHPVersion::PHP80 {
@@ -1261,6 +1302,35 @@ where
     }
 
     finalize(context, acceptable_types, did_remove_type, key, span, existing_var_type, assertion, negated, is_equality)
+}
+
+fn intersect_integer_types(existing: TInteger, asserted: TInteger) -> Option<TInteger> {
+    if asserted.contains(existing) {
+        return Some(existing);
+    }
+
+    if existing.contains(asserted) {
+        return Some(asserted);
+    }
+
+    if !existing.overlaps(asserted) {
+        return None;
+    }
+
+    let (existing_minimum, existing_maximum) = existing.get_bounds();
+    let (asserted_minimum, asserted_maximum) = asserted.get_bounds();
+    let minimum = match (existing_minimum, asserted_minimum) {
+        (Some(existing), Some(asserted)) => Some(existing.max(asserted)),
+        (existing, asserted) => existing.or(asserted),
+    };
+    let maximum = match (existing_maximum, asserted_maximum) {
+        (Some(existing), Some(asserted)) => Some(existing.min(asserted)),
+        (Some(existing), None) => Some(existing),
+        (None, Some(asserted)) => Some(asserted),
+        (None, None) => None,
+    };
+
+    Some(TInteger::from_bounds(minimum, maximum))
 }
 
 fn reconcile_truthy_or_non_empty<A>(

@@ -331,6 +331,7 @@ test_case!(comment_placement_binary);
 test_case!(comment_placement_conditional);
 test_case!(comment_placement_conditional_preserve);
 test_case!(unary_prefix_block_comment);
+test_case!(comment_placement_grouping_parens, PHPVersion::PHP85);
 test_case!(fits_line_suffix);
 
 // A special test case for regressions in the Psl codebase
@@ -481,6 +482,7 @@ test_case!(issue_1562);
 test_case!(bare_cr_line_endings);
 test_case!(table_style_tiny_print_width);
 test_case!(issue_2150);
+test_case!(issue_2316);
 
 // PHP identifiers may contain non-UTF-8 bytes; the formatter must round-trip
 // `before.php`/`after.php` byte-for-byte without lossy decoding.

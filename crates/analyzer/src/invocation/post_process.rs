@@ -38,6 +38,7 @@ use mago_syntax::cst::Literal;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
+use mago_word::concat_word;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
@@ -52,7 +53,11 @@ use crate::formula::get_formula;
 use crate::formula::negate_or_synthesize;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
+use crate::invocation::arguments::is_argument_mutated_by_reference;
+use crate::invocation::arguments::is_argument_referenceable;
+use crate::invocation::arguments::is_array_multisort;
 use crate::invocation::resolver::resolve_invocation_type;
+use crate::plugin::provider::assertion::InvocationAssertions;
 use crate::reconciler;
 use crate::reconciler::assertion_reconciler::intersect_union_with_union;
 use crate::utils::expression::get_block_expression_id;
@@ -322,18 +327,36 @@ where
         );
 
         if let Some(argument) = argument {
+            let argument_type = artifacts.get_expression_type(argument).cloned().unwrap_or_else(get_mixed);
+            if !is_argument_mutated_by_reference(
+                &invocation.target,
+                parameter_offset,
+                &argument_type,
+                parameter_ref.is_by_reference(),
+            ) {
+                continue;
+            }
+
+            if is_array_multisort(&invocation.target) && !is_argument_referenceable(argument, &argument_type) {
+                continue;
+            }
+
             let declared_had_templates = parameter_ref
                 .get_out_type()
                 .or_else(|| parameter_ref.get_type())
                 .is_some_and(|declared| declared.has_template_types());
 
-            let mut new_type = parameter_ref
-                .get_out_type()
-                .or_else(|| parameter_ref.get_type())
-                .cloned()
-                .map_or_else(get_mixed, |new_type| {
-                    resolve_invocation_type(context, invocation, template_result, parameters, new_type)
-                });
+            let mut new_type = if parameter_offset > 0 && is_array_multisort(&invocation.target) {
+                argument_type
+            } else {
+                parameter_ref
+                    .get_out_type()
+                    .or_else(|| parameter_ref.get_type())
+                    .cloned()
+                    .map_or_else(get_mixed, |new_type| {
+                        resolve_invocation_type(context, invocation, template_result, parameters, new_type)
+                    })
+            };
 
             // If the argument's current type is `never`, this call is unreachable
             // its by-reference effect cannot happen, so the variable's type must
@@ -782,22 +805,35 @@ where
     A: Arena,
 {
     let bytes = var_id.as_bytes();
-    let Some(arrow) = memchr::memmem::find(bytes, b"->") else {
+    let Some(mut arrow) = memchr::memmem::find(bytes, b"->") else {
         return false;
     };
 
-    let root = &bytes[..arrow];
-    let property = &bytes[arrow + 2..];
-    if memchr::memmem::find(property, b"->").is_some() || property.contains(&b'[') {
-        return false;
+    loop {
+        let property_start = arrow + 2;
+        let next_arrow = memchr::memmem::find(&bytes[property_start..], b"->").map(|offset| property_start + offset);
+        let property_end = next_arrow.unwrap_or(bytes.len());
+        let property = &bytes[property_start..property_end];
+        if property.contains(&b'[') {
+            return false;
+        }
+
+        let Some(root_type) = block_context.locals.get(&Word::new(&bytes[..arrow])) else {
+            return false;
+        };
+
+        if root_type.types.is_empty()
+            || !root_type.types.iter().all(|atom| atom_property_is_immutable(context, atom, property))
+        {
+            return false;
+        }
+
+        let Some(next_arrow) = next_arrow else {
+            return true;
+        };
+
+        arrow = next_arrow;
     }
-
-    let Some(root_type) = block_context.locals.get(&Word::new(root)) else {
-        return false;
-    };
-
-    !root_type.types.is_empty()
-        && root_type.types.iter().all(|atom| atom_property_is_immutable(context, atom, property))
 }
 
 fn atom_property_is_immutable<A>(context: &Context<'_, '_, A>, atom: &TAtomic, property: &[u8]) -> bool
@@ -1304,6 +1340,15 @@ where
         return (None, Some(resolved_id));
     }
 
+    if let Some(offset) = memchr::memmem::find(parameter_name.as_bytes(), b"->") {
+        let parameter = Word::new(&parameter_name.as_bytes()[..offset]);
+        let suffix = &parameter_name.as_bytes()[offset..];
+        let (expression, argument) =
+            get_argument_for_parameter(context, block_context, invocation, None, Some(parameter));
+
+        return (expression, argument.map(|argument| concat_word!(argument.as_bytes(), suffix)));
+    }
+
     // If not a special target, treat it as a regular parameter and find its argument.
     get_argument_for_parameter(context, block_context, invocation, None, Some(parameter_name))
 }
@@ -1331,7 +1376,7 @@ fn resolve_special_assertion_target(
 ) -> Option<Word> {
     let target_bytes = target_name.as_bytes();
     if let Some(this_variable) = this_variable
-        && target_bytes.starts_with(b"$this")
+        && (target_bytes == InvocationAssertions::RECEIVER || target_bytes.starts_with(b"$this->"))
     {
         let mut out: Vec<u8> = Vec::with_capacity(target_bytes.len() - 5 + this_variable.len());
         out.extend_from_slice(this_variable);
