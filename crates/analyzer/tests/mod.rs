@@ -2759,9 +2759,44 @@ test_case!(issue_2333);
 test_case!(issue_2336);
 test_case!(issue_2341);
 
+/// Apply every fix edit carried by the `match-not-exhaustive` issue in
+/// `source`, returning the fixed source.
+///
+/// Panics unless exactly such an issue is present and carries edits, so a fix
+/// that silently disappears (e.g. through a bad merge) fails loudly.
+fn apply_match_fill_fix(name: &str, source: &[u8]) -> String {
+    let issues = crate::framework::collect_issues(name, source, None);
+
+    let issue = issues
+        .iter()
+        .find(|issue| issue.code.as_deref() == Some("match-not-exhaustive"))
+        .expect("expected a `match-not-exhaustive` issue");
+
+    assert!(!issue.edits.is_empty(), "the `match-not-exhaustive` issue must carry a fix edit");
+
+    let mut editor = mago_text_edit::TextEditor::new(source);
+    for edits in issue.edits.values() {
+        for edit in edits {
+            let result = editor.apply::<fn(&[u8]) -> bool>(edit.clone(), None);
+            assert_eq!(result, mago_text_edit::ApplyResult::Applied, "fix edit should apply cleanly");
+        }
+    }
+
+    String::from_utf8(editor.finish()).expect("fixed source should be valid UTF-8")
+}
+
+/// Assert that `fixed` no longer reports a non-exhaustive `match`.
+fn assert_match_is_exhaustive(name: &str, fixed: &str) {
+    let issues = crate::framework::collect_issues(name, fixed.as_bytes(), None);
+
+    assert!(
+        !issues.iter().any(|issue| issue.code.as_deref() == Some("match-not-exhaustive")),
+        "applying the fix should make the match exhaustive; got:\n{fixed}"
+    );
+}
+
 /// A non-exhaustive `match` over an enum subject must not only be diagnosed but
-/// also carry a quickfix edit that scaffolds the missing case arms. This guards
-/// against the fix silently disappearing (e.g. through a bad merge).
+/// also carry a quickfix edit that scaffolds the missing case arms.
 #[test]
 fn match_not_exhaustive_enum_offers_fill_fix() {
     const SOURCE: &[u8] = b"<?php
@@ -2784,37 +2819,111 @@ enum Suit: string
 }
 ";
 
-    let issues = crate::framework::collect_issues("match_fill_fix", SOURCE, None);
-
-    let issue = issues
-        .iter()
-        .find(|issue| issue.code.as_deref() == Some("match-not-exhaustive"))
-        .expect("expected a `match-not-exhaustive` issue");
-
-    assert!(!issue.edits.is_empty(), "the `match-not-exhaustive` issue must carry a fix edit");
-
-    let mut editor = mago_text_edit::TextEditor::new(SOURCE);
-    for edits in issue.edits.values() {
-        for edit in edits {
-            let result = editor.apply::<fn(&[u8]) -> bool>(edit.clone(), None);
-            assert_eq!(result, mago_text_edit::ApplyResult::Applied, "fix edit should apply cleanly");
-        }
-    }
-
-    let fixed = String::from_utf8(editor.finish()).expect("fixed source should be valid UTF-8");
+    let fixed = apply_match_fill_fix("match_fill_fix", SOURCE);
 
     assert!(
         fixed.contains("self::Spades => throw new \\UnhandledMatchError(),"),
         "the fix should scaffold the missing `self::Spades` arm; got:\n{fixed}"
     );
 
-    // The scaffolded arm makes the match exhaustive, so re-analyzing the fixed
-    // source must no longer report the issue.
-    let post_fix_issues = crate::framework::collect_issues("match_fill_fix_applied", fixed.as_bytes(), None);
+    assert_match_is_exhaustive("match_fill_fix_applied", &fixed);
+}
+
+/// A single-line `match` has no line above the closing brace to insert arms
+/// into, so the fix reflows the tail instead: existing arms are left exactly as
+/// written, and the new arms and the closing brace each get a line.
+#[test]
+fn match_not_exhaustive_offers_fill_fix_on_a_single_line_match() {
+    const SOURCE: &[u8] = b"<?php
+
+enum Suit: string
+{
+    case Hearts = 'H';
+    case Spades = 'S';
+
+    public function color(): string
+    {
+        return match ($this) { self::Hearts => 'Red' };
+    }
+}
+";
+
+    let fixed = apply_match_fill_fix("match_fill_fix_single_line", SOURCE);
+
     assert!(
-        !post_fix_issues.iter().any(|issue| issue.code.as_deref() == Some("match-not-exhaustive")),
-        "applying the fix should make the match exhaustive"
+        fixed.contains(
+            "        return match ($this) {\n\
+             \x20           self::Hearts => 'Red',\n\
+             \x20           self::Spades => throw new \\UnhandledMatchError(),\n\
+             \x20       };"
+        ),
+        "the fix should reflow the single-line match over lines; got:\n{fixed}"
     );
+
+    assert_match_is_exhaustive("match_fill_fix_single_line_applied", &fixed);
+}
+
+/// The reflow also covers a multi-line `match` whose last arm shares its line
+/// with the closing brace, and must not double up an existing trailing comma.
+#[test]
+fn match_not_exhaustive_offers_fill_fix_when_the_brace_trails_an_arm() {
+    const SOURCE: &[u8] = b"<?php
+
+enum Suit: string
+{
+    case Hearts = 'H';
+    case Spades = 'S';
+
+    public function color(): string
+    {
+        return match ($this) {
+            self::Hearts => 'Red', };
+    }
+}
+";
+
+    let fixed = apply_match_fill_fix("match_fill_fix_trailing_brace", SOURCE);
+
+    assert!(
+        fixed.contains(
+            "            self::Hearts => 'Red',\n\
+             \x20           self::Spades => throw new \\UnhandledMatchError(),\n\
+             \x20       };"
+        ),
+        "the fix should give the new arm and the brace their own lines; got:\n{fixed}"
+    );
+    assert!(!fixed.contains(",,"), "the existing trailing comma must not be doubled; got:\n{fixed}");
+
+    assert_match_is_exhaustive("match_fill_fix_trailing_brace_applied", &fixed);
+}
+
+/// A comment between the last arm and the closing brace is the author's, and
+/// the reflow would have to delete it. No fix is offered rather than silently
+/// swallowing it.
+#[test]
+fn match_not_exhaustive_declines_to_fill_over_a_comment() {
+    const SOURCE: &[u8] = b"<?php
+
+enum Suit: string
+{
+    case Hearts = 'H';
+    case Spades = 'S';
+
+    public function color(): string
+    {
+        return match ($this) { self::Hearts => 'Red' /* keep me */ };
+    }
+}
+";
+
+    let issues = crate::framework::collect_issues("match_fill_fix_comment", SOURCE, None);
+
+    let issue = issues
+        .iter()
+        .find(|issue| issue.code.as_deref() == Some("match-not-exhaustive"))
+        .expect("expected a `match-not-exhaustive` issue");
+
+    assert!(issue.edits.is_empty(), "no fix should be offered when a comment would be swallowed");
 }
 
 #[test]

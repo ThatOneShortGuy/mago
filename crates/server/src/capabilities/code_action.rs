@@ -15,10 +15,13 @@ use foldhash::HashMap;
 
 use mago_allocator::LocalArena;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::builder::get_union_from_type;
+use mago_codex::ttype::resolution::TypeResolutionContext;
 use mago_codex::ttype::union::TUnion;
 use mago_database::DatabaseReader;
 use mago_database::file::File as MagoFile;
 use mago_database::file::FileId;
+use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::parser::parse_type;
 use mago_reporting::Annotation;
 use mago_reporting::AnnotationKind;
@@ -144,39 +147,146 @@ fn innermost_function_like(sites: &[FunctionLikeSite], start: u32, end: u32) -> 
 /// Render `ty` as text fit for a `@return` tag, or `None` when it says nothing
 /// worth writing down.
 ///
-/// [`TType::get_id`] is a *display* form, and not every display form is valid
-/// PHPDoc: a literal atomic nested inside an array shape renders as
-/// `array{'a': int(1)}`, which mago's own type parser rejects. So the rendered
-/// text is re-parsed before it is offered, and only widening the literals away
-/// is attempted as a fallback. Anything still unparseable is dropped rather
-/// than written into the user's source; a code action that breaks the file it
-/// edits is worse than no code action.
+/// [`TType::get_id`] is documented as a form for "error messages or debugging",
+/// and it is not PHPDoc source: a literal string renders as `string('pro')`,
+/// which the type parser accepts but reads back as plain `string`, and a
+/// literal nested in a shape renders as `array{'a': int(1)}`, which it rejects
+/// outright. Emitting either would quietly weaken or destroy the very type the
+/// action exists to record.
 ///
-/// The precise type is preferred whenever it round-trips, on the view that a
-/// too-narrow suggestion is easy for the author to widen by hand and a
-/// too-wide one gives them nothing to work from.
+/// So nothing is offered on trust. Each candidate is parsed back into a
+/// [`TUnion`] and compared with the type it came from, and only a candidate
+/// that reproduces it exactly is used. Candidates are tried most precise first:
+/// the literal-corrected rendering, then the raw rendering, then the same two
+/// with literals widened away. When none survives, no action is offered at all
+/// — a docblock that lies about the type is worse than no docblock.
 fn render_docblock_type(ty: &TUnion) -> Option<String> {
     if ty.is_mixed() {
         return None;
     }
 
-    let precise = ty.get_id().to_string();
-    if parses_as_phpdoc_type(&precise) {
-        return Some(precise);
+    if let Some(text) = faithful_rendering(ty) {
+        return Some(text);
     }
 
+    // A precise type that cannot be expressed is still worth something widened:
+    // `@return list<string>` beats saying nothing about a `list{'a', 'b'}`.
     let mut widened = ty.clone();
     widened.widen_literals();
-    let widened = widened.get_id().to_string();
 
-    parses_as_phpdoc_type(&widened).then_some(widened)
+    faithful_rendering(&widened)
 }
 
-/// Whether `text` round-trips through mago's PHPDoc type parser.
-fn parses_as_phpdoc_type(text: &str) -> bool {
-    let arena = LocalArena::new();
+/// The most precise rendering of `ty` that reads back as `ty`, if either
+/// candidate does.
+fn faithful_rendering(ty: &TUnion) -> Option<String> {
+    let rendered = ty.get_id().to_string();
 
-    parse_type(&arena, text.as_bytes(), Span::zero()).is_ok()
+    std::iter::once(phpdoc_literal_form(&rendered))
+        .flatten()
+        .chain(std::iter::once(rendered))
+        .find(|candidate| reads_back_as(candidate, ty))
+}
+
+/// Whether `text`, parsed as a PHPDoc type, yields exactly `expected`.
+///
+/// This is the guarantee the whole rendering path rests on. Parsing alone is
+/// not enough: `string('pro')` parses cleanly and silently degrades to
+/// `string`, so fidelity has to be checked against the type itself rather than
+/// against the parser's willingness to accept the text.
+fn reads_back_as(text: &str, expected: &TUnion) -> bool {
+    let arena = LocalArena::new();
+    let Ok(parsed) = parse_type(&arena, text.as_bytes(), Span::zero()) else {
+        return false;
+    };
+
+    let Ok(reparsed) = get_union_from_type(&parsed, &NamespaceScope::global(), &TypeResolutionContext::default(), None)
+    else {
+        return false;
+    };
+
+    reparsed.get_id() == expected.get_id()
+}
+
+/// Rewrite the literal-scalar wrappers `get_id` emits into the source syntax
+/// PHPDoc actually uses: `string('pro')` to `'pro'`, `int(3)` to `3`, and
+/// `float(0.5)` to `0.5`.
+///
+/// Returns `None` when there is nothing to rewrite, so the caller does not test
+/// the same candidate twice.
+///
+/// `get_id` does not escape quotes inside a literal string, so its output is
+/// genuinely ambiguous for a string containing `')`. This scans quoted runs as
+/// opaque and gives up rather than guessing; anything it still gets wrong is
+/// caught by [`reads_back_as`] and degrades to a widened rendering rather than
+/// reaching the user's file.
+fn phpdoc_literal_form(rendered: &str) -> Option<String> {
+    let bytes = rendered.as_bytes();
+    let mut out = String::with_capacity(rendered.len());
+    let mut index = 0;
+    let mut rewrote = false;
+
+    while index < bytes.len() {
+        // A quoted run is the author's data, not type syntax: copy it verbatim
+        // so a shape key like `'int('` is never read as a wrapper.
+        if bytes[index] == b'\'' {
+            let end = index + 1 + rendered[index + 1..].find('\'')? + 1;
+            out.push_str(&rendered[index..end]);
+            index = end;
+            continue;
+        }
+
+        if let Some((content, after)) = literal_wrapper_at(rendered, index) {
+            out.push_str(content);
+            index = after;
+            rewrote = true;
+            continue;
+        }
+
+        let character = rendered[index..].chars().next()?;
+        out.push(character);
+        index += character.len_utf8();
+    }
+
+    rewrote.then_some(out)
+}
+
+/// The source text and end offset of the literal-scalar wrapper starting at
+/// `index`, if one starts there.
+fn literal_wrapper_at(rendered: &str, index: usize) -> Option<(&str, usize)> {
+    // Only a token boundary starts a wrapper, so the `string(` tail of
+    // `lowercase-string(` is not mistaken for one.
+    if index > 0 && is_type_name_byte(rendered.as_bytes()[index - 1]) {
+        return None;
+    }
+
+    let rest = &rendered[index..];
+
+    // A literal string keeps its quotes. The terminator is matched as the pair
+    // `')` so a `)` *inside* the literal does not end it early.
+    if let Some(inner) = rest.strip_prefix("string('") {
+        let close = inner.find("')")?;
+        let content_end = index + "string('".len() + close + 1;
+
+        return Some((&rendered[index + "string(".len()..content_end], content_end + 1));
+    }
+
+    for wrapper in ["int(", "float("] {
+        if let Some(inner) = rest.strip_prefix(wrapper) {
+            let close = inner.find(')')?;
+            let content_start = index + wrapper.len();
+
+            return Some((&rendered[content_start..content_start + close], content_start + close + 1));
+        }
+    }
+
+    None
+}
+
+/// Whether `byte` can appear inside a PHPDoc type name, used to tell a real
+/// `int(` wrapper from the tail of a longer name.
+const fn is_type_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'\\'
 }
 
 /// Build the edit that records `@return {rendered}` for `site`, or `None` when
@@ -393,5 +503,67 @@ const fn level_to_severity(level: Level) -> Severity {
         Level::Warning => Severity::Warning,
         Level::Help => Severity::Hint,
         Level::Note => Severity::Information,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::phpdoc_literal_form;
+
+    #[test]
+    fn rewrites_each_literal_wrapper() {
+        assert_eq!(phpdoc_literal_form("string('pro')").as_deref(), Some("'pro'"));
+        assert_eq!(phpdoc_literal_form("int(3)").as_deref(), Some("3"));
+        assert_eq!(phpdoc_literal_form("float(0.5)").as_deref(), Some("0.5"));
+        assert_eq!(phpdoc_literal_form("int(-7)").as_deref(), Some("-7"));
+    }
+
+    #[test]
+    fn rewrites_every_member_of_a_union() {
+        assert_eq!(phpdoc_literal_form("null|string('plus')|string('pro')").as_deref(), Some("null|'plus'|'pro'"));
+    }
+
+    #[test]
+    fn rewrites_literals_nested_in_containers() {
+        assert_eq!(
+            phpdoc_literal_form("array{'family': string('pro'), 'tier': int(1)}").as_deref(),
+            Some("array{'family': 'pro', 'tier': 1}")
+        );
+        assert_eq!(phpdoc_literal_form("list{int(1), int(2)}").as_deref(), Some("list{1, 2}"));
+    }
+
+    #[test]
+    fn leaves_types_without_literals_alone() {
+        // `None` rather than an unchanged copy, so the caller does not test the
+        // same candidate twice.
+        assert_eq!(phpdoc_literal_form("array<array-key, mixed>"), None);
+        assert_eq!(phpdoc_literal_form("null|string"), None);
+        assert_eq!(phpdoc_literal_form("array{'ok': bool}"), None);
+    }
+
+    #[test]
+    fn does_not_mistake_a_longer_type_name_for_a_wrapper() {
+        // A wrapper only starts at a token boundary; these merely end in one.
+        assert_eq!(phpdoc_literal_form("non-empty-string"), None);
+        assert_eq!(phpdoc_literal_form("list<lowercase-string>"), None);
+    }
+
+    #[test]
+    fn treats_quoted_runs_as_opaque() {
+        // A shape key is the author's data: `int(` inside it is not syntax.
+        assert_eq!(phpdoc_literal_form("array{'int(': bool}"), None);
+        assert_eq!(phpdoc_literal_form("array{'float(x)': string('a')}").as_deref(), Some("array{'float(x)': 'a'}"));
+    }
+
+    #[test]
+    fn survives_a_parenthesis_inside_a_literal_string() {
+        // The terminator is the pair `')`, so the `)` in `f(x)` does not end it.
+        assert_eq!(phpdoc_literal_form("string('f(x)')").as_deref(), Some("'f(x)'"));
+    }
+
+    #[test]
+    fn gives_up_on_an_unterminated_quote_rather_than_guessing() {
+        // `get_id` does not escape quotes, so this is genuinely ambiguous.
+        assert_eq!(phpdoc_literal_form("string('unterminated"), None);
     }
 }

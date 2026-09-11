@@ -1366,11 +1366,11 @@ async fn code_action_documents_inferred_return_type() {
     let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
     assert_eq!(edits.len(), 1, "got {edits:?}");
 
-    // `float(1.5)|float(2.5)` is precise but does not survive a round-trip
-    // through the PHPDoc type parser once nested in a shape, so the widened
-    // form is offered instead of nothing.
+    // Literal floats are kept, in PHPDoc's own syntax rather than the
+    // `float(1.5)` form `get_id` renders for diagnostics. Widening them to
+    // `float` is left to the author.
     let new_text = edits[0]["newText"].as_str().unwrap();
-    assert_eq!(new_text, "    /** @return array{'cost': float, 'ok': bool} */\n", "got {new_text:?}");
+    assert_eq!(new_text, "    /** @return array{'cost': 1.5|2.5, 'ok': bool} */\n", "got {new_text:?}");
     // Inserted on its own line above the declaration, at the declaration's indent.
     assert_eq!(edits[0]["range"]["start"], json!({ "line": 4, "character": 0 }));
     assert_eq!(edits[0]["range"]["end"], json!({ "line": 4, "character": 0 }));
@@ -1446,4 +1446,37 @@ async fn code_action_reflows_a_single_line_docblock() {
     // Replaces the old block exactly, preserving the prose.
     assert_eq!(edits[0]["range"]["start"], json!({ "line": 4, "character": 4 }));
     assert_eq!(edits[0]["range"]["end"], json!({ "line": 4, "character": 24 }));
+}
+
+#[tokio::test]
+async fn code_action_documents_literal_string_returns_in_phpdoc_syntax() {
+    // `get_id` renders a literal string as `string('pro')`, which the PHPDoc
+    // parser accepts but reads back as plain `string`. The tag has to carry
+    // PHPDoc's own literal syntax or it silently documents a weaker type.
+    let code = "<?php\n\nenum SeriesEnum: int\n{\n    case EnergyPro = 1;\n    case EnergyProEC = 2;\n    case EnergyPlus = 3;\n    case EnergyPlusEC = 4;\n}\n\nfinal class Demo\n{\n    private function mullFamily(?int $seriesId): ?string\n    {\n        return match ($seriesId) {\n            SeriesEnum::EnergyPro->value, SeriesEnum::EnergyProEC->value => 'pro',\n            SeriesEnum::EnergyPlus->value, SeriesEnum::EnergyPlusEC->value => 'plus',\n            default => null,\n        };\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 12).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(new_text, "    /** @return null|'plus'|'pro' */\n", "got {new_text:?}");
+}
+
+#[tokio::test]
+async fn code_action_documents_literal_strings_nested_in_a_shape() {
+    // The same rewrite has to reach literals nested inside a shape, where the
+    // `string('a')` form is not merely lossy but unparseable.
+    let code = "<?php\n\nfinal class Demo\n{\n    private function pick(bool $flag): array\n    {\n        if ($flag) {\n            return ['family' => 'pro', 'tier' => 1];\n        }\n\n        return ['family' => 'plus', 'tier' => 2];\n    }\n}\n";
+    let mut h = Harness::start(&[("a.php", code)]).await;
+    h.open("a.php", code).await;
+
+    let result = code_actions_on_line(&mut h, "a.php", 4).await;
+    let action = find_return_action(&result).unwrap_or_else(|| panic!("missing return action in {result:?}"));
+
+    let edits = action["edit"]["changes"][&h.url("a.php")].as_array().unwrap();
+    let new_text = edits[0]["newText"].as_str().unwrap();
+    assert_eq!(new_text, "    /** @return array{'family': 'plus'|'pro', 'tier': 1|2} */\n", "got {new_text:?}");
 }

@@ -687,66 +687,152 @@ where
         // exhaustive. The stubbed body preserves the current runtime behavior
         // (an `UnhandledMatchError`) while surfacing each case for the author
         // to fill in.
-        if let Some(edit) = self.build_fill_arms_edit(unhandled_type) {
+        for edit in self.build_fill_arms_edits(unhandled_type) {
             issue = issue.with_edit(self.stmt.right_brace.file_id, edit);
         }
 
         self.context.collector.report_with_code(IssueCode::MatchNotExhaustive, issue);
     }
 
-    /// Build a quickfix edit that inserts one arm per unhandled enum case just
-    /// before the match's closing brace.
+    /// Build the quickfix edits that add one arm per unhandled enum case to the
+    /// match.
     ///
-    /// Returns `None` unless every unhandled atomic is a concrete enum case
-    /// (so the missing arms can be enumerated) and the closing brace sits on
-    /// its own line (so whole arm lines can be inserted without mangling a
-    /// single-line match).
-    fn build_fill_arms_edit(&self, unhandled_type: &TUnion) -> Option<TextEdit> {
+    /// Returns no edits unless every unhandled atomic is a concrete enum case,
+    /// so the missing arms can be enumerated.
+    ///
+    /// Two shapes of fix are produced. When the closing brace already starts
+    /// its own line the new arms are inserted above it as whole lines, leaving
+    /// the rest of the match untouched. When it does not — a single-line
+    /// `match`, or one whose last arm shares the brace's line — there is no
+    /// line to insert into, so the match body is reflowed instead: every
+    /// existing arm is kept exactly as written, and the new arms and the braces
+    /// are each given a line.
+    fn build_fill_arms_edits(&self, unhandled_type: &TUnion) -> Vec<TextEdit> {
         let mut missing_cases: Vec<(Word, Word)> = Vec::new();
         for atomic in unhandled_type.types.iter() {
             match atomic {
                 TAtomic::Object(TObject::Enum(TEnum { name, case: Some(case) })) => {
                     missing_cases.push((*name, *case));
                 }
-                _ => return None,
+                _ => return Vec::new(),
             }
         }
 
         if missing_cases.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         let file = self.context.source_file;
 
-        // The closing brace must start its own line for line-wise insertion.
         let brace_offset = self.stmt.right_brace.start.offset;
         let brace_line = file.line_number(brace_offset);
-        let brace_line_start = file.get_line_start_offset(brace_line)?;
+        let Some(brace_line_start) = file.get_line_start_offset(brace_line) else {
+            return Vec::new();
+        };
         let before_brace = &file.contents[brace_line_start as usize..brace_offset as usize];
-        if !before_brace.iter().all(|b| matches!(b, b' ' | b'\t')) {
-            return None;
+
+        if before_brace.iter().all(|b| matches!(b, b' ' | b'\t')) {
+            // Mirror the indentation of the first existing arm; otherwise indent
+            // one level (four spaces) past the closing brace.
+            let arm_indent = match self.stmt.arms.first() {
+                Some(first_arm) => {
+                    let arm_offset = first_arm.span().start.offset;
+                    let arm_line = file.line_number(arm_offset);
+                    let arm_line_start = file.get_line_start_offset(arm_line).unwrap_or(arm_offset);
+                    leading_whitespace(&file.contents[arm_line_start as usize..arm_offset as usize])
+                }
+                None => {
+                    let mut indent = leading_whitespace(before_brace);
+                    indent.push_str("    ");
+                    indent
+                }
+            };
+
+            let mut new_text = String::new();
+            self.write_missing_arms(&mut new_text, &missing_cases, &arm_indent);
+
+            return vec![
+                TextEdit::insert(brace_line_start, new_text.into_bytes()).with_safety(Safety::PotentiallyUnsafe),
+            ];
         }
 
-        // Mirror the indentation of the first existing arm; otherwise indent
-        // one level (four spaces) past the closing brace.
-        let arm_indent = match self.stmt.arms.first() {
-            Some(first_arm) => {
-                let arm_offset = first_arm.span().start.offset;
-                let arm_line = file.line_number(arm_offset);
-                let arm_line_start = file.get_line_start_offset(arm_line).unwrap_or(arm_offset);
-                leading_whitespace(&file.contents[arm_line_start as usize..arm_offset as usize])
-            }
-            None => {
-                let mut indent = leading_whitespace(before_brace);
-                indent.push_str("    ");
-                indent
-            }
+        // The brace shares its line with code, so the body of the match has to
+        // be reflowed. The tail runs from the end of the last arm (or from the
+        // opening brace when there are none) up to the closing brace, and may
+        // hold nothing but whitespace and the optional trailing comma: a
+        // comment in that gap is the author's and must not be swallowed.
+        let tail_start = match self.stmt.arms.last() {
+            Some(last_arm) => last_arm.span().end.offset,
+            None => self.stmt.left_brace.end.offset,
         };
 
-        let current_class = self.block_context.scope.get_class_like_name();
+        let Some(tail) = file.contents.get(tail_start as usize..brace_offset as usize) else {
+            return Vec::new();
+        };
+
+        if !tail.iter().all(|b| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b',')) {
+            return Vec::new();
+        }
+
+        // The closing brace moves onto a line of its own, so it takes the
+        // indentation of the line the `match` itself starts on, and the arms
+        // sit one level further in.
+        let match_offset = self.stmt.r#match.span().start.offset;
+        let match_line = file.line_number(match_offset);
+        let Some(match_line_start) = file.get_line_start_offset(match_line) else {
+            return Vec::new();
+        };
+
+        let body_indent = leading_whitespace(&file.contents[match_line_start as usize..match_offset as usize]);
+        let arm_indent = format!("{body_indent}    ");
 
         let mut new_text = String::new();
-        for (enum_name, case) in &missing_cases {
+        if !self.stmt.arms.is_empty() {
+            // The last existing arm gains a successor, so it needs a separator.
+            // Any comma already in the tail is being replaced along with it.
+            new_text.push(',');
+        }
+        new_text.push('\n');
+        self.write_missing_arms(&mut new_text, &missing_cases, &arm_indent);
+        new_text.push_str(&body_indent);
+
+        let mut edits = vec![
+            TextEdit::replace(tail_start..brace_offset, new_text.into_bytes()).with_safety(Safety::PotentiallyUnsafe),
+        ];
+
+        // The first arm may still be sharing the opening brace's line, which
+        // would leave it hanging off `match (...) {` once the rest of the body
+        // is spread over lines. Give it a line of its own too, under the same
+        // whitespace-only rule as the tail. This edit is separate from, and
+        // disjoint with, the tail edit, so neither depends on the other
+        // applying.
+        if let Some(first_arm) = self.stmt.arms.first() {
+            let head_start = self.stmt.left_brace.end.offset;
+            let head_end = first_arm.span().start.offset;
+
+            if let Some(head) = file.contents.get(head_start as usize..head_end as usize)
+                && head.iter().all(|b| matches!(b, b' ' | b'\t'))
+            {
+                edits.push(
+                    TextEdit::replace(head_start..head_end, format!("\n{arm_indent}").into_bytes())
+                        .with_safety(Safety::PotentiallyUnsafe),
+                );
+            }
+        }
+
+        edits
+    }
+
+    /// Append one `Case => throw new \UnhandledMatchError(),` line per missing
+    /// case, each indented with `arm_indent`.
+    ///
+    /// The stubbed body preserves the current runtime behavior (an
+    /// `UnhandledMatchError`) while surfacing each case for the author to fill
+    /// in.
+    fn write_missing_arms(&self, out: &mut String, missing_cases: &[(Word, Word)], arm_indent: &str) {
+        let current_class = self.block_context.scope.get_class_like_name();
+
+        for (enum_name, case) in missing_cases {
             // Class names are case-insensitive; the scope stores a case-folded
             // name while the enum type keeps its original casing.
             let is_current_class =
@@ -760,14 +846,12 @@ where
                 String::from_utf8_lossy(short).into_owned()
             };
 
-            new_text.push_str(&arm_indent);
-            new_text.push_str(&prefix);
-            new_text.push_str("::");
-            new_text.push_str(&case.as_str_lossy());
-            new_text.push_str(" => throw new \\UnhandledMatchError(),\n");
+            out.push_str(arm_indent);
+            out.push_str(&prefix);
+            out.push_str("::");
+            out.push_str(&case.as_str_lossy());
+            out.push_str(" => throw new \\UnhandledMatchError(),\n");
         }
-
-        Some(TextEdit::insert(brace_line_start, new_text.into_bytes()).with_safety(Safety::PotentiallyUnsafe))
     }
 }
 
