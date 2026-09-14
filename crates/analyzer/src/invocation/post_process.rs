@@ -280,6 +280,10 @@ fn apply_assertion_to_call_context<'ctx, 'arena, A>(
         return;
     }
 
+    block_context
+        .stable_method_calls
+        .extend(type_assertions.keys().filter(|variable| variable.as_bytes().ends_with(b"()")).copied());
+
     let referenced_variable_ids: WordSet = type_assertions.keys().copied().collect();
     let mut changed_variable_ids: WordSet = WordSet::default();
     let mut active_type_assertions = IndexMap::new();
@@ -371,7 +375,9 @@ where
                 continue;
             }
 
-            if declared_had_templates {
+            if declared_had_templates
+                && !invocation.target.get_function_like_metadata().is_some_and(|metadata| metadata.flags.is_built_in())
+            {
                 new_type.widen_literals();
             }
 
@@ -481,6 +487,7 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
         block_context.locals.retain(|key, _| !references_method_call_key(*key));
         block_context.clauses.retain(|clause| !references_method_call(clause));
         block_context.reconciled_expression_clauses.retain(|clause| !references_method_call(clause));
+        block_context.retain_valid_class_type_relations();
     }
 
     if let Some(metadata) = metadata
@@ -733,6 +740,8 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
     }
 
     if !has_object_argument {
+        block_context.retain_valid_class_type_relations();
+
         return;
     }
 
@@ -776,6 +785,7 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
     block_context
         .reconciled_expression_clauses
         .retain(|clause| clause.wedge || !clause.possibilities.keys().copied().any(should_wipe));
+    block_context.retain_valid_class_type_relations();
 }
 
 fn is_property_or_index_key(var_id: Word) -> bool {
