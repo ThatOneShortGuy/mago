@@ -1320,6 +1320,7 @@ test_case!(strings_redundant_string_eq_literal);
 test_case!(strings_redundant_strlen_of_literal);
 test_case!(strings_string_intersected_with_stringable);
 test_case!(strings_stringable_to_string_implicit);
+test_case!(stringable_names);
 test_case!(strings_ucfirst_with_int);
 test_case!(strings_ucwords_with_array);
 test_case!(strings_bin2hex_with_array);
@@ -2665,6 +2666,7 @@ test_case!(issue_2078);
 test_case!(issue_2085);
 test_case!(issue_2087);
 test_case!(issue_2096);
+test_case!(issue_2109);
 test_case!(issue_2110);
 test_case!(issue_2111);
 test_case!(issue_2116);
@@ -2772,6 +2774,10 @@ test_case!(issue_2360);
 test_case!(issue_2365);
 test_case!(issue_2367);
 test_case!(issue_2374);
+test_case!(issue_2377);
+test_case!(issue_2378);
+test_case!(issue_2379);
+test_case!(issue_2385);
 
 /// Apply every fix edit carried by the `match-not-exhaustive` issue in
 /// `source`, returning the fixed source.
