@@ -2778,6 +2778,7 @@ test_case!(issue_2377);
 test_case!(issue_2378);
 test_case!(issue_2379);
 test_case!(issue_2385);
+test_case!(issue_2401);
 
 /// Apply every fix edit carried by the `match-not-exhaustive` issue in
 /// `source`, returning the fixed source.
