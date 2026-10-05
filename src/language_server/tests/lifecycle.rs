@@ -39,6 +39,29 @@ async fn rapid_changes_coalesce_to_latest() {
 }
 
 #[tokio::test]
+async fn untracked_file_opened_during_bootstrap_is_not_mirrored() {
+    // `bootstrap/app.php` is outside `[source].paths`. Opening it before the
+    // bootstrap finishes used to mirror the buffer into the database, after
+    // which every `didChange` was filtered out: formatting then answered with
+    // the open-time text and clobbered the buffer.
+    const CONFIG: &str = "[source]\npaths = [\"src/\"]\n";
+    const UNFORMATTED: &str = "<?php\n$a   =   1;\n";
+    let mut h = Harness::start_with_early_open(
+        &[("src/h.php", HOLDER), ("bootstrap/app.php", UNFORMATTED), ("mago.toml", CONFIG)],
+        ("bootstrap/app.php", UNFORMATTED),
+    )
+    .await;
+    h.change("bootstrap/app.php", "<?php\n$b   =   2;\n", 2).await;
+
+    let params = json!({
+        "textDocument": { "uri": h.url("bootstrap/app.php") },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let edits = h.request("textDocument/formatting", params).await;
+    assert!(edits.is_null(), "untracked file should not be served from a stale copy, got {edits}");
+}
+
+#[tokio::test]
 async fn close_restores_disk_content() {
     let mut h = Harness::start(&[("h.php", HOLDER)]).await;
     h.open("h.php", HOLDER).await;

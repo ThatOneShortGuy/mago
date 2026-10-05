@@ -46,6 +46,13 @@ pub struct Backend {
     /// task only runs if its captured version is still the latest here, so a
     /// burst of edits coalesces into a single analysis of the final text.
     pending_change_versions: Arc<Mutex<HashMap<String, i32>>>,
+    /// Serializes buffer/disk sync notifications. `tower-lsp` dispatches
+    /// incoming messages concurrently, so without this two `didChange`s (or a
+    /// `didClose`/`didOpen` pair) can apply out of order and leave the database
+    /// holding stale buffer text. `tokio`'s mutex is FIFO-fair and each handler
+    /// acquires it before its first other await, so notifications apply in
+    /// arrival order.
+    buffer_sync: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Backend {
@@ -59,6 +66,7 @@ impl Backend {
             ready_tx,
             bootstrap_args: Arc::new(Mutex::new(None)),
             pending_change_versions: Arc::new(Mutex::new(HashMap::new())),
+            buffer_sync: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -81,6 +89,14 @@ impl Backend {
     /// would block forever.
     pub(super) fn signal_ready(&self) {
         self.ready_tx.send_replace(true);
+    }
+
+    /// Wait until every buffer sync notification received so far has been
+    /// applied. Requests whose result is written back into the buffer
+    /// (formatting, code actions, rename) call this so they never compute
+    /// edits against text older than what the editor already sent.
+    pub(super) async fn sync_barrier(&self) {
+        drop(self.buffer_sync.lock().await);
     }
 
     fn tracks(&self, uri: &Uri) -> bool {
@@ -177,7 +193,13 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        let _sync = self.buffer_sync.lock().await;
         let TextDocumentItem { uri, text, version, .. } = params.text_document;
+        // Decide membership only once the workspace is ready: before that,
+        // `tracks` can't consult the source matcher and accepts everything, so
+        // an untracked file opened during bootstrap would be mirrored into the
+        // database and then never updated (its `didChange`s are filtered).
+        self.ensure_ready().await;
         if !self.tracks(&uri) {
             return;
         }
@@ -186,11 +208,10 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let _sync = self.buffer_sync.lock().await;
+        // No `tracks` check: whether `didOpen` accepted the document is the
+        // source of truth, and `apply_buffer_change` ignores unopened URIs.
         let uri = params.text_document.uri;
-        if !self.tracks(&uri) {
-            return;
-        }
-
         let Some(change) = params.content_changes.into_iter().next_back() else {
             return;
         };
@@ -199,14 +220,13 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        if !self.tracks(&params.text_document.uri) {
-            return;
-        }
-
+        let _sync = self.buffer_sync.lock().await;
+        // Like `did_change`, `apply_buffer_close` ignores unopened URIs.
         self.apply_buffer_close(params.text_document.uri).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let _sync = self.buffer_sync.lock().await;
         if !self.tracks(&params.text_document.uri) {
             return;
         }
@@ -215,6 +235,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let _sync = self.buffer_sync.lock().await;
         for change in params.changes {
             match change.typ {
                 FileChangeType::CREATED | FileChangeType::CHANGED => {
@@ -241,6 +262,8 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> JsonRpcResult<Option<Vec<TextEdit>>> {
+        self.sync_barrier().await;
+
         traced("formatting", || {
             if !self.config.formatter {
                 return Ok(None);
@@ -297,6 +320,8 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> JsonRpcResult<Option<CodeActionResponse>> {
+        self.sync_barrier().await;
+
         traced("code_action", || {
             let result = self.with_workspace_mut_for_uri(&params.text_document.uri, |ws| {
                 let file = file_for_uri(ws, &params.text_document.uri)?;
@@ -396,6 +421,8 @@ impl LanguageServer for Backend {
     }
 
     async fn rename(&self, params: RenameParams) -> JsonRpcResult<Option<WorkspaceEdit>> {
+        self.sync_barrier().await;
+
         traced("rename", || {
             let TextDocumentPositionParams { text_document, position } = params.text_document_position;
             let new_name = params.new_name;

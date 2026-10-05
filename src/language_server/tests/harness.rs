@@ -38,10 +38,25 @@ impl Harness {
     /// Like [`start`](Self::start) but with explicit client `capabilities`
     /// (e.g. `{"window":{"workDoneProgress":true}}` to exercise progress).
     pub async fn start_with_capabilities(files: &[(&str, &str)], capabilities: Value) -> Self {
+        Self::start_inner(files, capabilities, None).await
+    }
+
+    /// Like [`start`](Self::start) but sends `didOpen` for `early` right after
+    /// `initialized`, i.e. while the bootstrap is still running, the way
+    /// editors open the current buffer as soon as the server attaches.
+    pub async fn start_with_early_open(files: &[(&str, &str)], early: (&str, &str)) -> Self {
+        Self::start_inner(files, json!({}), Some(early)).await
+    }
+
+    async fn start_inner(files: &[(&str, &str)], capabilities: Value, early: Option<(&str, &str)>) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
         for (name, contents) in files {
-            std::fs::write(workspace.join(name), contents).unwrap();
+            let path = workspace.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
         }
 
         let (client_stream, server_stream) = tokio::io::duplex(256 * 1024);
@@ -69,6 +84,9 @@ impl Harness {
         client.send_notification("initialized", json!({})).await;
 
         let mut harness = Self { client, workspace, _dir: dir, _server: server, shutdown_tx: Some(shutdown_tx) };
+        if let Some((name, contents)) = early {
+            harness.open(name, contents).await;
+        }
         harness.wait_for_ready(files.first().map(|(n, _)| *n).unwrap_or("__bootstrap__.php")).await;
         harness
     }

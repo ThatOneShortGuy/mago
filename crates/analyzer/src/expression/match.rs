@@ -735,12 +735,58 @@ where
     }
 
     fn report_empty_match(&mut self) {
-        self.context.collector.report_with_code(
-            IssueCode::EmptyMatchExpression,
-            Issue::error("Match expression cannot be empty.")
-                .with_annotation(Annotation::primary(self.stmt.span()).with_message("This match has no arms"))
-                .with_note("In PHP, an empty `match` expression will result in a fatal `UnhandledMatchError`."),
-        );
+        let mut issue = Issue::error("Match expression cannot be empty.")
+            .with_annotation(Annotation::primary(self.stmt.span()).with_message("This match has no arms"))
+            .with_note("In PHP, an empty `match` expression will result in a fatal `UnhandledMatchError`.");
+
+        // When the subject is an enum, every case is unhandled, so offer the
+        // same quickfix as a non-exhaustive match: scaffold one arm per case.
+        if let Some(cases) = self.get_subject_enum_cases() {
+            let edits = self.build_fill_arms_edits(&cases);
+            if !edits.is_empty() {
+                issue = issue.with_help("Add an arm for each enum case.");
+            }
+
+            for edit in edits {
+                issue = issue.with_edit(self.stmt.right_brace.file_id, edit);
+            }
+        }
+
+        self.context.collector.report_with_code(IssueCode::EmptyMatchExpression, issue);
+    }
+
+    /// Expand the subject's type into its concrete enum cases.
+    ///
+    /// Returns `None` unless every atomic of the subject is an enum (or an enum
+    /// case) whose cases are known.
+    fn get_subject_enum_cases(&self) -> Option<TUnion> {
+        let subject_type = self.artifacts.get_expression_type(&self.stmt.expression)?;
+
+        let mut cases = Vec::new();
+        for atomic in subject_type.types.iter() {
+            let TAtomic::Object(TObject::Enum(r#enum)) = atomic else {
+                return None;
+            };
+
+            if r#enum.case.is_some() {
+                cases.push(atomic.clone());
+                continue;
+            }
+
+            let metadata = self.context.codebase.get_enum(r#enum.name.as_bytes())?;
+            if metadata.enum_cases.is_empty() || metadata.enum_cases.len() > MAX_ENUM_CASES_FOR_ANALYSIS {
+                return None;
+            }
+
+            cases.extend(
+                metadata
+                    .enum_cases
+                    .keys()
+                    .map(|case| TAtomic::Object(TObject::Enum(TEnum::new_case(r#enum.name, *case)))),
+            );
+        }
+
+        (!cases.is_empty()).then(|| TUnion::from_vec(cases))
     }
 
     fn report_only_default_arm(&mut self) {
@@ -882,6 +928,8 @@ where
             return Vec::new();
         }
 
+        self.sort_cases_by_declaration(&mut missing_cases);
+
         let file = self.context.source_file;
 
         let brace_offset = self.stmt.right_brace.start.offset;
@@ -981,6 +1029,32 @@ where
         }
 
         edits
+    }
+
+    /// Order `cases` the way they are declared, so scaffolded arms read like
+    /// the enum itself rather than in hash order.
+    ///
+    /// Cases stay grouped by enum, with enums in the order they first appear.
+    /// A case whose declaration cannot be found sorts last within its enum.
+    fn sort_cases_by_declaration(&self, cases: &mut [(Word, Word)]) {
+        let mut enum_order: Vec<Word> = Vec::new();
+        for (enum_name, _) in cases.iter() {
+            if !enum_order.contains(enum_name) {
+                enum_order.push(*enum_name);
+            }
+        }
+
+        cases.sort_by_cached_key(|(enum_name, case)| {
+            let enum_index = enum_order.iter().position(|name| name == enum_name).unwrap_or(usize::MAX);
+            let case_offset = self
+                .context
+                .codebase
+                .get_enum(enum_name.as_bytes())
+                .and_then(|metadata| metadata.enum_cases.get(case))
+                .map_or(u32::MAX, |case| case.span.start.offset);
+
+            (enum_index, case_offset)
+        });
     }
 
     /// Append one `Case => throw new \UnhandledMatchError(),` line per missing

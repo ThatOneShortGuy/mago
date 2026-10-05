@@ -15,6 +15,6 @@ pub struct OpenDocument {
     /// On close we delete it from the database; otherwise we re-read disk.
     pub virtual_file: bool,
     /// Document version from the LSP client, used to discard out-of-order
-    /// `didChange` notifications. Currently informational only.
+    /// `didChange` notifications.
     pub version: i32,
 }

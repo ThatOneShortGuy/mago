@@ -2786,14 +2786,20 @@ test_case!(issue_2401);
 /// Panics unless exactly such an issue is present and carries edits, so a fix
 /// that silently disappears (e.g. through a bad merge) fails loudly.
 fn apply_match_fill_fix(name: &str, source: &[u8]) -> String {
+    apply_issue_fix(name, source, "match-not-exhaustive")
+}
+
+/// Apply every fix edit carried by the first `code` issue in `source`,
+/// returning the fixed source.
+fn apply_issue_fix(name: &str, source: &[u8], code: &str) -> String {
     let issues = crate::framework::collect_issues(name, source, None);
 
     let issue = issues
         .iter()
-        .find(|issue| issue.code.as_deref() == Some("match-not-exhaustive"))
-        .expect("expected a `match-not-exhaustive` issue");
+        .find(|issue| issue.code.as_deref() == Some(code))
+        .unwrap_or_else(|| panic!("expected a `{code}` issue"));
 
-    assert!(!issue.edits.is_empty(), "the `match-not-exhaustive` issue must carry a fix edit");
+    assert!(!issue.edits.is_empty(), "the `{code}` issue must carry a fix edit");
 
     let mut editor = mago_text_edit::TextEditor::new(source);
     for edits in issue.edits.values() {
@@ -2884,6 +2890,45 @@ enum Suit: string
     assert_match_is_exhaustive("match_fill_fix_single_line_applied", &fixed);
 }
 
+/// The missing arms follow the enum's declaration order, not the order the
+/// unhandled cases happen to be stored in.
+#[test]
+fn match_not_exhaustive_fill_fix_uses_declaration_order() {
+    const SOURCE: &[u8] = b"<?php
+
+enum Floor: int
+{
+    case Basement = 1;
+    case First = 2;
+    case Second = 3;
+    case Third = 4;
+    case Fourth = 5;
+
+    public function floor(): int
+    {
+        return match ($this) {
+            self::First => 1,
+        };
+    }
+}
+";
+
+    let fixed = apply_match_fill_fix("match_fill_fix_declaration_order", SOURCE);
+
+    assert!(
+        fixed.contains(
+            "            self::First => 1,\n\
+             \x20           self::Basement => throw new \\UnhandledMatchError(),\n\
+             \x20           self::Second => throw new \\UnhandledMatchError(),\n\
+             \x20           self::Third => throw new \\UnhandledMatchError(),\n\
+             \x20           self::Fourth => throw new \\UnhandledMatchError(),\n"
+        ),
+        "the missing arms should follow declaration order; got:\n{fixed}"
+    );
+
+    assert_match_is_exhaustive("match_fill_fix_declaration_order_applied", &fixed);
+}
+
 /// The reflow also covers a multi-line `match` whose last arm shares its line
 /// with the closing brace, and must not double up an existing trailing comma.
 #[test]
@@ -2916,6 +2961,48 @@ enum Suit: string
     assert!(!fixed.contains(",,"), "the existing trailing comma must not be doubled; got:\n{fixed}");
 
     assert_match_is_exhaustive("match_fill_fix_trailing_brace_applied", &fixed);
+}
+
+/// An empty `match` over an enum subject leaves every case unhandled, so it
+/// carries the same fill fix, scaffolding one arm per case in declaration
+/// order.
+#[test]
+fn empty_match_over_enum_offers_fill_fix() {
+    const SOURCE: &[u8] = b"<?php
+
+enum Floor: int
+{
+    case Basement = 1;
+    case First = 2;
+    case Second = 3;
+
+    public function floor(): int
+    {
+        return match ($this) { };
+    }
+}
+";
+
+    let fixed = apply_issue_fix("empty_match_fill_fix", SOURCE, "empty-match-expression");
+
+    assert!(
+        fixed.contains(
+            "        return match ($this) {\n\
+             \x20           self::Basement => throw new \\UnhandledMatchError(),\n\
+             \x20           self::First => throw new \\UnhandledMatchError(),\n\
+             \x20           self::Second => throw new \\UnhandledMatchError(),\n\
+             \x20       };"
+        ),
+        "the fix should scaffold every case in declaration order; got:\n{fixed}"
+    );
+
+    let issues = crate::framework::collect_issues("empty_match_fill_fix_applied", fixed.as_bytes(), None);
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| matches!(issue.code.as_deref(), Some("empty-match-expression" | "match-not-exhaustive"))),
+        "applying the fix should leave an exhaustive match; got:\n{fixed}"
+    );
 }
 
 /// A comment between the last arm and the closing brace is the author's, and

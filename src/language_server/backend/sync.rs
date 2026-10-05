@@ -302,6 +302,11 @@ impl Backend {
                     let Some(open) = workspace.open_documents.get_mut(&mutate_uri) else {
                         return Vec::new();
                     };
+                    // Never let an older full-text snapshot overwrite a newer one.
+                    if version < open.version {
+                        tracing::warn!(uri = %mutate_uri.as_str(), version, current = open.version, "dropping out-of-order didChange");
+                        return Vec::new();
+                    }
                     open.version = version;
                     open.file_id
                 };
