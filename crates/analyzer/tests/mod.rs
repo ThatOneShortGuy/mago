@@ -837,6 +837,8 @@ test_case!(class_string_comparison);
 test_case!(class_string_of_generic_object_inference);
 test_case!(static_var_lazy_init);
 test_case!(static_var_coalesce);
+test_case!(issue_2403);
+test_case!(issue_2400);
 test_case!(array_coalesce_assign_check);
 test_case!(factory_null_params);
 test_case!(clone_dynamic_class);
@@ -2772,6 +2774,7 @@ test_case!(issue_2352);
 test_case!(issue_2359);
 test_case!(issue_2360);
 test_case!(issue_2365);
+test_case!(issue_2366);
 test_case!(issue_2367);
 test_case!(issue_2374);
 test_case!(issue_2377);
@@ -2779,6 +2782,15 @@ test_case!(issue_2378);
 test_case!(issue_2379);
 test_case!(issue_2385);
 test_case!(issue_2401);
+test_case!(issue_2409);
+test_case!(issue_2410);
+test_case!(issue_2411, {
+    let mut settings = crate::framework::default_test_settings();
+    settings.strict_array_index_existence = true;
+    settings
+});
+test_case!(issue_2418);
+test_case!(issue_2419);
 
 /// Apply every fix edit carried by the `match-not-exhaustive` issue in
 /// `source`, returning the fixed source.

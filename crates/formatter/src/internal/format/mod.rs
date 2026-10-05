@@ -1203,6 +1203,32 @@ where
     }
 }
 
+/// Returns the document that terminates a statement whose member access chain received
+/// the dangling-semicolon treatment (`method_chain_semicolon_on_next_line`).
+///
+/// A closing-tag terminator must survive the replacement: dropping it would turn any
+/// inline HTML following the statement into PHP code.
+fn member_chain_dangling_semicolon<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    terminator: &'arena Terminator<'arena>,
+) -> Document<'arena, A>
+where
+    A: Arena,
+{
+    match terminator {
+        Terminator::ClosingTag(closing_tag) => Document::Array(vec_in![f.arena;
+            Document::Line(Line::hard()),
+            Document::String(b";"),
+            Document::Line(Line::hard()),
+            closing_tag.format(f),
+        ]),
+        _ => Document::Array(vec_in![f.arena;
+            Document::Line(Line::hard()),
+            Document::String(b";"),
+        ]),
+    }
+}
+
 impl<'arena, A> Format<'arena, A> for ExpressionStatement<'arena>
 where
     A: Arena,
@@ -1211,19 +1237,19 @@ where
         wrap!(f, self, ExpressionStatement, {
             let expression = self.expression.format(f);
             let terminator = self.terminator.format(f);
-            if let Some(chain_group_id) = f.take_member_access_chain_group_id()
+
+            if let Some(chain) = f.take_member_access_chain_context()
                 && f.settings.method_chain_semicolon_on_next_line
             {
+                let semicolon = member_chain_dangling_semicolon(f, &self.terminator);
+
                 Document::Array(vec_in![f.arena;
                     expression,
-                    Document::IfBreak(
-                        IfBreak::new(
-                            f.arena,
-                            Document::Array(vec_in![f.arena; Document::Line(Line::hard()), Document::String(b";")]),
-                            terminator,
-                        )
-                        .with_id(chain_group_id),
-                    ),
+                    if chain.must_break {
+                        semicolon
+                    } else {
+                        Document::IfBreak(IfBreak::new(f.arena, semicolon, terminator).with_id(chain.group_id))
+                    },
                 ])
             } else {
                 Document::Array(vec_in![f.arena; expression, terminator])
@@ -1435,19 +1461,18 @@ where
 
             let terminator = self.terminator.format(f);
 
-            if let Some(chain_group_id) = f.take_member_access_chain_group_id()
+            if let Some(chain) = f.take_member_access_chain_context()
                 && f.settings.method_chain_semicolon_on_next_line
             {
-                contents.push(Document::IfBreak(
-                    IfBreak::new(
-                        f.arena,
-                        Document::Array(vec_in![f.arena; Document::Line(Line::hard()), Document::String(b";")]),
-                        terminator,
-                    )
-                    .with_id(chain_group_id),
-                ));
+                let semicolon = member_chain_dangling_semicolon(f, &self.terminator);
 
-                Document::Group(Group::new(contents).with_id(chain_group_id))
+                contents.push(if chain.must_break {
+                    semicolon
+                } else {
+                    Document::IfBreak(IfBreak::new(f.arena, semicolon, terminator).with_id(chain.group_id))
+                });
+
+                Document::Group(Group::new(contents).with_id(chain.group_id))
             } else {
                 contents.push(terminator);
 
@@ -1984,20 +2009,22 @@ where
                 contents.push(Document::space());
             }
 
-            if self.ampersand.is_some() {
-                contents.push(Document::String(b"&"));
-            }
-
-            if self.ellipsis.is_some() {
-                contents.push(Document::String(b"..."));
-            }
-
+            // The alignment padding goes before `&` / `...` so that they stay attached to the
+            // variable name (PSR-12: no space between the variadic operator and the argument name).
             if let (Some(padding), Some(list_id)) =
                 (f.parameter_state.variable_padding, f.parameter_state.list_group_id)
                 && padding > 0
             {
                 let spaces = Document::String(utils::spaces(f.arena, padding));
                 contents.push(Document::IfBreak(IfBreak::new(f.arena, spaces, Document::empty()).with_id(list_id)));
+            }
+
+            if self.ampersand.is_some() {
+                contents.push(Document::String(b"&"));
+            }
+
+            if self.ellipsis.is_some() {
+                contents.push(Document::String(b"..."));
             }
 
             contents.push(self.variable.format(f));
