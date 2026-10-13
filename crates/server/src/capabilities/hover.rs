@@ -41,9 +41,16 @@ impl Server {
         let name = var.name.to_vec();
         let start = var.start;
         let end = var.end;
-        let ty =
-            self.type_index_for(file_id).and_then(|index| index.display_by_span.get(&(start, end))).map(String::as_str);
-        Some(HoverInfo { markdown: render_variable(&name, ty), range: Range::new(start, end) })
+        let ty = self
+            .editor_data_for(file_id)
+            .and_then(|data| {
+                data.variable_types
+                    .at_offset(start)
+                    .filter(|(span, _)| *span == (start, end))
+                    .map(|(_, ty)| ty.get_id())
+            })
+            .map(|id| id.to_string());
+        Some(HoverInfo { markdown: render_variable(&name, ty.as_deref()), range: Range::new(start, end) })
     }
 }
 

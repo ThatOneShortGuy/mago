@@ -78,7 +78,6 @@ pub use file_analysis::FileAnalysis;
 pub use linter::LinterContext;
 pub use member::MemberKind;
 pub use member::MemberTarget;
-pub use server::ExpressionTypeIndex;
 pub use server::Server;
 pub use settings::Features;
 pub use settings::Settings;

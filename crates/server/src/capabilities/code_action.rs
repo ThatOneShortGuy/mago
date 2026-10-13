@@ -53,7 +53,7 @@ impl Server {
     /// outrank something that does.
     ///
     /// Takes `&mut self` because the refactors consult the analyzer's
-    /// expression-type index, which is built lazily per content hash.
+    /// inferred return types, which are built lazily per content hash.
     pub fn get_code_actions(&mut self, file_id: FileId, start: u32, end: u32) -> Vec<CodeActionItem> {
         let mut direct_actions = Vec::new();
         let mut expect_actions = Vec::new();
@@ -119,7 +119,7 @@ fn inferred_return_action(server: &mut Server, file_id: FileId, start: u32, end:
     let analysis = server.file_analysis_for(file_id)?;
     let site = innermost_function_like(&analysis.function_like_sites, start, end)?.clone();
 
-    let inferred = server.type_index_for(file_id)?.inferred_returns_by_span.get(&site.span)?;
+    let inferred = server.inferred_returns_for(file_id)?.get(&site.span)?;
     let rendered = render_docblock_type(inferred)?;
 
     let file = server.database().get(&file_id).ok()?;

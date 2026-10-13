@@ -12,6 +12,7 @@
 mod items;
 mod matcher;
 
+use mago_analyzer::artifacts::editor::EditorFileData;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_database::DatabaseReader;
 use mago_database::file::File as MagoFile;
@@ -25,7 +26,6 @@ use crate::domain::CompletionEntry;
 use crate::domain::CompletionList;
 use crate::domain::Range;
 use crate::lookup;
-use crate::server::ExpressionTypeIndex;
 
 const MAX_RESULTS: usize = 50;
 
@@ -44,13 +44,13 @@ impl Server {
         let Ok(file) = self.database().get(&file_id) else {
             return CompletionList::default();
         };
-        let type_index = self.type_index_for(file_id).cloned();
+        let editor_data = self.editor_data_for(file_id);
         let scope = match self.file_analysis_for(file_id) {
             Some(analysis) => analysis.scope_at(offset),
             None => return CompletionList::default(),
         };
 
-        let items = compute(self.database(), self.codebase(), type_index.as_ref(), &scope, &file, offset);
+        let items = compute(self.database(), self.codebase(), editor_data.as_deref(), &scope, &file, offset);
         CompletionList { is_incomplete: true, items }
     }
 }
@@ -66,7 +66,7 @@ fn byte_before(file: &MagoFile, offset: u32) -> Option<u8> {
 fn compute(
     database: &mago_database::Database<'_>,
     codebase: &CodebaseMetadata,
-    type_index: Option<&ExpressionTypeIndex>,
+    editor_data: Option<&EditorFileData>,
     scope: &NamespaceScope,
     file: &MagoFile,
     offset: u32,
@@ -79,7 +79,7 @@ fn compute(
             items::variable_items(&tokens, scope_start, offset, prefix, replace)
         }
         Context::InstanceMember { receiver_span, prefix } => {
-            items::instance_member_items(codebase, type_index, receiver_span, prefix)
+            items::instance_member_items(codebase, editor_data, receiver_span, prefix)
         }
         Context::StaticMember { class, prefix } => items::static_member_items(codebase, scope, class, prefix),
         Context::Qualified { qualifier, prefix } => items::qualified_items(database, codebase, qualifier, prefix),

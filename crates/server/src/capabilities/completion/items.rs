@@ -4,6 +4,7 @@
 use std::collections::hash_map::Entry;
 
 use foldhash::HashMap;
+use mago_analyzer::artifacts::editor::EditorFileData;
 use mago_bytes::BytesDisplay;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
@@ -22,7 +23,6 @@ use mago_syntax::token::TokenKind;
 use crate::domain::CompletionEntry;
 use crate::domain::CompletionKind;
 use crate::domain::Range;
-use crate::server::ExpressionTypeIndex;
 
 use super::MAX_RESULTS;
 use super::matcher;
@@ -68,17 +68,19 @@ pub(super) fn variable_items(
 
 pub(super) fn instance_member_items(
     codebase: &CodebaseMetadata,
-    type_index: Option<&ExpressionTypeIndex>,
+    editor_data: Option<&EditorFileData>,
     receiver_span: (u32, u32),
     prefix: &[u8],
 ) -> Vec<CompletionEntry> {
-    let Some(type_index) = type_index else {
+    let Some(editor_data) = editor_data else {
         return Vec::new();
     };
 
-    let Some(class_words) = type_index.by_span.get(&receiver_span) else {
+    let expressions = &editor_data.expression_classes;
+    let Ok(index) = expressions.binary_search_by_key(&receiver_span, |expression| expression.span) else {
         return Vec::new();
     };
+    let class_words = &expressions[index].classes;
 
     let mut best: HashMap<String, (Score, CompletionEntry)> = HashMap::default();
     for class in class_words {

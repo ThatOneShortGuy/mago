@@ -8,12 +8,9 @@ use foldhash::HashMap;
 use xxhash_rust::xxh3;
 
 use mago_analyzer::analysis_result::AnalysisResult;
-use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_analyzer::artifacts::editor::EditorFileData;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
-use mago_codex::ttype::TType;
-use mago_codex::ttype::atomic::TAtomic;
-use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::union::TUnion;
 use mago_database::Database;
 use mago_database::DatabaseReader;
@@ -23,7 +20,6 @@ use mago_formatter::settings::FormatSettings;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
 use mago_php_version::PHPVersion;
 use mago_reporting::IssueCollection;
-use mago_word::Word;
 
 use crate::error::ServerError;
 use crate::file_analysis;
@@ -31,28 +27,14 @@ use crate::file_analysis::FileAnalysis;
 use crate::linter::LinterContext;
 use crate::settings::Settings;
 
-/// Per-file index of the named-object types inferred for each expression span,
-/// derived from the analyzer's [`AnalysisArtifacts`]. Powers member completion.
-#[derive(Debug, Default, Clone)]
-pub struct ExpressionTypeIndex {
-    /// Maps an expression's `(start, end)` byte span to the class-like names its
-    /// inferred type resolves to.
-    pub by_span: HashMap<(u32, u32), Vec<Word>>,
-    /// Maps an expression's `(start, end)` byte span to its rendered inferred type.
-    pub display_by_span: HashMap<(u32, u32), String>,
-    /// Maps a function-like declaration's `(start, end)` byte span to the return
-    /// type inferred from its body.
-    ///
-    /// This is *observational*: the analyzer resolves call sites from declared
-    /// signatures and never consults these. It exists so the editor can offer
-    /// the inferred type as a `@return` for a human to accept.
-    pub inferred_returns_by_span: HashMap<(u32, u32), TUnion>,
-}
+/// Return types inferred from function-like bodies, keyed by the declaration's
+/// `(start, end)` byte span.
+pub type InferredReturns = HashMap<(u32, u32), TUnion>;
 
 /// A transport-agnostic backend for a single workspace.
 ///
 /// Owns the workspace's [`Database`], an [`IncrementalAnalysisService`], a
-/// [`LinterContext`], and the per-file analysis / expression-type caches. It
+/// [`LinterContext`], and the per-file analysis caches. It
 /// performs no I/O: callers supply file contents as in-memory buffers and the
 /// server answers queries in terms of [`FileId`]s and byte offsets.
 pub struct Server {
@@ -64,8 +46,10 @@ pub struct Server {
     analyzer_enabled: bool,
     /// Per-file parse + resolve + lint results, keyed by content hash.
     file_analyses: HashMap<FileId, (u64, Arc<FileAnalysis>)>,
-    /// Per-file expression-type index, keyed by content hash.
-    artifact_cache: HashMap<FileId, (u64, ExpressionTypeIndex)>,
+    /// Per-file return types inferred from function-like bodies, keyed by
+    /// content hash. Observational only: the analyzer never consults these, but
+    /// the editor offers them as a `@return` for a human to accept.
+    inferred_returns_cache: HashMap<FileId, (u64, InferredReturns)>,
 }
 
 impl Server {
@@ -83,7 +67,7 @@ impl Server {
     ) -> Self {
         let Settings { php_version, features, parser, analyzer, linter, formatter, plugin_registry } = settings;
 
-        let service = IncrementalAnalysisService::new(
+        let mut service = IncrementalAnalysisService::new(
             database.read_only(),
             metadata,
             symbol_references,
@@ -91,6 +75,7 @@ impl Server {
             parser,
             plugin_registry,
         );
+        service.set_editor_artifacts(true);
 
         let linter = LinterContext::new(linter, parser);
 
@@ -102,7 +87,7 @@ impl Server {
             formatter,
             analyzer_enabled: features.analyzer,
             file_analyses: HashMap::default(),
-            artifact_cache: HashMap::default(),
+            inferred_returns_cache: HashMap::default(),
         }
     }
 
@@ -159,9 +144,22 @@ impl Server {
         }
     }
 
-    /// The expression-type index for `file_id`, building and caching it on a
-    /// miss. Returns `None` when the analyzer is disabled.
-    pub fn type_index_for(&mut self, file_id: FileId) -> Option<&ExpressionTypeIndex> {
+    /// The analyzer's editor data (variable types, expression classes, member
+    /// targets) for `file_id`, as of the most recent analysis pass. Returns
+    /// `None` when the analyzer is disabled or the file has not been analyzed.
+    #[must_use]
+    pub fn editor_data_for(&self, file_id: FileId) -> Option<Arc<EditorFileData>> {
+        if !self.analyzer_enabled {
+            return None;
+        }
+
+        self.service.editor_file(file_id).cloned()
+    }
+
+    /// Return types inferred from each function-like body in `file_id`, keyed
+    /// by the declaration's `(start, end)` byte span. Built on demand and
+    /// cached per content hash. Returns `None` when the analyzer is disabled.
+    pub fn inferred_returns_for(&mut self, file_id: FileId) -> Option<&InferredReturns> {
         if !self.analyzer_enabled {
             return None;
         }
@@ -169,22 +167,23 @@ impl Server {
         let file = self.database.get(&file_id).ok()?;
         let hash = xxh3::xxh3_64(&file.contents);
 
-        if let Some((cached_hash, _)) = self.artifact_cache.get(&file_id)
+        if let Some((cached_hash, _)) = self.inferred_returns_cache.get(&file_id)
             && *cached_hash == hash
         {
-            return self.artifact_cache.get(&file_id).map(|(_, idx)| idx);
+            return self.inferred_returns_cache.get(&file_id).map(|(_, returns)| returns);
         }
 
         let (_, artifacts) = self.service.analyze_file_with_artifacts(file_id)?;
-        let index = build_index(&artifacts);
-        self.artifact_cache.insert(file_id, (hash, index));
-        self.artifact_cache.get(&file_id).map(|(_, idx)| idx)
+        let returns =
+            artifacts.inferred_return_types_by_function_like.iter().map(|(span, ty)| (*span, (**ty).clone())).collect();
+        self.inferred_returns_cache.insert(file_id, (hash, returns));
+        self.inferred_returns_cache.get(&file_id).map(|(_, returns)| returns)
     }
 
     /// Drop cached derived data for the given files.
     pub fn invalidate_artifacts(&mut self, files: &[FileId]) {
         for id in files {
-            self.artifact_cache.remove(id);
+            self.inferred_returns_cache.remove(id);
             self.file_analyses.remove(id);
         }
     }
@@ -243,29 +242,4 @@ impl Server {
     pub fn analyses(&self) -> impl Iterator<Item = &Arc<FileAnalysis>> + '_ {
         self.file_analyses.values().map(|(_, analysis)| analysis)
     }
-}
-
-fn build_index(artifacts: &AnalysisArtifacts) -> ExpressionTypeIndex {
-    let mut by_span: HashMap<(u32, u32), Vec<Word>> = HashMap::default();
-    let mut display_by_span: HashMap<(u32, u32), String> = HashMap::default();
-    let inferred_returns_by_span =
-        artifacts.inferred_return_types_by_function_like.iter().map(|(span, ty)| (*span, (**ty).clone())).collect();
-    for (span, ty) in artifacts.expression_types.iter() {
-        display_by_span.insert(*span, ty.get_id().to_string());
-
-        let mut classes: Vec<Word> = Vec::new();
-        for atomic in ty.types.iter() {
-            match atomic {
-                TAtomic::Object(TObject::Named(n)) => classes.push(n.name),
-                TAtomic::Object(TObject::Enum(e)) => classes.push(e.name),
-                _ => {}
-            }
-        }
-
-        if !classes.is_empty() {
-            by_span.insert(*span, classes);
-        }
-    }
-
-    ExpressionTypeIndex { by_span, display_by_span, inferred_returns_by_span }
 }
