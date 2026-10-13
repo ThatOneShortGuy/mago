@@ -12,7 +12,9 @@
 //! - [`reporter::Reporter`]: Handles formatting and outputting issues in various formats
 //! - [`baseline::Baseline`]: Manages baseline files to filter out known issues
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::iter::Once;
 use std::str::FromStr;
 
@@ -162,7 +164,7 @@ pub enum AnnotationKind {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct Annotation {
     /// An optional message associated with the annotation.
-    pub message: Option<String>,
+    pub message: Option<Cow<'static, str>>,
     /// The kind of annotation.
     pub kind: AnnotationKind,
     /// The code span that the annotation refers to.
@@ -214,11 +216,11 @@ pub struct Issue {
     /// An optional code associated with the issue.
     pub code: Option<String>,
     /// The main message describing the issue.
-    pub message: String,
+    pub message: Cow<'static, str>,
     /// Additional notes related to the issue.
-    pub notes: Vec<String>,
+    pub notes: Vec<Cow<'static, str>>,
     /// An optional help message suggesting possible solutions or further actions.
-    pub help: Option<String>,
+    pub help: Option<Cow<'static, str>>,
     /// An optional link to external resources for more information about the issue.
     pub link: Option<String>,
     /// Annotations associated with the issue, providing additional context or highlighting specific code spans.
@@ -251,6 +253,73 @@ impl AnnotationKind {
 }
 
 impl CompiledIgnoreSet {
+    /// Whether one borrowed issue matches an ignore rule.
+    #[must_use]
+    pub fn is_ignored<F>(&self, issue: &Issue, resolve_file_name: F) -> bool
+    where
+        F: Fn(FileId) -> Option<String>,
+    {
+        let mut cached_path: Option<Option<String>> = None;
+        let mut resolve_path = |issue: &Issue| -> Option<String> {
+            cached_path
+                .get_or_insert_with(|| issue.primary_span().and_then(|span| resolve_file_name(span.file_id)))
+                .clone()
+        };
+
+        for entry in &self.entries {
+            match entry {
+                CompiledIgnoreEntry::Code(ignored_code) => {
+                    if let Some(code) = &issue.code
+                        && ignored_code == code
+                    {
+                        return true;
+                    }
+                }
+                CompiledIgnoreEntry::Scoped { code: ignored_code, matcher } => {
+                    let Some(code) = &issue.code else {
+                        continue;
+                    };
+
+                    if ignored_code != code {
+                        continue;
+                    }
+
+                    if let Some(name) = resolve_path(issue)
+                        && matcher.is_match(&name)
+                    {
+                        return true;
+                    }
+                }
+                CompiledIgnoreEntry::Pattern { regex, code: ignored_code, matcher } => {
+                    if let Some(ignored_code) = ignored_code {
+                        let Some(code) = &issue.code else {
+                            continue;
+                        };
+
+                        if ignored_code != code {
+                            continue;
+                        }
+                    }
+
+                    if let Some(matcher) = matcher {
+                        let Some(name) = resolve_path(issue) else {
+                            continue;
+                        };
+
+                        if !matcher.is_match(&name) {
+                            continue;
+                        }
+                    }
+
+                    if issue_text_matches(issue, regex) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Compiles the given ignore entries into a reusable matcher set.
     ///
     /// Bad regex/glob entries are reported via `tracing::error!` and skipped;
@@ -393,7 +462,7 @@ impl Annotation {
     /// let annotation = Annotation::primary(span).with_message("This is a primary annotation");
     /// ```
     #[must_use]
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+    pub fn with_message(mut self, message: impl Into<Cow<'static, str>>) -> Self {
         self.message = Some(message.into());
 
         self
@@ -453,7 +522,7 @@ impl Issue {
     ///
     /// let issue = Issue::new(Level::Error, "This is an error");
     /// ```
-    pub fn new(level: Level, message: impl Into<String>) -> Self {
+    pub fn new(level: Level, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             level,
             code: None,
@@ -475,7 +544,7 @@ impl Issue {
     ///
     /// let issue = Issue::error("This is an error");
     /// ```
-    pub fn error(message: impl Into<String>) -> Self {
+    pub fn error(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(Level::Error, message)
     }
 
@@ -488,7 +557,7 @@ impl Issue {
     ///
     /// let issue = Issue::warning("This is a warning");
     /// ```
-    pub fn warning(message: impl Into<String>) -> Self {
+    pub fn warning(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(Level::Warning, message)
     }
 
@@ -501,7 +570,7 @@ impl Issue {
     ///
     /// let issue = Issue::help("This is a help message");
     /// ```
-    pub fn help(message: impl Into<String>) -> Self {
+    pub fn help(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(Level::Help, message)
     }
 
@@ -514,7 +583,7 @@ impl Issue {
     ///
     /// let issue = Issue::note("This is a note");
     /// ```
-    pub fn note(message: impl Into<String>) -> Self {
+    pub fn note(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(Level::Note, message)
     }
 
@@ -553,6 +622,10 @@ impl Issue {
     /// ```
     #[must_use]
     pub fn with_annotation(mut self, annotation: Annotation) -> Self {
+        if self.annotations.is_empty() {
+            self.annotations.reserve_exact(2);
+        }
+
         self.annotations.push(annotation);
 
         self
@@ -589,7 +662,11 @@ impl Issue {
     /// let issue = Issue::error("This is an error").with_note("This is a note");
     /// ```
     #[must_use]
-    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+    pub fn with_note(mut self, note: impl Into<Cow<'static, str>>) -> Self {
+        if self.notes.is_empty() {
+            self.notes.reserve_exact(1);
+        }
+
         self.notes.push(note.into());
 
         self
@@ -607,7 +684,7 @@ impl Issue {
     /// let issue = Issue::error("This is an error").with_help("This is a help message");
     /// ```
     #[must_use]
-    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+    pub fn with_help(mut self, help: impl Into<Cow<'static, str>>) -> Self {
         self.help = Some(help.into());
 
         self
@@ -641,7 +718,12 @@ impl Issue {
     #[must_use]
     pub fn with_file_edits(mut self, file_id: FileId, edits: IssueEdits) -> Self {
         if !edits.is_empty() {
-            self.edits.entry(file_id).or_default().extend(edits);
+            match self.edits.entry(file_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(edits);
+                }
+                Entry::Occupied(mut entry) => entry.get_mut().extend(edits),
+            }
         }
 
         self
@@ -733,72 +815,9 @@ impl IssueCollection {
     where
         F: Fn(FileId) -> Option<String>,
     {
-        if set.is_empty() {
-            return;
+        if !set.is_empty() {
+            self.issues.retain(|issue| !set.is_ignored(issue, &resolve_file_name));
         }
-
-        self.issues.retain(|issue| {
-            let mut cached_path: Option<Option<String>> = None;
-            let mut resolve_path = |issue: &Issue| -> Option<String> {
-                cached_path
-                    .get_or_insert_with(|| issue.primary_span().and_then(|span| resolve_file_name(span.file_id)))
-                    .clone()
-            };
-
-            for entry in &set.entries {
-                match entry {
-                    CompiledIgnoreEntry::Code(ignored_code) => {
-                        if let Some(code) = &issue.code
-                            && ignored_code == code
-                        {
-                            return false;
-                        }
-                    }
-                    CompiledIgnoreEntry::Scoped { code: ignored_code, matcher } => {
-                        let Some(code) = &issue.code else {
-                            continue;
-                        };
-
-                        if ignored_code != code {
-                            continue;
-                        }
-
-                        if let Some(name) = resolve_path(issue)
-                            && matcher.is_match(&name)
-                        {
-                            return false;
-                        }
-                    }
-                    CompiledIgnoreEntry::Pattern { regex, code: ignored_code, matcher } => {
-                        if let Some(ignored_code) = ignored_code {
-                            let Some(code) = &issue.code else {
-                                continue;
-                            };
-
-                            if ignored_code != code {
-                                continue;
-                            }
-                        }
-
-                        if let Some(matcher) = matcher {
-                            let Some(name) = resolve_path(issue) else {
-                                continue;
-                            };
-
-                            if !matcher.is_match(&name) {
-                                continue;
-                            }
-                        }
-
-                        if issue_text_matches(issue, regex) {
-                            return false;
-                        }
-                    }
-                }
-            }
-
-            true
-        });
     }
 
     pub fn filter_retain_codes(&mut self, retain_codes: &[String]) {

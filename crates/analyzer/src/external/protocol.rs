@@ -131,8 +131,8 @@ use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 
 pub const ANALYZER_PROTOCOL_MAGIC: [u8; 4] = *b"MANA";
-pub const ANALYZER_PROTOCOL_MAJOR: u16 = 1;
-pub const ANALYZER_PROTOCOL_MINOR: u16 = 1;
+pub const ANALYZER_PROTOCOL_MAJOR: u16 = 2;
+pub const ANALYZER_PROTOCOL_MINOR: u16 = 0;
 
 const HEADER_LENGTH: usize = 12;
 const INITIAL_MESSAGE_CAPACITY: usize = 256;
@@ -1625,7 +1625,7 @@ fn encode_callable_snapshot<'type_info>(
             writer.write_bool(signature.is_pure);
             writer.write_bool(signature.is_closure);
             write_snapshot_count(writer, signature.parameters.len(), "callable parameters")?;
-            for parameter in &signature.parameters {
+            for parameter in signature.parameters.iter() {
                 writer.write_bool(parameter.get_name().is_some());
                 if let Some(name) = parameter.get_name() {
                     writer.write_bytes(name.0.as_bytes())?;
@@ -1641,6 +1641,11 @@ fn encode_callable_snapshot<'type_info>(
                     encode_union_snapshot_inner(writer, closure_this_type, types, depth + 1)?;
                 }
 
+                writer.write_bool(parameter.get_out_type().is_some());
+                if let Some(out_type) = parameter.get_out_type() {
+                    encode_union_snapshot_inner(writer, out_type, types, depth + 1)?;
+                }
+
                 writer.write_bool(parameter.is_by_reference());
                 writer.write_bool(parameter.is_variadic());
                 writer.write_bool(parameter.has_default());
@@ -1651,13 +1656,13 @@ fn encode_callable_snapshot<'type_info>(
                 encode_union_snapshot_inner(writer, return_type, types, depth + 1)?;
             }
 
-            writer.write_bool(signature.source.is_some());
-            if let Some(source) = signature.source {
+            writer.write_bool(signature.get_source().is_some());
+            if let Some(source) = signature.get_source() {
                 encode_function_like_identifier(writer, source)?;
             }
 
             write_snapshot_count(writer, signature.constraints.len(), "callable constraints")?;
-            for constraint in &signature.constraints {
+            for constraint in signature.constraints.iter() {
                 write_snapshot_count(writer, constraint.parameter_names.len(), "callable constraint names")?;
                 for name in &constraint.parameter_names {
                     writer.write_bytes(name.0.as_bytes())?;
@@ -1689,10 +1694,15 @@ fn encode_object_snapshot<'type_info>(
             writer.write_u8(2);
             writer.write_bytes(named.name.as_bytes())?;
             encode_optional_unions(writer, named.type_parameters.as_deref(), types, depth + 1)?;
-            encode_optional_variances(writer, named.variances.as_deref())?;
+            encode_optional_variances(writer, named.variances.as_deref().map(Vec::as_slice))?;
             writer.write_bool(named.is_static);
             writer.write_bool(named.is_this);
-            encode_optional_atomic_snapshots(writer, named.intersection_types.as_deref(), types, depth + 1)?;
+            encode_optional_atomic_snapshots(
+                writer,
+                named.intersection_types.as_deref().map(Vec::as_slice),
+                types,
+                depth + 1,
+            )?;
             writer.write_bool(named.remapped_parameters);
         }
         TObject::Enum(r#enum) => {
@@ -1738,7 +1748,7 @@ fn encode_array_snapshot<'type_info>(
             writer.write_bool(list.known_elements.is_some());
             if let Some(elements) = &list.known_elements {
                 write_snapshot_count(writer, elements.len(), "known list elements")?;
-                for (index, (optional, element_type)) in elements {
+                for (index, (optional, element_type)) in elements.iter() {
                     writer.write_u64(*index as u64);
                     writer.write_bool(*optional);
                     encode_union_snapshot_inner(writer, element_type, types, depth + 1)?;
@@ -1757,7 +1767,7 @@ fn encode_array_snapshot<'type_info>(
             writer.write_bool(keyed.known_items.is_some());
             if let Some(items) = &keyed.known_items {
                 write_snapshot_count(writer, items.len(), "known array items")?;
-                for (key, (optional, value_type)) in items {
+                for (key, (optional, value_type)) in items.iter() {
                     encode_array_key(writer, key)?;
                     writer.write_bool(*optional);
                     encode_union_snapshot_inner(writer, value_type, types, depth + 1)?;
@@ -1788,8 +1798,13 @@ fn encode_reference_snapshot<'type_info>(
             writer.write_u8(1);
             writer.write_bytes(name.as_bytes())?;
             encode_optional_unions(writer, parameters.as_deref(), types, depth + 1)?;
-            encode_optional_variances(writer, variances.as_deref())?;
-            encode_optional_atomic_snapshots(writer, intersection_types.as_deref(), types, depth + 1)?;
+            encode_optional_variances(writer, variances.as_deref().map(Vec::as_slice))?;
+            encode_optional_atomic_snapshots(
+                writer,
+                intersection_types.as_deref().map(Vec::as_slice),
+                types,
+                depth + 1,
+            )?;
         }
         TReference::Member { class_like_name, member_selector } => {
             writer.write_u8(2);
@@ -1813,6 +1828,10 @@ fn encode_reference_snapshot<'type_info>(
         TReference::Global { selector } => {
             writer.write_u8(3);
             match selector {
+                TGlobalReferenceSelector::Identifier(name) => {
+                    writer.write_u8(2);
+                    writer.write_bytes(name.as_bytes())?;
+                }
                 TGlobalReferenceSelector::StartsWith(prefix) => {
                     writer.write_u8(3);
                     writer.write_bytes(prefix.as_bytes())?;
@@ -2107,6 +2126,12 @@ where
             None
         };
 
+        let out_type = if reader.read_bool("effective callable parameter out-type presence")? {
+            Some(Arc::new(decode_type(&mut reader, &request_type, 0)?))
+        } else {
+            None
+        };
+
         let flags = reader.read_u8("effective callable parameter flags")?;
         if flags & !0b111 != 0 {
             return Err(protocol(format!("effective callable parameter has unknown flags {flags:#04x}")));
@@ -2131,7 +2156,8 @@ where
         parameters.push(
             TCallableParameter::new(parameter_type, by_reference, variadic, has_default)
                 .with_name(name)
-                .with_closure_this_type(closure_this_type),
+                .with_closure_this_type(closure_this_type)
+                .with_out_type(out_type),
         );
     }
 
@@ -2693,6 +2719,12 @@ fn decode_complete_callable(reader: &mut PayloadReader<'_>, depth: usize) -> Res
             None
         };
 
+        let out_type = if reader.read_bool("callable parameter out-type presence")? {
+            Some(Arc::new(decode_complete_union(reader, depth + 1)?))
+        } else {
+            None
+        };
+
         parameters.push(
             TCallableParameter::new(
                 parameter_type,
@@ -2701,7 +2733,8 @@ fn decode_complete_callable(reader: &mut PayloadReader<'_>, depth: usize) -> Res
                 reader.read_bool("callable parameter default flag")?,
             )
             .with_name(name)
-            .with_closure_this_type(closure_this_type),
+            .with_closure_this_type(closure_this_type)
+            .with_out_type(out_type),
         );
     }
 
@@ -2755,11 +2788,11 @@ fn decode_complete_object(reader: &mut PayloadReader<'_>, depth: usize) -> Resul
             let remapped_parameters = reader.read_bool("named object remapped parameters flag")?;
             TObject::Named(TNamedObject {
                 name,
-                type_parameters,
-                variances,
+                type_parameters: type_parameters.map(Vec::into_boxed_slice),
+                variances: variances.map(Box::new),
                 is_static,
                 is_this,
-                intersection_types,
+                intersection_types: intersection_types.map(Box::new),
                 remapped_parameters,
             })
         }
@@ -2821,7 +2854,7 @@ fn decode_complete_array(reader: &mut PayloadReader<'_>, depth: usize) -> Result
             };
 
             let non_empty = reader.read_bool("list non-empty flag")?;
-            TArray::List(TList { element_type, known_elements, known_count, non_empty })
+            TArray::List(TList { element_type, known_elements: known_elements.map(Into::into), known_count, non_empty })
         }
         2 => {
             let known_items = if reader.read_bool("known array items presence")? {
@@ -2847,7 +2880,12 @@ fn decode_complete_array(reader: &mut PayloadReader<'_>, depth: usize) -> Result
             };
 
             let non_empty = reader.read_bool("array non-empty flag")?;
-            TArray::Keyed(TKeyedArray { known_items, parameters, non_empty, known_non_list: false })
+            TArray::Keyed(TKeyedArray {
+                known_items: known_items.map(Into::into),
+                parameters,
+                non_empty,
+                known_non_list: false,
+            })
         }
         unknown => return Err(protocol(format!("unknown complete array kind {unknown}"))),
     })
@@ -2873,8 +2911,8 @@ fn decode_complete_reference(
         1 => TReference::Symbol {
             name: word(reader.read_bytes("referenced symbol name")?),
             parameters: decode_optional_complete_unions(reader, depth + 1)?,
-            variances: decode_optional_variances(reader)?,
-            intersection_types: decode_optional_complete_atomics(reader, depth + 1)?,
+            variances: decode_optional_variances(reader)?.map(Box::new),
+            intersection_types: decode_optional_complete_atomics(reader, depth + 1)?.map(Box::new),
         },
         2 => TReference::Member {
             class_like_name: word(reader.read_bytes("reference member class")?),
@@ -2888,6 +2926,7 @@ fn decode_complete_reference(
         },
         3 => TReference::Global {
             selector: match reader.read_u8("global reference selector")? {
+                2 => TGlobalReferenceSelector::Identifier(word(reader.read_bytes("global reference name")?)),
                 3 => TGlobalReferenceSelector::StartsWith(word(reader.read_bytes("global reference prefix")?)),
                 4 => TGlobalReferenceSelector::EndsWith(word(reader.read_bytes("global reference suffix")?)),
                 unknown => return Err(protocol(format!("unknown global reference selector {unknown}"))),
@@ -3162,6 +3201,50 @@ pub(super) mod testing {
     use super::*;
 
     #[test]
+    fn callable_effects_reject_old_protocol_headers() {
+        let mut writer = message_writer(CALLABLE_SIGNATURE_RESPONSE);
+        writer.write_bool(false);
+        let mut payload = writer.finish();
+        payload[4..8].copy_from_slice(&[0, 1, 0, 1]);
+        assert!(matches!(decode_callable_signature_response(&payload, |_| None),
+            Err(ExternalAnalyzerError::Protocol(message)) if message.contains("unsupported analyzer protocol major 1")));
+        message_kind(&payload).unwrap_err();
+    }
+
+    #[test]
+    fn partial_callable_origins_do_not_change_snapshot_bytes() {
+        let signature = TCallableSignature::new(false, true)
+            .with_parameters(vec![
+                TCallableParameter::new(Some(Arc::new(get_int())), false, false, false)
+                    .with_name(Some(VariableIdentifier(word("$value")))),
+            ])
+            .with_return_type(Some(Arc::new(get_int())));
+        let partial = signature.clone().with_partial_source(Some(FunctionLikeIdentifier::Function(word("read"))));
+        let encode = |signature| {
+            let ty = TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)));
+            let mut writer = PayloadWriter::new();
+            encode_union_snapshot(&mut writer, &ty, &mut Vec::new(), 0).unwrap();
+            writer.finish()
+        };
+
+        assert_eq!(encode(partial), encode(signature));
+    }
+
+    #[test]
+    fn global_constant_references_roundtrip() {
+        let reference = TReference::Global { selector: TGlobalReferenceSelector::Identifier(word(b"MODE_OBJECT")) };
+        let mut writer = PayloadWriter::new();
+        let mut types = Vec::new();
+        let mut table = SnapshotTypeTable { offset: 0, types: &mut types };
+        encode_reference_snapshot(&mut writer, &reference, &mut table, 0).unwrap();
+
+        let payload = writer.finish();
+        let mut reader = PayloadReader::new(&payload);
+        assert_eq!(decode_complete_reference(&mut reader, 0).unwrap(), reference);
+        reader.finish().unwrap();
+    }
+
+    #[test]
     fn complete_snapshots_accept_deep_inferred_types() {
         let mut ty = get_int();
         for _ in 0..72 {
@@ -3256,6 +3339,9 @@ pub(super) mod testing {
         writer.write_bool(true);
         writer.write_u8(TYPE_REFERENCE);
         writer.write_u32(0);
+        writer.write_bool(true);
+        writer.write_u8(TYPE_REFERENCE);
+        writer.write_u32(0);
         writer.write_u8(0b101);
 
         let signature =
@@ -3269,6 +3355,7 @@ pub(super) mod testing {
         assert_eq!(parameter.get_name().map(|name| name.0.as_bytes()), Some(b"$value".as_slice()));
         assert_eq!(parameter.get_type_signature(), Some(&request_type));
         assert_eq!(parameter.get_closure_this_type(), Some(&request_type));
+        assert_eq!(parameter.get_out_type(), Some(&request_type));
         assert!(parameter.is_by_reference());
         assert!(!parameter.is_variadic());
         assert!(parameter.has_default());

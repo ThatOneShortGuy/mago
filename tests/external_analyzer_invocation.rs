@@ -439,6 +439,28 @@ final class DynamicProxy
 ";
 
 #[test]
+fn callable_out_types_survive_worker_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+    if !php_sdk_is_available() {
+        return Ok(());
+    }
+    let source = r"<?php
+class Payload {}
+function roundtrip_effects(Closure $callback): Closure { return $callback; }
+function proof(): Payload {
+    $callback = /** @param-out Payload $value */ static function (mixed &$value): void { $value = new Payload(); };
+    $callback = roundtrip_effects($callback);
+    $value = null;
+    $callback($value);
+    return $value;
+}
+";
+    let observation = analyze_with_fixture(source, true, false, false)?;
+    assert!(observation.issues.is_empty(), "the returned callable must keep its out type: {:#?}", observation.issues);
+    assert_eq!(observation.invocations, ["callable-effects"]);
+    Ok(())
+}
+
+#[test]
 fn external_providers_receive_complete_invocation_context() -> Result<(), Box<dyn std::error::Error>> {
     if !php_sdk_is_available() {
         return Ok(());
@@ -666,7 +688,7 @@ fn analyze_with_fixture(
         Arc::new(registry),
     );
     let result = service.analyze()?;
-    let issues = result.issues.iter().map(|issue| (issue.code.clone(), issue.message.clone())).collect::<Vec<_>>();
+    let issues = result.issues.iter().map(|issue| (issue.code.clone(), issue.message.to_string())).collect::<Vec<_>>();
     let invocations = std::fs::read_to_string(audit)?.lines().map(str::to_owned).collect::<Vec<_>>();
 
     Ok(AnalysisObservation { issues, invocations })

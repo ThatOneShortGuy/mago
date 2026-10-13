@@ -27,7 +27,7 @@ Chaque version publie un schéma JSON décrivant l'intégralité de l'arbre de c
 
 Le schéma est hébergé à :
 
-- `https://mago.carthage.software/<version>/schema.json`, épinglé à une release précise comme `1.51.2`.
+- `https://mago.carthage.software/<version>/schema.json`, épinglé à une release précise comme `1.56.3`.
 - `https://mago.carthage.software/latest/schema.json`, la dernière release stable.
 - `https://mago.carthage.software/main/schema.json`, la build de développement depuis `main`.
 
@@ -36,20 +36,20 @@ Le schéma est hébergé à :
 La façon de référencer le schéma dépend du format :
 
 ```toml
-#:schema https://mago.carthage.software/1.51.2/schema.json
+#:schema https://mago.carthage.software/1.56.3/schema.json
 version = "1"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.2/schema.json
+# yaml-language-server: $schema=https://mago.carthage.software/1.56.3/schema.json
 version: "1"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.2/schema.json",
+  "$schema": "https://mago.carthage.software/1.56.3/schema.json",
   "version": "1",
   "php-version": "8.3"
 }
@@ -135,7 +135,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | Option | Type | Défaut | Description |
 | :--- | :--- | :--- | :--- |
-| `version` | string | aucun | Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (`"1"`), mineur (`"1.51"`) ou exact (`"1.51.2"`). Voir [épinglage de version](#version-pinning). |
+| `version` | string | aucun | Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (`"1"`), mineur (`"1.56"`) ou exact (`"1.56.3"`). Voir [épinglage de version](#version-pinning). |
 | `php-version` | string | dernière stable | La version PHP que Mago doit cibler pour l'analyse syntaxique et l'analyse. `mago init` la détecte automatiquement depuis `composer.json` quand c'est possible. |
 | `allow-unsupported-php-version` | boolean | `false` | Autoriser Mago à s'exécuter sur une version PHP qu'il ne prend pas officiellement en charge. Non recommandé. |
 | `no-version-check` | boolean | `false` | Désactive l'avertissement émis quand le binaire installé diverge de la version épinglée. Une divergence de version majeure est toujours fatale. |
@@ -150,8 +150,8 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 Trois niveaux d'épinglage :
 
 - **Épinglage majeur** (`version = "1"`) : tout `1.x.y` satisfait l'épinglage. Une montée vers `2.x` est une erreur fatale, car une nouvelle version majeure peut introduire des défauts incompatibles, des changements de schéma ou de comportement de règles. C'est ce que `mago init` écrit par défaut.
-- **Épinglage mineur** (`version = "1.51"`) : tout `1.51.y` satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale.
-- **Épinglage exact** (`version = "1.51.2"`) : toute divergence émet un avertissement ; une divergence majeure reste fatale.
+- **Épinglage mineur** (`version = "1.56"`) : tout `1.56.y` satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale.
+- **Épinglage exact** (`version = "1.56.3"`) : toute divergence émet un avertissement ; une divergence majeure reste fatale.
 
 L'avertissement peut être désactivé avec `--no-version-check`, la variable d'environnement `MAGO_NO_VERSION_CHECK`, ou `no-version-check = true` dans la configuration. Aucun de ces moyens n'affecte la divergence de version majeure, qui est tout l'intérêt de l'épinglage.
 
@@ -169,12 +169,13 @@ Pour les épinglages exacts, cela résout directement vers ce tag de release. Po
 
 La section `[source]` contrôle la manière dont Mago découvre et traite les fichiers.
 
-### Trois catégories de chemins
+### Quatre catégories de chemins
 
-Mago distingue votre code, le code tiers et le code à ignorer entièrement :
+Mago distingue votre code, le code tiers, les correctifs de types et le code à ignorer entièrement :
 
 - **`paths`** sont vos fichiers source. Mago les analyse, les linte et les formate.
-- **`includes`** sont les dépendances (généralement `vendor`). Mago les analyse pour pouvoir résoudre les symboles et les types, mais ne les analyse, ne les linte ni ne les réécrit jamais.
+- **`includes`** sont les dépendances (généralement `vendor`). Mago les lit pour résoudre les symboles et les types, mais ne les analyse, ne les linte ni ne les réécrit.
+- **`patches`** sont des fichiers PHP qui corrigent les types et les marqueurs PHPDoc sémantiques pris en charge du code tiers ou du code intégré. Leurs déclarations de types et leur PHPDoc prennent la priorité, mais Mago ne les analyse, ne les linte ni ne les formate. Voir [Corriger les types du code tiers](#corriger-les-types-du-code-tiers).
 - **`excludes`** sont des chemins ou des globs que Mago ignore entièrement. Ils s'appliquent à chaque outil.
 
 Si un fichier correspond à la fois à `paths` et à `includes`, le motif le plus spécifique l'emporte. Les chemins de fichier exacts sont les plus spécifiques, puis les chemins de répertoires plus profonds, puis les moins profonds, puis les motifs glob. Quand les motifs sont également spécifiques, `includes` l'emporte, ce qui vous permet de marquer explicitement un chemin comme dépendance.
@@ -182,16 +183,18 @@ Si un fichier correspond à la fois à `paths` et à `includes`, le motif le plu
 ```toml
 [source]
 paths     = ["src", "tests"]
+patches   = ["patches"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
 extensions = ["php"]
 ```
 
-Les motifs glob fonctionnent dans les trois listes :
+Les motifs glob fonctionnent dans les quatre listes :
 
 ```toml
 [source]
 paths    = ["src/**/*.php"]
+patches  = ["patches/**/*.php"]
 includes = ["vendor/symfony/**/*.php"]   # only Symfony from vendor
 excludes = [
   "**/*_generated.php",
@@ -205,9 +208,27 @@ excludes = [
 | Option | Type | Défaut | Description |
 | :--- | :--- | :--- | :--- |
 | `paths` | liste de strings | `[]` | Répertoires ou globs pour votre code source. Si vide, l'ensemble du workspace est scanné. |
-| `includes` | liste de strings | `[]` | Répertoires ou globs pour le code tiers que Mago doit analyser sans le modifier. |
+| `includes` | liste de strings | `[]` | Répertoires ou globs pour le code tiers que Mago doit lire sans le modifier. |
+| `patches` | liste de strings | `[]` | Répertoires ou globs pour les correctifs de types et de marqueurs sémantiques. Leurs types et marqueurs pris en charge remplacent ceux de `includes` et du code intégré. Mago ne les analyse, ne les linte ni ne les formate. |
 | `excludes` | liste de strings | `[]` | Globs ou chemins exclus de tous les outils. |
 | `extensions` | liste de strings | `["php"]` | Extensions de fichiers traitées comme du PHP. |
+
+### Corriger les types du code tiers
+
+Un correctif est un fichier PHP qui redéclare un symbole tiers ou intégré avec son nom pleinement qualifié. Mago lit ses types et ses marqueurs PHPDoc sémantiques pris en charge, et ignore son corps. Le correctif précise un symbole existant ; il ne le remplace pas et ne peut pas créer un symbole absent du code d'origine.
+
+Un seul correctif peut viser un symbole. Si plusieurs correctifs visent le même symbole, Mago signale le conflit au lieu de choisir l'un d'eux. Regroupez-les ou ne gardez qu'un seul correctif.
+
+**Ce qu'un correctif peut préciser**
+
+- Les signatures de méthodes : types des paramètres et du retour, `@throws`, `@template` et assertions de type `@psalm-assert`. Mago ne change un champ que si le correctif le fournit.
+- Les types des propriétés et des constantes.
+- Les marqueurs PHPDoc sémantiques : les tags communs (`@deprecated`, `@not-deprecated`, `@internal`, `@experimental`, `@api`), les tags de fonctions et méthodes (`@pure`, `@impure`, `@mutation-free`, `@external-mutation-free`, `@must-use`, `@no-named-arguments`, `@suspends-fiber`) et les tags de classes (`@consistent-constructor`, `@consistent-templates`). Les alias PHPStan et Psalm existants sont pris en charge lorsque le scanner les reconnaît. Un marqueur ne change que si le correctif déclare explicitement son tag ; les tags absents conservent la valeur d'origine. `@impure` efface `@pure`, et `@not-deprecated` efface `@deprecated`.
+- Les déclarations `@template` de la classe et les alias de types. Mago précise les paramètres existants par leur nom et ajoute les nouveaux.
+- Les paramètres de type des parents avec `@extends` et `@implements`. Le correctif remplace les arguments de chaque parent qu'il nomme et garde les autres.
+- Les membres magiques avec `@method`, `@property`, `@property-read` et `@property-write`, même si le code d'origine ne déclare pas ces membres. Ces annotations décrivent `__call`, `__get` ou `__set`.
+
+Les marqueurs sémantiques ne sont appliqués qu'aux déclarations où ces tags sont pris en charge. Les modificateurs structurels et les marqueurs de contrôle de l'analyse, notamment `final`, `readonly`, `static`, les suppressions et les marqueurs dérivés du corps, restent ceux de la déclaration d'origine.
 
 ### Réglages des globs
 

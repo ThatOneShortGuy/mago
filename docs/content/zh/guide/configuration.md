@@ -27,7 +27,7 @@ Mago 从单一文件读取配置,通常是项目根目录下的 `mago.toml`。�
 
 Schema 托管在:
 
-- `https://mago.carthage.software/<version>/schema.json`,对应某个具体版本(如 `1.51.2`)。
+- `https://mago.carthage.software/<version>/schema.json`,对应某个具体版本(如 `1.56.3`)。
 - `https://mago.carthage.software/latest/schema.json`,最新的稳定版本。
 - `https://mago.carthage.software/main/schema.json`,来自 `main` 分支的开发构建。
 
@@ -36,20 +36,20 @@ Schema 托管在:
 引用方式因格式而异:
 
 ```toml
-#:schema https://mago.carthage.software/1.51.2/schema.json
+#:schema https://mago.carthage.software/1.56.3/schema.json
 version = "1"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.2/schema.json
+# yaml-language-server: $schema=https://mago.carthage.software/1.56.3/schema.json
 version: "1"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.2/schema.json",
+  "$schema": "https://mago.carthage.software/1.56.3/schema.json",
   "version": "1",
   "php-version": "8.3"
 }
@@ -135,7 +135,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | 选项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `version` | string | 无 | 锁定本项目所基于的 Mago 版本。接受主版本(`"1"`)、次版本(`"1.51"`)或精确版本(`"1.51.2"`)的锁定。参见 [版本锁定](#version-pinning)。 |
+| `version` | string | 无 | 锁定本项目所基于的 Mago 版本。接受主版本(`"1"`)、次版本(`"1.56"`)或精确版本(`"1.56.3"`)的锁定。参见 [版本锁定](#version-pinning)。 |
 | `php-version` | string | 最新稳定版 | Mago 在解析与分析时应针对的 PHP 版本。`mago init` 会尽可能从 `composer.json` 自动检测。 |
 | `allow-unsupported-php-version` | boolean | `false` | 允许 Mago 运行在它官方不支持的 PHP 版本上。不建议使用。 |
 | `no-version-check` | boolean | `false` | 在已安装二进制与锁定版本不一致时关闭警告。主版本不一致始终是致命错误。 |
@@ -150,8 +150,8 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 三种锁定级别:
 
 - **主版本锁定**(`version = "1"`):任何 `1.x.y` 都满足。升级到 `2.x` 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。这是 `mago init` 默认写入的级别。
-- **次版本锁定**(`version = "1.51"`):任何 `1.51.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。
-- **精确锁定**(`version = "1.51.2"`):任何漂移都会发出警告;跨主版本仍然是致命错误。
+- **次版本锁定**(`version = "1.56"`):任何 `1.56.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。
+- **精确锁定**(`version = "1.56.3"`):任何漂移都会发出警告;跨主版本仍然是致命错误。
 
 警告可通过 `--no-version-check`、`MAGO_NO_VERSION_CHECK` 环境变量,或配置中的 `no-version-check = true` 关闭。这些都不会影响主版本漂移,而后者正是版本锁定的全部意义所在。
 
@@ -169,12 +169,13 @@ mago self-update --to-project-version
 
 `[source]` 小节控制 Mago 如何发现和处理文件。
 
-### 三类路径
+### 四类路径
 
-Mago 区分你的代码、第三方代码,以及完全要忽略的代码:
+Mago 区分你的代码、第三方代码、类型补丁,以及完全要忽略的代码:
 
 - **`paths`** 是你的源码文件。Mago 会对它们进行分析、lint 和格式化。
 - **`includes`** 是依赖(通常是 `vendor`)。Mago 会解析它们以解析符号和类型,但绝不会分析、lint 或重写它们。
+- **`patches`** 是为第三方代码或内置代码提供类型及受支持语义 PHPDoc 标记补丁的 PHP 文件。Mago 优先使用其中的类型声明、PHPDoc 和受支持标记,但不分析、lint 或格式化这些文件。详见[修补第三方代码的类型](#修补第三方代码的类型)。
 - **`excludes`** 是 Mago 完全忽略的路径或 glob。它们对所有工具生效。
 
 如果一个文件同时匹配 `paths` 和 `includes`,更具体的模式胜出。精确文件路径最具体,其次是更深的目录路径,然后是较浅的目录路径,最后是 glob 模式。当模式具体程度相同,`includes` 胜出,这让你可以显式地把某个路径标记为依赖。
@@ -182,16 +183,18 @@ Mago 区分你的代码、第三方代码,以及完全要忽略的代码:
 ```toml
 [source]
 paths     = ["src", "tests"]
+patches   = ["patches"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
 extensions = ["php"]
 ```
 
-三种列表都支持 glob 模式:
+四种列表都支持 glob 模式:
 
 ```toml
 [source]
 paths    = ["src/**/*.php"]
+patches  = ["patches/**/*.php"]
 includes = ["vendor/symfony/**/*.php"]   # 仅包含 vendor 中的 Symfony
 excludes = [
   "**/*_generated.php",
@@ -206,8 +209,26 @@ excludes = [
 | :--- | :--- | :--- | :--- |
 | `paths` | string list | `[]` | 你源码的目录或 glob。为空时扫描整个工作区。 |
 | `includes` | string list | `[]` | Mago 应解析但不修改的第三方代码的目录或 glob。 |
+| `patches` | string list | `[]` | 类型和语义标记补丁的目录或 glob。其类型及受支持标记覆盖 `includes` 和内置代码。不进行分析、lint 或格式化。 |
 | `excludes` | string list | `[]` | 在所有工具中都被排除的 glob 或路径。 |
 | `extensions` | string list | `["php"]` | 视为 PHP 的文件扩展名。 |
+
+### 修补第三方代码的类型
+
+补丁是一个 PHP 文件,按完全限定名称重新声明第三方或内置符号。Mago 读取其中的类型信息和受支持的语义 PHPDoc 标记,忽略函数体。补丁修正已有符号,不会替换整个符号,也不能创建原代码中不存在的符号。
+
+每个符号只能有一个补丁。如果多个补丁指向同一符号,Mago 会报告冲突,而不是自行选择。请合并这些补丁,或只保留一个。
+
+**补丁可以修正的内容**
+
+- 方法签名:参数类型、返回类型、`@throws`、`@template` 和 `@psalm-assert` 等类型断言。只有补丁明确提供的字段才会改变。
+- 属性和常量的类型。
+- 语义 PHPDoc 标记:通用标签(`@deprecated`、`@not-deprecated`、`@internal`、`@experimental`、`@api`),函数和方法标签(`@pure`、`@impure`、`@mutation-free`、`@external-mutation-free`、`@must-use`、`@no-named-arguments`、`@suspends-fiber`),以及类标签(`@consistent-constructor`、`@consistent-templates`)。扫描器已识别的 PHPStan 和 Psalm 别名同样受支持。只有补丁显式声明的标签才会更改对应标记;未声明的标签保留原值。`@impure` 会清除 `@pure`,`@not-deprecated` 会清除 `@deprecated`。
+- 类级别的 `@template` 声明和类型别名。已有模板按名称更新,新模板追加到末尾。
+- 通过 `@extends` 和 `@implements` 指定父类型的泛型实参。补丁覆盖它明确指定的绑定,保留其他绑定。
+- 通过 `@method`、`@property`、`@property-read` 和 `@property-write` 添加魔术成员,即使原符号没有声明这些成员。这些注解为 `__call`、`__get` 或 `__set` 提供类型信息。
+
+语义标记只会应用于支持相应标签的声明。结构修饰符和分析控制标记(包括 `final`、`readonly`、`static`、抑制标记和从函数体推导的标记)仍由原声明决定。
 
 ### Glob 设置
 

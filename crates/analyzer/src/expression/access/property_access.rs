@@ -1,6 +1,8 @@
-use mago_allocator::Arena;
+use std::borrow::Cow;
 use std::rc::Rc;
+use std::slice::from_ref;
 
+use mago_allocator::Arena;
 use mago_codex::assertion::Assertion;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
@@ -19,15 +21,20 @@ use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Variable;
 use mago_word::Word;
 use mago_word::concat_word;
+use mago_word::word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::editor::MemberReference;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::property::report_deprecated_property;
+use crate::resolver::property::resolve_declared_property;
 use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_property_access_expression_id;
+use crate::utils::expression::get_variable_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyAccess<'arena> {
     fn analyze<'ctx, A>(
@@ -102,7 +109,7 @@ where
         && let Some(property_access_id) = &property_access_id
         && let Some(existing_type) = block_context.locals.get(property_access_id).cloned()
     {
-        add_memoized_property_reference(context, block_context, artifacts, object, property_selector)?;
+        add_memoized_property_reference(context, block_context, artifacts, object, property_selector, is_null_safe)?;
 
         artifacts.set_rc_expression_type(&span, existing_type);
 
@@ -216,50 +223,130 @@ where
 ///
 /// When property access is memoized, we still need to track the symbol reference
 /// so that unused property detection works correctly.
-fn add_memoized_property_reference<'ctx, 'ast, 'arena, A>(
-    context: &Context<'ctx, 'arena, A>,
+pub(super) fn add_memoized_property_reference<'ctx, 'ast, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     object: &'ast Expression<'arena>,
     property_selector: &'ast ClassLikeMemberSelector<'arena>,
+    is_null_safe: bool,
 ) -> Result<(), AnalysisError>
 where
     A: Arena,
 {
-    let property_name = match property_selector {
-        ClassLikeMemberSelector::Identifier(ident) => concat_word!(b"$", ident.value),
-        _ => return Ok(()),
+    let is_this = matches!(object, Expression::Variable(Variable::Direct(var)) if var.name == b"$this");
+    if artifacts.editor.is_some() {
+        super::record_cached_receiver(context, block_context, artifacts, object)?;
+        if let ClassLikeMemberSelector::Expression(selector) = property_selector {
+            super::record_cached_receiver(context, block_context, artifacts, selector.expression)?;
+        }
+    }
+
+    let selector_type = match property_selector {
+        ClassLikeMemberSelector::Variable(variable) => {
+            get_variable_id(variable).and_then(|id| block_context.locals.get(&word(id)).cloned())
+        }
+        ClassLikeMemberSelector::Expression(selector) => {
+            artifacts.get_rc_expression_type(selector.expression).cloned().or_else(|| {
+                get_block_expression_id(selector.expression, context, block_context)
+                    .and_then(|id| block_context.locals.get(&id).cloned())
+            })
+        }
+        _ => None,
     };
 
-    let is_this = matches!(object, Expression::Variable(Variable::Direct(var)) if var.name == b"$this");
-    let mut declaring_classes: Vec<Word> = Vec::new();
+    let direct_name = match property_selector {
+        ClassLikeMemberSelector::Identifier(ident) => Some(concat_word!(b"$", ident.value)),
+        _ => None,
+    };
 
-    if is_this {
-        if let Some(class_name) = block_context.scope.get_class_like_name()
-            && let Some(declaring_class) =
-                context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())
-        {
-            declaring_classes.push(declaring_class);
+    let names: Cow<'_, [Word]> = match direct_name.as_ref() {
+        Some(name) => Cow::Borrowed(from_ref(name)),
+        None => Cow::Owned(
+            selector_type
+                .iter()
+                .flat_map(|union| union.types.iter())
+                .filter_map(|atomic| atomic.get_literal_string_value().map(|name| concat_word!(b"$", name)))
+                .collect(),
+        ),
+    };
+
+    if artifacts.editor.is_some() {
+        let receiver_type = super::saved_receiver_type(context, block_context, artifacts, object);
+        let mut reference = MemberReference::property(
+            block_context.scope.get_reference_origin(),
+            object.span(),
+            property_selector.span(),
+            word(""),
+        );
+
+        reference.dynamic = !matches!(property_selector, ClassLikeMemberSelector::Identifier(_));
+        reference.uncertain = selector_type
+            .is_some_and(|union| union.types.iter().any(|atomic| atomic.get_literal_string_value().is_none()));
+        reference.uncertain |= !is_null_safe && receiver_type.as_ref().is_some_and(|union| union.can_be_null());
+        if is_this {
+            reference.lookup_class = block_context.scope.get_class_like_name();
         }
-    } else if let Some(object_type) = artifacts.get_rc_expression_type(object) {
-        for atomic in object_type.types.iter() {
-            for class_name in atomic.get_all_object_names() {
-                if let Some(declaring_class) =
-                    context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())
-                {
-                    declaring_classes.push(declaring_class);
-                }
+
+        if let Some(editor) = &mut artifacts.editor {
+            for name in names.iter() {
+                reference.name = *name;
+                editor.record_saved_properties(
+                    context.codebase,
+                    block_context.scope.get_class_like_name(),
+                    reference,
+                    receiver_type.as_deref(),
+                );
             }
         }
     }
 
-    // Add references (after releasing the immutable borrow)
-    for declaring_class in declaring_classes {
-        artifacts.symbol_references.add_reference_for_property_read(
-            &block_context.scope,
-            declaring_class,
-            property_name,
-        );
+    for &property_name in names.iter() {
+        let mut lookup_classes: Vec<Word> = Vec::new();
+
+        if is_this {
+            if let Some(class_name) = block_context.scope.get_class_like_name() {
+                lookup_classes.push(class_name);
+            }
+        } else if let Some(object_type) = artifacts.get_expression_type(object).or_else(|| {
+            get_block_expression_id(object, context, block_context)
+                .and_then(|id| block_context.locals.get(&id).map(AsRef::as_ref))
+        }) {
+            for atomic in object_type.types.iter() {
+                lookup_classes.extend(atomic.get_all_object_names());
+            }
+        }
+
+        for lookup_class in lookup_classes {
+            let Some(class_metadata) = context.codebase.get_class_like_by_name(lookup_class) else {
+                continue;
+            };
+
+            let Some(resolution) = resolve_declared_property(
+                context.codebase,
+                class_metadata,
+                property_name,
+                true,
+                block_context.scope.get_class_like_name(),
+            ) else {
+                continue;
+            };
+
+            if !block_context.is_enclosing_scope_deprecated() {
+                report_deprecated_property(
+                    context,
+                    resolution.declaring_class,
+                    resolution.property,
+                    property_selector.span(),
+                );
+            }
+
+            artifacts.symbol_references.add_reference_for_property_read(
+                &block_context.scope,
+                resolution.declaring_class.name,
+                property_name,
+            );
+        }
     }
 
     Ok(())

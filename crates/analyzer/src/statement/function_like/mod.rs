@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::word;
 
+use mago_codex::context::ScopeContext;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
@@ -32,6 +34,7 @@ use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::expander::contains_parameter_variable;
 use mago_codex::ttype::expander::get_signature_of_function_like_metadata;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_keyed_array;
@@ -67,6 +70,7 @@ use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
 use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
+use crate::statement::r#static::add_captured_types;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
 
@@ -155,6 +159,7 @@ pub fn resolve_closure_like_type<A>(
     context: &Context<'_, '_, A>,
     closure_span: Span,
     function_metadata: &FunctionLikeMetadata,
+    scope: &ScopeContext<'_>,
     inner_has_returned: bool,
     inner_artifacts: AnalysisArtifacts,
 ) -> TUnion
@@ -167,10 +172,19 @@ where
         &function_identifier,
         function_metadata,
         context.codebase,
-        &TypeExpansionOptions::default(),
+        &TypeExpansionOptions {
+            self_class: scope.get_class_like_name(),
+            static_class_type: scope.get_class_like_name().map_or(StaticClassType::None, StaticClassType::Name),
+            ..Default::default()
+        },
     );
 
-    if function_metadata.template_types.is_empty() {
+    if function_metadata.template_types.is_empty()
+        && !function_metadata
+            .return_type_metadata
+            .as_ref()
+            .is_some_and(|ty| contains_parameter_variable(&ty.type_union))
+    {
         if function_metadata.flags.has_yield() && function_metadata.return_type_metadata.is_none() {
             signature.return_type = Some(Arc::new(fold_inferred_generator_type(
                 context,
@@ -207,16 +221,20 @@ where
         function_like_metadata.type_resolution_context.clone().unwrap_or_default(),
     );
 
-    let mut artifacts =
-        AnalysisArtifacts::new().with_variable_definedness_targets(parent_artifacts.variable_definedness_targets());
+    let mut artifacts = AnalysisArtifacts::new()
+        .with_retained_expression_types(parent_artifacts.should_retain_completed_expression_types())
+        .with_variable_definedness_targets(parent_artifacts.variable_definedness_targets())
+        .with_editor_artifacts(parent_artifacts.editor.is_some());
 
     if let Some(return_type) = &function_like_metadata.return_type_metadata {
+        add_symbol_references(&return_type.type_union, &block_context.scope, &mut artifacts);
         report_undefined_type_references(context, return_type);
 
         // Only check native declaration if effective type is from docblock (to avoid duplicates)
         if return_type.from_docblock
             && let Some(native_return) = &function_like_metadata.return_type_declaration_metadata
         {
+            add_symbol_references(&native_return.type_union, &block_context.scope, &mut artifacts);
             report_undefined_type_references(context, native_return);
         }
     }
@@ -314,6 +332,10 @@ where
             FunctionLikeBody::Statements(statements, _) => {
                 artifacts.static_local_types =
                     infer_static_local_types(context, block_context, &artifacts, statements)?;
+                if let Some(static_local_types) = &artifacts.static_local_types {
+                    add_captured_types(context, block_context, static_local_types);
+                }
+
                 analyze_statements(statements, context, block_context, &mut artifacts)?;
             }
             FunctionLikeBody::Expression(value) => {
@@ -335,6 +357,7 @@ where
         && let Some(return_type) = &function_metadata.return_type_metadata
         && !return_type.type_union.is_void()
         && !function_like_metadata.flags.has_yield()
+        && !function_like_metadata.return_type_declaration_metadata.as_ref().is_some_and(|d| d.type_union.is_void())
     {
         let expanded_type =
             expand_type_metadata(context, block_context, &mut artifacts, function_like_metadata, return_type);
@@ -377,9 +400,18 @@ where
     record_inferred_return_type(context, block_context, &mut artifacts, function_like_metadata);
 
     std::mem::swap(&mut context.type_resolution_context, &mut previous_type_resolution_context);
-    parent_artifacts.expression_types.extend(std::mem::take(&mut artifacts.expression_types));
+    let expression_types = std::mem::take(&mut artifacts.expression_types);
+    if parent_artifacts.should_retain_completed_expression_types() {
+        parent_artifacts.extend_expression_types(expression_types);
+    }
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
+    if let Some(editor) = &mut parent_artifacts.editor
+        && let Some(child) = artifacts.editor.take()
+    {
+        editor.methods.extend(child.methods);
+        editor.members.extend(child.members);
+    }
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
     parent_artifacts
@@ -668,11 +700,7 @@ fn expand_type_metadata<'ctx, A>(
 where
     A: Arena,
 {
-    add_symbol_references(
-        &type_metadata.type_union,
-        block_context.scope.get_function_like_identifier().as_ref(),
-        artifacts,
-    );
+    add_symbol_references(&type_metadata.type_union, &block_context.scope, artifacts);
 
     let mut signature_union = type_metadata.type_union.clone();
 
@@ -701,7 +729,7 @@ where
 }
 
 pub(super) fn add_properties_to_context<'ctx, A>(
-    context: &Context<'ctx, '_, A>,
+    context: &mut Context<'ctx, '_, A>,
     block_context: &mut BlockContext<'ctx>,
     class_like_metadata: &'ctx ClassLikeMetadata,
     function_like_metadata: Option<&'ctx FunctionLikeMetadata>,
@@ -712,6 +740,23 @@ where
     let Some(calling_class) = block_context.scope.get_class_like_name() else {
         return Ok(());
     };
+
+    let method_metadata = function_like_metadata.and_then(|metadata| metadata.method_metadata.as_ref());
+    let function_is_final = method_metadata.is_some_and(|metadata| metadata.is_final);
+    let cacheable = class_like_metadata.name == calling_class
+        && method_metadata.is_none_or(|metadata| metadata.where_constraints.is_empty());
+    let cache_key = (calling_class, function_is_final);
+    if cacheable && let Some(property_types) = context.property_types.get(&cache_key) {
+        for (expression_id, property_type) in property_types {
+            if !block_context.scope.is_static() || !expression_id.as_bytes().starts_with(b"$this->") {
+                block_context.locals.insert(*expression_id, Rc::clone(property_type));
+            }
+        }
+
+        return Ok(());
+    }
+
+    let mut property_types = cacheable.then(Vec::new);
 
     // Seed every property name reachable on this class: all real declarations, plus magic
     // `@property*` annotations for names without one.
@@ -751,7 +796,7 @@ where
             continue;
         }
 
-        let mut property_type = resolution.declared_type(context.codebase);
+        let mut property_type = resolution.declared_type_borrowed(context.codebase);
 
         let property_name_bytes = property_name.as_bytes();
         let raw_property_name = property_name_bytes.strip_prefix(b"$").unwrap_or(property_name_bytes);
@@ -761,16 +806,18 @@ where
         } else {
             let this_type = get_this_type(context, class_like_metadata, function_like_metadata);
 
-            property_type = localize_property_type(
+            property_type = Cow::Owned(localize_property_type(
                 context,
                 &property_type,
                 this_type.get_type_parameters().unwrap_or_default(),
                 class_like_metadata,
                 property_class_metadata,
-            );
+            ));
 
             concat_word!(b"$this->", raw_property_name)
         };
+
+        let mut property_type = property_type.into_owned();
 
         if resolution.is_magic()
             || (property_metadata.type_declaration_metadata.is_some() && !property_metadata.flags.has_default())
@@ -784,13 +831,23 @@ where
             &TypeExpansionOptions {
                 self_class: Some(calling_class),
                 static_class_type: StaticClassType::Name(calling_class),
-                function_is_final: function_like_metadata
-                    .is_some_and(|m| m.method_metadata.as_ref().is_some_and(|metadata| metadata.is_final)),
+                function_is_final,
                 ..Default::default()
             },
         );
 
-        block_context.locals.insert(expression_id, Rc::new(property_type));
+        let property_type = Rc::new(property_type);
+        if !block_context.scope.is_static() || property_metadata.flags.is_static() {
+            block_context.locals.insert(expression_id, Rc::clone(&property_type));
+        }
+
+        if let Some(property_types) = &mut property_types {
+            property_types.push((expression_id, property_type));
+        }
+    }
+
+    if let Some(property_types) = property_types {
+        context.property_types.insert(cache_key, property_types);
     }
 
     Ok(())
@@ -832,7 +889,7 @@ where
         interface_type.is_this = false;
         intersections.push(TAtomic::Object(TObject::Named(interface_type)));
         if let Some(interface_intersactions) = interface_intersactions {
-            intersections.extend(interface_intersactions);
+            intersections.extend(*interface_intersactions);
         }
     }
 
@@ -852,7 +909,7 @@ where
         parent_type.is_this = false;
         intersections.push(TAtomic::Object(TObject::Named(parent_type)));
         if let Some(parent_intersections) = parent_intersections {
-            intersections.extend(parent_intersections);
+            intersections.extend(*parent_intersections);
         }
     }
 
@@ -879,62 +936,33 @@ where
 
     TObject::Named(TNamedObject {
         name: class_like_metadata.original_name,
-        type_parameters: if type_parameters.is_empty() { None } else { Some(type_parameters) },
+        type_parameters: if type_parameters.is_empty() { None } else { Some(type_parameters.into_boxed_slice()) },
         variances: None,
         is_static: true,
         is_this: true,
-        intersection_types: if intersections.is_empty() { None } else { Some(intersections) },
+        intersection_types: if intersections.is_empty() { None } else { Some(Box::new(intersections)) },
         remapped_parameters: false,
     })
 }
 
-fn add_symbol_references(
-    parameter_type: &TUnion,
-    calling_function_like_id: Option<&FunctionLikeIdentifier>,
-    artifacts: &mut AnalysisArtifacts,
-) {
-    for type_node in parameter_type.get_all_child_nodes() {
-        if let TypeRef::Atomic(atomic) = type_node {
-            match atomic {
-                TAtomic::Reference(TReference::Symbol { name, .. })
-                | TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Function(name))) => {
-                    match calling_function_like_id {
-                        Some(FunctionLikeIdentifier::Function(calling_function)) => {
-                            artifacts.symbol_references.add_symbol_reference_to_symbol(*calling_function, *name, true);
-                        }
-                        Some(FunctionLikeIdentifier::Method(calling_classlike, calling_function)) => {
-                            artifacts.symbol_references.add_class_member_reference_to_symbol(
-                                (*calling_classlike, *calling_function),
-                                *name,
-                                true,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Method(name, member_name))) => {
-                    match calling_function_like_id {
-                        Some(FunctionLikeIdentifier::Function(calling_function)) => {
-                            artifacts.symbol_references.add_symbol_reference_to_class_member(
-                                *calling_function,
-                                (*name, *member_name),
-                                true,
-                            );
-                        }
-                        Some(FunctionLikeIdentifier::Method(calling_classlike, calling_function)) => {
-                            artifacts.symbol_references.add_class_member_reference_to_class_member(
-                                (*calling_classlike, *calling_function),
-                                (*name, *member_name),
-                                true,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
+fn add_symbol_references(parameter_type: &TUnion, scope: &ScopeContext<'_>, artifacts: &mut AnalysisArtifacts) {
+    let in_signature = !matches!(scope.get_function_like_identifier(), Some(FunctionLikeIdentifier::Closure(_)));
+    parameter_type.any_child_node(|type_node| {
+        let reference = match type_node {
+            TypeRef::Atomic(TAtomic::Reference(TReference::Symbol { name, .. }))
+            | TypeRef::Atomic(TAtomic::Object(TObject::Named(TNamedObject { name, .. })))
+            | TypeRef::Atomic(TAtomic::Object(TObject::Enum(TEnum { name, .. })))
+            | TypeRef::Atomic(TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Function(name)))) => {
+                (name.to_ascii_lowercase(), mago_word::empty_word())
             }
-        }
-    }
+            TypeRef::Atomic(TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Method(class, method)))) => {
+                (class.to_ascii_lowercase(), method.to_ascii_lowercase())
+            }
+            _ => return false,
+        };
+        artifacts.symbol_references.add_reference(scope.get_reference_origin(), reference, in_signature);
+        false
+    });
 }
 
 /// Record the type this body actually returns, keyed by the function-like's
@@ -1109,6 +1137,14 @@ fn check_return_type_metadata_width<'ctx, A>(
         .types
         .iter()
         .filter(|declared_atomic| !any_inferred_matches(declared_atomic))
+        .filter(|declared_atomic| {
+            !(return_type_metadata.from_docblock
+                && declared_atomic.is_null()
+                && function_like_metadata
+                    .return_type_declaration_metadata
+                    .as_ref()
+                    .is_some_and(|n| n.type_union.has_null()))
+        })
         .collect::<Vec<_>>();
     if unused_atomics.is_empty() {
         return;
@@ -1547,10 +1583,7 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
     context.collector.report_with_code(IssueCode::InvalidParameterDefaultValue, issue);
 }
 
-/// Reports errors for any undefined type references in the given type metadata.
-///
-/// This function scans the type union for unresolved `TReference::Symbol` entries,
-/// which indicate types that were not found during the population phase.
+/// Reports missing types, including object types whose declarations were removed after population.
 pub fn report_undefined_type_references<A>(context: &mut Context<'_, '_, A>, type_metadata: &TypeMetadata)
 where
     A: Arena,
@@ -1559,9 +1592,13 @@ where
         return;
     }
 
-    for type_ref in type_metadata.type_union.get_all_child_nodes() {
-        let TypeRef::Atomic(TAtomic::Reference(TReference::Symbol { name, .. })) = type_ref else {
-            continue;
+    type_metadata.type_union.any_child_node(|type_ref| {
+        let name = match type_ref {
+            TypeRef::Atomic(TAtomic::Reference(TReference::Symbol { name, .. })) => name,
+            TypeRef::Atomic(TAtomic::Object(TObject::Named(TNamedObject { name, .. }) | TObject::Enum(TEnum { name, .. })))
+                if !matches!(name.as_bytes(), b"self" | b"static" | b"parent" | b"$this")
+                    && context.codebase.get_class_like(name.as_bytes()).is_none() => name,
+            _ => return false,
         };
 
         context.collector.report_with_code(
@@ -1575,5 +1612,7 @@ where
                 .with_note("If this type comes from an optional dependency or extension, you can safely suppress this issue using `@mago-ignore` or `@mago-expect`.")
                 .with_help("Verify the type name is spelled correctly, the file containing it is included in analysis, and any required `use` statements are present."),
         );
-    }
+
+        false
+    });
 }

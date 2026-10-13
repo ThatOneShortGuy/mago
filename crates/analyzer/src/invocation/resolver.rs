@@ -122,13 +122,15 @@ where
     A: Arena,
 {
     let mut resulting_union = union_to_resolve;
-    let mut resulting_atomics = Vec::with_capacity(resulting_union.types.len());
-    for atomic_to_resolve in resulting_union.types.into_owned() {
-        let return_atomics = resolve_atomic(context, invocation, template_result, parameters, atomic_to_resolve);
-        resulting_atomics.extend(return_atomics);
-    }
+    if resulting_union.types.iter().any(needs_invocation_resolution) {
+        let mut resulting_atomics = Vec::with_capacity(resulting_union.types.len());
+        for atomic_to_resolve in resulting_union.types.into_owned() {
+            let return_atomics = resolve_atomic(context, invocation, template_result, parameters, atomic_to_resolve);
+            resulting_atomics.extend(return_atomics);
+        }
 
-    resulting_union.types = Cow::Owned(resulting_atomics);
+        resulting_union.types = Cow::Owned(resulting_atomics);
+    }
 
     if !template_result.lower_bounds.is_empty() || resulting_union.has_template_types() {
         // Replace templates first so derived types (e.g. `template-type<T, ...>`)
@@ -184,19 +186,28 @@ where
         allow_mixin_static_rebind = false;
     }
 
-    let has_lexically_bound_parameter = resulting_union
-        .get_all_child_nodes()
-        .into_iter()
-        .any(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_))));
+    let has_lexically_bound_parameter =
+        resulting_union.any_child_node(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_))));
     if !has_lexically_bound_parameter {
         expander::expand_union(
             context.codebase,
             &mut resulting_union,
-            &TypeExpansionOptions { self_class, static_class_type, function_is_final, allow_mixin_static_rebind },
+            &TypeExpansionOptions {
+                self_class,
+                static_class_type,
+                function_is_final,
+                allow_mixin_static_rebind,
+                ..Default::default()
+            },
         );
     }
 
     resulting_union
+}
+
+fn needs_invocation_resolution(atomic: &TAtomic) -> bool {
+    matches!(atomic, TAtomic::Variable(_) | TAtomic::Conditional(_) | TAtomic::Derived(_))
+        || atomic.any_child_node(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_))))
 }
 
 fn resolve_atomic<'ctx, 'arena, A>(
@@ -209,12 +220,7 @@ fn resolve_atomic<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    if !matches!(&atomic_to_resolve, TAtomic::Variable(_) | TAtomic::Conditional(_) | TAtomic::Derived(_))
-        && !atomic_to_resolve
-            .get_all_child_nodes()
-            .into_iter()
-            .any(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_))))
-    {
+    if !needs_invocation_resolution(&atomic_to_resolve) {
         return vec![atomic_to_resolve];
     }
 
@@ -248,7 +254,7 @@ where
                     *std::sync::Arc::make_mut(&mut list.element_type) =
                         resolve_union(context, invocation, template_result, parameters, (*list.element_type).clone());
 
-                    if let Some(known_elements) = &mut list.known_elements {
+                    if let Some(known_elements) = list.known_elements.as_mut().map(Arc::make_mut) {
                         for (_, element_type) in known_elements.values_mut() {
                             *element_type =
                                 resolve_union(context, invocation, template_result, parameters, element_type.clone());
@@ -264,7 +270,7 @@ where
                     }
 
                     if let Some(known_items) = &mut keyed.known_items {
-                        for (_, item_type) in known_items.values_mut() {
+                        for (_, item_type) in Arc::make_mut(known_items).values_mut() {
                             *item_type =
                                 resolve_union(context, invocation, template_result, parameters, item_type.clone());
                         }
@@ -338,6 +344,21 @@ where
                             parameter_type.clone(),
                         );
                     }
+
+                    if let Some(out_type) = parameter.get_out_type_mut() {
+                        *out_type =
+                            resolve_union(context, invocation, template_result, &scoped_parameters, out_type.clone());
+                    }
+
+                    if let Some(closure_this_type) = parameter.get_closure_this_type_mut() {
+                        *closure_this_type = resolve_union(
+                            context,
+                            invocation,
+                            template_result,
+                            &scoped_parameters,
+                            closure_this_type.clone(),
+                        );
+                    }
                 }
 
                 if let Some(return_type) = signature.get_return_type_mut() {
@@ -345,7 +366,7 @@ where
                         resolve_union(context, invocation, template_result, &scoped_parameters, return_type.clone());
                 }
 
-                for constraint in &mut signature.constraints {
+                for constraint in Arc::make_mut(&mut signature.constraints).iter_mut() {
                     constraint.input_type = Arc::new(resolve_union(
                         context,
                         invocation,
@@ -397,7 +418,7 @@ where
                     invocation,
                     template_result,
                     parameters,
-                    intersection_types.as_mut(),
+                    intersection_types.as_deref_mut(),
                 );
             }
 
@@ -568,6 +589,19 @@ where
     let subject = inferred_type_replacer::replace(&subject, template_result, context.codebase);
     let target = inferred_type_replacer::replace(&target, template_result, context.codebase);
 
+    if [&subject, &target]
+        .iter()
+        .any(|union| union.any_child_node(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_)))))
+    {
+        return vec![TAtomic::Conditional(TConditional::new(
+            Arc::new(subject),
+            Arc::new(target),
+            Arc::new(then_type),
+            Arc::new(otherwise_type),
+            negated,
+        ))];
+    }
+
     if !subject.is_never() {
         let mut comparison_result = ComparisonResult::new();
         let subject_is_contained = union_comparator::is_contained_by(
@@ -602,4 +636,51 @@ where
     }
 
     add_union_type(then_type, &otherwise_type, context.codebase, CombinerOptions::default()).types.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use indoc::indoc;
+
+    use crate::test_analysis;
+
+    test_analysis! {
+        name = unchanged_invocation_atoms_still_expand_templates_and_static,
+        code = indoc! {"
+            <?php
+
+            /** @template T */
+            interface Box {
+                /** @return T */
+                public function get(): mixed;
+            }
+
+            /** @param Box<string> $box */
+            function read(Box $box): string {
+                return $box->get();
+            }
+
+            class Factory {
+                final public function __construct() {}
+
+                public static function make(): static {
+                    return new static();
+                }
+            }
+
+            final class ChildFactory extends Factory {}
+
+            function make_child(): ChildFactory {
+                return ChildFactory::make();
+            }
+
+            function number(): int {
+                return 42;
+            }
+
+            function read_number(): int {
+                return number();
+            }
+        "},
+    }
 }

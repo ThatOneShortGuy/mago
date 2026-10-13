@@ -49,7 +49,6 @@ use mago_span::Span;
 
 use crate::code::IssueCode;
 use crate::context::Context;
-use crate::invocation::MethodTargetContext;
 
 #[derive(Debug, Clone, Copy)]
 pub struct InferenceOptions {
@@ -155,7 +154,7 @@ fn infer_templates_from_input_and_container_types<A>(
     let top_level = options.is_top_level;
     let options = InferenceOptions { is_top_level: false, ..options };
 
-    if input_type.is_mixed() && !container_type.is_generic_parameter() {
+    if container_type.is_mixed() || (input_type.is_mixed() && !container_type.is_generic_parameter()) {
         return;
     }
 
@@ -169,6 +168,10 @@ fn infer_templates_from_input_and_container_types<A>(
             TAtomic::Object(TObject::Named(named)) => named.type_parameters.as_ref().is_some_and(|p| !p.is_empty()),
             _ => false,
         });
+
+    if generic_container_parts.is_empty() {
+        return;
+    }
 
     let has_generic_class_string = generic_container_parts
         .iter()
@@ -218,7 +221,7 @@ fn infer_templates_from_input_and_container_types<A>(
                             (TArray::List(container_list), TArray::List(input_list)) => {
                                 let mut inferred_input_elements = vec![];
                                 if let Some(container_elements) = &container_list.known_elements {
-                                    for (container_index, (_, container_element)) in container_elements {
+                                    for (container_index, (_, container_element)) in container_elements.iter() {
                                         let input_element = input_list
                                             .known_elements
                                             .as_ref()
@@ -256,7 +259,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                     let mut input_value_type = Cow::Borrowed(input_list.element_type.as_ref());
 
                                     if let Some(known_input_elements) = &input_list.known_elements {
-                                        for (input_index, (_, input_element)) in known_input_elements {
+                                        for (input_index, (_, input_element)) in known_input_elements.iter() {
                                             if !inferred_input_elements.contains(&input_index) {
                                                 input_value_type = Cow::Owned(add_union_type(
                                                     input_element.clone(),
@@ -281,7 +284,7 @@ fn infer_templates_from_input_and_container_types<A>(
                             (TArray::Keyed(container_array), TArray::Keyed(input_array)) => {
                                 let mut inferred_input_keys = vec![];
                                 if let Some(known_items) = &container_array.known_items {
-                                    for (container_key, (_, container_item)) in known_items {
+                                    for (container_key, (_, container_item)) in known_items.iter() {
                                         let input_item = input_array
                                             .known_items
                                             .as_ref()
@@ -327,7 +330,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                         };
 
                                     if let Some(known_input_items) = &input_array.known_items {
-                                        for (input_key, (_, input_item)) in known_input_items {
+                                        for (input_key, (_, input_item)) in known_input_items.iter() {
                                             if !inferred_input_keys.contains(&input_key) {
                                                 input_key_type = Some(Cow::Owned(add_optional_union_type(
                                                     input_key.to_union(),
@@ -371,7 +374,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                 let mut matched_input_keys: HashSet<ArrayKey> = HashSet::default();
 
                                 if let Some(container_elements) = &container_list.known_elements {
-                                    for (container_index, (_, container_element)) in container_elements {
+                                    for (container_index, (_, container_element)) in container_elements.iter() {
                                         if let Some(known_items) = &input_keyed_array.known_items {
                                             let key = ArrayKey::Integer(*container_index as i64);
                                             if let Some((_, input_element)) = known_items.get(&key) {
@@ -419,7 +422,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                         };
 
                                     if let Some(known_input_items) = &input_keyed_array.known_items {
-                                        for (input_key, (_, input_item)) in known_input_items {
+                                        for (input_key, (_, input_item)) in known_input_items.iter() {
                                             if !matched_input_keys.contains(input_key) {
                                                 input_value_type = Cow::Owned(add_union_type(
                                                     input_item.clone(),
@@ -445,7 +448,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                 let mut matched_input_indices: HashSet<usize> = HashSet::default();
 
                                 if let Some(known_items) = &container_array.known_items {
-                                    for (container_key, (_, container_item)) in known_items {
+                                    for (container_key, (_, container_item)) in known_items.iter() {
                                         match container_key {
                                             ArrayKey::Integer(i) if *i >= 0 => {
                                                 let idx = *i as usize;
@@ -500,7 +503,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                     let mut input_value_type = Some(Cow::Borrowed(&input_params.1));
 
                                     if let Some(known_input_elements) = &input_list.known_elements {
-                                        for (input_index, (_, input_element)) in known_input_elements {
+                                        for (input_index, (_, input_element)) in known_input_elements.iter() {
                                             if !matched_input_indices.contains(input_index) {
                                                 let int_key = ArrayKey::Integer(*input_index as i64);
 
@@ -1069,20 +1072,20 @@ fn infer_templates_from_input_and_container_types<A>(
 pub fn infer_templates_for_method_call<'ctx, A>(
     context: &Context<'ctx, '_, A>,
     object_type: &TNamedObject,
-    method_target_context: &MethodTargetContext<'ctx>,
+    calling_class_like_metadata: &'ctx ClassLikeMetadata,
     method_metadata: &'ctx MethodMetadata,
     declaring_class_like_metadata: &'ctx ClassLikeMetadata,
     template_result: &mut TemplateResult,
 ) where
     A: Arena,
 {
-    if declaring_class_like_metadata.name != method_target_context.class_like_metadata.name {
+    if declaring_class_like_metadata.name != calling_class_like_metadata.name {
         for (template_name, _) in &declaring_class_like_metadata.template_types {
             let template_type = get_specialized_template_type(
                 context.codebase,
                 *template_name,
                 declaring_class_like_metadata.name,
-                method_target_context.class_like_metadata,
+                calling_class_like_metadata,
                 object_type.get_type_parameters(),
             );
 
@@ -1101,7 +1104,7 @@ pub fn infer_templates_for_method_call<'ctx, A>(
             context.codebase,
             *template_name,
             declaring_class_like_metadata.name,
-            method_target_context.class_like_metadata,
+            calling_class_like_metadata,
             object_type.get_type_parameters(),
         ) else {
             continue;
@@ -1268,7 +1271,7 @@ fn resolve_atomic_unbound_templates(atomic: &TAtomic) -> TAtomic {
                             .iter()
                             .map(|(k, (optional, v))| (*k, (*optional, resolve_unbound_templates_to_constraints(v))))
                             .collect();
-                        new_list.known_elements = Some(new_elements);
+                        new_list.known_elements = Some(new_elements.into());
                     }
                     TArray::List(new_list)
                 }
@@ -1285,7 +1288,7 @@ fn resolve_atomic_unbound_templates(atomic: &TAtomic) -> TAtomic {
                             .iter()
                             .map(|(k, (optional, v))| (*k, (*optional, resolve_unbound_templates_to_constraints(v))))
                             .collect();
-                        new_keyed.known_items = Some(new_items);
+                        new_keyed.known_items = Some(new_items.into());
                     }
                     TArray::Keyed(new_keyed)
                 }

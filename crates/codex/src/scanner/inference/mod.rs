@@ -43,6 +43,7 @@ use crate::ttype::atomic::array::list::TList;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::derived::TDerived;
 use crate::ttype::atomic::derived::value_of::TValueOf;
+use crate::ttype::atomic::reference::TGlobalReferenceSelector;
 use crate::ttype::atomic::reference::TReference;
 use crate::ttype::atomic::reference::TReferenceMemberSelector;
 use crate::ttype::atomic::scalar::TScalar;
@@ -94,6 +95,29 @@ pub fn get_literal_constant_type(name: &[u8]) -> Option<TUnion> {
         Some(get_null())
     } else {
         None
+    }
+}
+
+/// Returns the expression inside any number of parentheses.
+#[inline]
+#[must_use]
+pub(crate) fn unwrap_parens<'expr, 'arena>(mut expression: &'expr Expression<'arena>) -> &'expr Expression<'arena> {
+    while let Expression::Parenthesized(p) = expression {
+        expression = p.expression;
+    }
+    expression
+}
+
+/// Checks whether an expression is the `null` literal, also when written as `\null` or in parentheses.
+#[inline]
+#[must_use]
+pub(crate) fn is_null_literal(expression: &Expression<'_>) -> bool {
+    match unwrap_parens(expression) {
+        Expression::Literal(Literal::Null(_)) => true,
+        Expression::ConstantAccess(access) => {
+            get_literal_constant_type(access.name.value()).is_some_and(|constant_type| constant_type.is_null())
+        }
+        _ => false,
     }
 }
 
@@ -629,7 +653,7 @@ where
 
             Some(wrap_atomic(TAtomic::Array(TArray::List(TList {
                 known_count: Some(entries.len()),
-                known_elements: Some(entries),
+                known_elements: Some(entries.into()),
                 element_type: Arc::new(get_never()),
                 non_empty: !elements.is_empty(),
             }))))
@@ -677,7 +701,7 @@ where
             let mut keyed_array = TKeyedArray::new();
             keyed_array.non_empty = !known_items.is_empty();
             if !known_items.is_empty() {
-                keyed_array.known_items = Some(known_items);
+                keyed_array.known_items = Some(known_items.into());
             }
 
             if !unknown_key_values.is_empty() {
@@ -734,7 +758,9 @@ fn infer_constant<'ctx, 'arena>(
         }
     }
 
-    None
+    Some(wrap_atomic(TAtomic::Reference(TReference::Global {
+        selector: TGlobalReferenceSelector::Identifier(ascii_lowercase_constant_name_word(fqn)),
+    })))
 }
 
 #[inline]

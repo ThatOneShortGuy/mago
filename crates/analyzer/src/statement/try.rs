@@ -165,7 +165,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
 
                     *existing_type = Rc::new(combined_type);
                 } else {
-                    mutable_try_scope.locals.insert(*variable_id, Rc::clone(variable_type));
+                    let mut var_type = (**variable_type).clone();
+                    if !old_block_context_locals.contains_key(variable_id) {
+                        var_type.set_possibly_undefined(true, Some(true));
+                    }
+                    mutable_try_scope.locals.insert(*variable_id, Rc::new(var_type));
                 }
             }
         }
@@ -194,7 +198,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
         for (i, catch_clause) in self.catch_clauses.iter().enumerate() {
             let mut catch_block_context = original_block_context.clone();
             catch_block_context.flags.set_has_returned(false);
-            let caught_classes = get_caught_classes(context, &catch_clause.hint);
+            let caught_classes = get_caught_classes(context, &catch_block_context, artifacts, &catch_clause.hint);
 
             for (variable_id, variable_type) in &mut catch_block_context.locals {
                 if let Some(old_type) = old_block_context_locals.get(variable_id) {
@@ -343,15 +347,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
             if let Some(mut finally_scope) = try_block_context.finally_scope.as_ref().map(|s| s.borrow_mut()) {
                 for (variable_id, variable_type) in &catch_block_context.locals {
                     let resulting_type = if let Some(finally_variable_type) = finally_scope.locals.get(variable_id) {
-                        ttype::combine_union_types(
+                        let mut combined = ttype::combine_union_types(
                             finally_variable_type.as_ref(),
                             variable_type.as_ref(),
                             context.codebase,
                             CombinerOptions::default(),
-                        )
+                        );
+                        if !old_block_context_locals.contains_key(variable_id) {
+                            combined.set_possibly_undefined(true, Some(true));
+                        }
+                        combined
                     } else {
                         let mut finally_variable_type = (**variable_type).clone();
-                        finally_variable_type.set_possibly_undefined(true, Some(true));
+                        if !old_block_context_locals.contains_key(variable_id) {
+                            finally_variable_type.set_possibly_undefined(true, Some(true));
+                        }
 
                         finally_variable_type
                     };
@@ -383,6 +393,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
             finally_block_context.assigned_variable_ids = WordMap::default();
             finally_block_context.possibly_assigned_variable_ids = WordSet::default();
             finally_block_context.locals = finally_scope.locals;
+            for var_id in finally_block_context.locals.keys() {
+                if !old_block_context_locals.contains_key(var_id) {
+                    finally_block_context.possibly_undefined_variable_ids.insert(*var_id);
+                }
+            }
             finally_block_context.flags.set_has_returned(false);
 
             analyze_statements(
@@ -446,7 +461,12 @@ fn intersect_definitely_defined_locals(definitely_defined_locals: &mut Option<Wo
     }
 }
 
-fn get_caught_classes<'arena, A>(context: &mut Context<'_, 'arena, A>, hint: &Hint<'arena>) -> WordSet
+fn get_caught_classes<'arena, A>(
+    context: &mut Context<'_, 'arena, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+    hint: &Hint<'arena>,
+) -> WordSet
 where
     A: Arena,
 {
@@ -511,6 +531,12 @@ where
     let mut caught_classes: WordSet =
         WordSet::with_capacity_and_hasher(caught_identifiers.len(), foldhash::fast::FixedState::default());
     for (caught_type, caught_span) in caught_identifiers {
+        artifacts.symbol_references.add_reference_to_symbol(
+            &block_context.scope,
+            caught_type.to_ascii_lowercase(),
+            false,
+        );
+
         if caught_type.as_bytes().eq_ignore_ascii_case(b"throwable")
             || caught_type.as_bytes().eq_ignore_ascii_case(b"exception")
             || caught_type.as_bytes().eq_ignore_ascii_case(b"error")

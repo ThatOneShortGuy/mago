@@ -14,6 +14,9 @@ where
     A: Arena,
 {
     String(&'arena [u8]),
+    /// Zero-width bounds used to return a selected source region.
+    RangeStart,
+    RangeEnd,
     Array(Vec<'arena, Document<'arena, A>, A>),
     /// Increase the level of indentation.
     Indent(Vec<'arena, Document<'arena, A>, A>),
@@ -275,8 +278,10 @@ where
         documents: impl IntoIterator<Item = Document<'arena, A>>,
         separator: Separator,
     ) -> Vec<'arena, Document<'arena, A>, A> {
-        let mut parts = vec_in![arena];
-        for (i, document) in documents.into_iter().enumerate() {
+        let documents = documents.into_iter();
+        let capacity = documents.size_hint().0.saturating_mul(2).saturating_sub(1);
+        let mut parts = Vec::with_capacity_in(capacity, arena);
+        for (i, document) in documents.enumerate() {
             if i != 0 {
                 parts.push(match separator {
                     Separator::Space => Document::String(b" "),
@@ -326,6 +331,8 @@ where
     match document {
         // Trivial `Copy` cases
         Document::String(s) => Document::String(s),
+        Document::RangeStart => Document::RangeStart,
+        Document::RangeEnd => Document::RangeEnd,
         Document::Line(line) => Document::Line(*line),
         Document::Trim(trim) => Document::Trim(*trim),
         Document::Space(space) => Document::Space(*space),
@@ -499,6 +506,8 @@ where
             buffer.push(')');
         }
         Document::BreakParent => buffer.push_str("breakParent"),
+        Document::RangeStart => buffer.push_str("rangeStart"),
+        Document::RangeEnd => buffer.push_str("rangeEnd"),
         Document::Align(Align { alignment, contents }) => {
             buffer.push_str("dedentToRoot(align(");
             use std::fmt::Write as _;

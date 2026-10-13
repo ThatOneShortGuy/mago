@@ -431,7 +431,7 @@ fn expect_action_for(
         range: Range::new(primary.span.start.offset, primary.span.end.offset),
         severity: level_to_severity(issue.level),
         code: issue.code.clone(),
-        message: issue.message.clone(),
+        message: issue.message.to_string(),
     });
 
     Some(CodeActionItem {
@@ -472,13 +472,13 @@ fn action_for(issue: &Issue, file_id: FileId, start: u32, end: u32) -> Option<Co
         return None;
     }
 
-    let title = issue.help.clone().unwrap_or_else(|| format!("Apply mago fix: {}", issue.message));
+    let title = issue.help.as_deref().map_or_else(|| format!("Apply mago fix: {}", issue.message), str::to_owned);
     let diagnostic = primary_annotation(issue).map(|primary| DiagnosticData {
         file: primary.span.file_id,
         range: Range::new(primary.span.start.offset, primary.span.end.offset),
         severity: level_to_severity(issue.level),
         code: issue.code.clone(),
-        message: issue.message.clone(),
+        message: issue.message.to_string(),
     });
 
     Some(CodeActionItem { title, edits, diagnostic, kind: CodeActionKind::QuickFix })

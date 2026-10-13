@@ -78,11 +78,11 @@ pub fn replace(
     codebase: &CodebaseMetadata,
     options: DefinitionReplacementOptions<'_>,
 ) -> TUnion {
-    let original_parameter_atomics = parameter_type.types.to_vec();
+    let original_parameter_atomics = parameter_type.types.as_ref();
     let mut new_parameter_atomics = Vec::with_capacity(original_parameter_atomics.len());
 
     let mut had_template = false;
-    for atomic_type in &original_parameter_atomics {
+    for atomic_type in original_parameter_atomics {
         new_parameter_atomics.extend(handle_atomic_substitution(
             atomic_type,
             template_result,
@@ -164,7 +164,7 @@ fn replace_atomic(
     match &mut atomic_type {
         TAtomic::Array(array_type) => match array_type {
             TArray::Keyed(keyed_data) => {
-                if let Some(known_items) = &mut keyed_data.known_items {
+                if let Some(known_items) = keyed_data.known_items.as_mut().map(Arc::make_mut) {
                     for (_, item_union) in known_items.values_mut() {
                         *item_union = self::replace(item_union, template_result, codebase, next_opts);
                     }
@@ -176,7 +176,7 @@ fn replace_atomic(
                 }
             }
             TArray::List(list_data) => {
-                if let Some(known_elements) = &mut list_data.known_elements {
+                if let Some(known_elements) = list_data.known_elements.as_mut().map(Arc::make_mut) {
                     for (_, element_union_arc) in known_elements.values_mut() {
                         *element_union_arc = self::replace(element_union_arc, template_result, codebase, next_opts);
                     }
@@ -218,6 +218,17 @@ fn replace_atomic(
                 if let Some(parameter_type) = parameter.get_type_signature_mut() {
                     *parameter_type = self::replace(
                         parameter_type,
+                        template_result,
+                        codebase,
+                        DefinitionReplacementOptions { add_lower_bound: !opts.add_lower_bound, ..opts },
+                    );
+                }
+                if let Some(out_type) = parameter.get_out_type_mut() {
+                    *out_type = self::replace(out_type, template_result, codebase, next_opts);
+                }
+                if let Some(closure_this_type) = parameter.get_closure_this_type_mut() {
+                    *closure_this_type = self::replace(
+                        closure_this_type,
                         template_result,
                         codebase,
                         DefinitionReplacementOptions { add_lower_bound: !opts.add_lower_bound, ..opts },
@@ -360,7 +371,7 @@ fn handle_template_param_substitution(
         match &mut atomic_type {
             TAtomic::Object(TObject::Named(named_object)) => {
                 named_object.intersection_types =
-                    if new_intersection_types.is_empty() { None } else { Some(new_intersection_types.clone()) };
+                    if new_intersection_types.is_empty() { None } else { Some(new_intersection_types.clone().into()) };
             }
             TAtomic::GenericParameter(parameter) => {
                 parameter.intersection_types =

@@ -342,6 +342,7 @@ impl Server {
             .filter(|meta| meta.span.file_id == file_id)
             .filter(|meta| meta.span.start.offset <= start && end <= meta.span.end.offset)
             .min_by_key(|meta| meta.span.end.offset - meta.span.start.offset)
+            .map(|meta| &**meta)
     }
 }
 

@@ -427,9 +427,9 @@ where
             if has_valid_left_operand { IssueCode::PossiblyInvalidOperand } else { IssueCode::InvalidOperand };
 
         let mut issue = if has_valid_left_operand {
-            Issue::warning("Possibly invalid type for left operand.".to_string())
+            Issue::warning("Possibly invalid type for left operand.")
         } else {
-            Issue::error("Invalid type for left operand.".to_string())
+            Issue::error("Invalid type for left operand.")
         };
 
         let mut is_first = true;
@@ -461,9 +461,9 @@ where
             if has_valid_right_operand { IssueCode::PossiblyInvalidOperand } else { IssueCode::InvalidOperand };
 
         let mut issue = if has_valid_right_operand {
-            Issue::warning("Possibly invalid type for right operand.".to_string())
+            Issue::warning("Possibly invalid type for right operand.")
         } else {
-            Issue::error("Invalid type for right operand.".to_string())
+            Issue::error("Invalid type for right operand.")
         };
 
         let mut is_first = true;
@@ -844,8 +844,8 @@ where
 fn compose_keyed_plus(left: &TKeyedArray, right: &TKeyedArray) -> TKeyedArray {
     use std::collections::BTreeMap;
 
-    let left_known = left.known_items.as_ref();
-    let right_known = right.known_items.as_ref();
+    let left_known = left.known_items.as_deref();
+    let right_known = right.known_items.as_deref();
 
     let mut composed_known: BTreeMap<_, _> = BTreeMap::new();
 
@@ -878,7 +878,7 @@ fn compose_keyed_plus(left: &TKeyedArray, right: &TKeyedArray) -> TKeyedArray {
                         Some(right_value_type),
                         &CodebaseMetadata::default(),
                     );
-                    composed_known.insert(*key, (false, merged_value));
+                    composed_known.insert(*key, (true, merged_value));
                     continue;
                 }
             }
@@ -929,13 +929,13 @@ fn compose_keyed_plus(left: &TKeyedArray, right: &TKeyedArray) -> TKeyedArray {
         left.is_non_empty() || right.is_non_empty() || composed_known.values().any(|(optional, _)| !*optional);
 
     TKeyedArray {
-        known_items: Some(composed_known).filter(|m| !m.is_empty()),
+        known_items: Some(composed_known).filter(|m| !m.is_empty()).map(Into::into),
         parameters: composed_parameters,
         non_empty,
         known_non_list: left.known_non_list
             || (!left.non_empty
                 && left.parameters.is_none()
-                && left.known_items.as_ref().is_none_or(BTreeMap::is_empty)
+                && left.known_items.as_deref().is_none_or(BTreeMap::is_empty)
                 && right.known_non_list),
     }
 }
@@ -943,7 +943,7 @@ fn compose_keyed_plus(left: &TKeyedArray, right: &TKeyedArray) -> TKeyedArray {
 fn key_could_be_in_param(key: &ArrayKey, param: &TUnion) -> bool {
     match key {
         ArrayKey::Integer(_) => param.has_int(),
-        ArrayKey::String(_) => param.has_string(),
+        ArrayKey::String(_) => param.has_string() || param.has_array_key(),
         ArrayKey::ClassLikeConstant { .. } => true,
     }
 }

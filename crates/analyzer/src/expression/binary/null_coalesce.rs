@@ -23,7 +23,6 @@ use mago_word::word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
-use crate::artifacts::get_expression_range;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
@@ -179,7 +178,7 @@ where
         }
     }
 
-    artifacts.expression_types.insert(get_expression_range(binary), Rc::new(result_type));
+    artifacts.set_rc_expression_type(binary, Rc::new(result_type));
 
     if rhs_is_never {
         let assertion_context = context.get_assertion_context_from_block(block_context);
@@ -197,8 +196,8 @@ where
         let mut if_scope = IfScope::new();
         let mut inner_block_context = block_context.clone();
         inner_block_context.flags.set_inside_isset(true);
-        let (if_conditional_scope, _) =
-            conditional::analyze(context, inner_block_context, artifacts, &mut if_scope, binary.lhs, false)?;
+        let if_conditional_scope =
+            conditional::analyze(context, &mut inner_block_context, artifacts, &mut if_scope, binary.lhs, false)?;
         let mut conditionally_referenced_variable_ids = if_conditional_scope.conditionally_referenced_variable_ids;
 
         let (reconcilable_if_types, active_if_types) = find_satisfying_assignments(

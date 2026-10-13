@@ -265,9 +265,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                     };
 
                     let mut issue = if is_definitely_invalid {
-                        Issue::error("Invalid operand for negation.".to_string())
+                        Issue::error("Invalid operand for negation.")
                     } else {
-                        Issue::warning("Possibly invalid operand for negation.".to_string())
+                        Issue::warning("Possibly invalid operand for negation.")
                     };
 
                     let mut is_first = true;
@@ -1112,7 +1112,7 @@ where
                 scalar_list.known_count = Some(1);
                 scalar_list.non_empty = true;
                 scalar_list.known_elements =
-                    Some(BTreeMap::from_iter([(0, (false, wrap_atomic(atomic_type.clone())))]));
+                    Some(BTreeMap::from_iter([(0, (false, wrap_atomic(atomic_type.clone())))]).into());
 
                 resulting_array_atomics.push(TAtomic::Array(TArray::List(scalar_list)));
             }
@@ -1122,9 +1122,6 @@ where
                     name.as_bytes().eq_ignore_ascii_case(b"stdClass")
                 });
 
-                // Object to array: properties become key-value pairs.
-                // Keys are strings (property names), values are mixed (property values).
-                // stdClass is a special case where we do not report a warning.
                 if !reported_object_warning && !is_stdclass {
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
@@ -1141,7 +1138,7 @@ where
                 }
 
                 let mut obj_array = TKeyedArray::new();
-                obj_array.parameters = Some((Arc::new(get_string()), Arc::new(get_mixed())));
+                obj_array.parameters = Some((Arc::new(get_arraykey()), Arc::new(get_mixed())));
 
                 resulting_array_atomics.push(TAtomic::Array(TArray::Keyed(obj_array)));
             }
@@ -1151,7 +1148,7 @@ where
                     // Reuse flag to avoid spamming for mixed as well
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
-                        Issue::warning("Casting `mixed` to `array`.".to_string())
+                        Issue::warning("Casting `mixed` to `array`.")
                             .with_annotation(Annotation::primary(cast_expression.operand.span()).with_message("This expression has type `mixed`"))
                             .with_note("The structure and element types of the resulting array cannot be determined statically when casting `mixed`.")
                             .with_help("Ensure the value is an array or use type checks before casting if a specific array structure is expected."),
@@ -1225,7 +1222,7 @@ where
         if atomic_type.is_mixed() {
             context.collector.report_with_code(
                 IssueCode::MixedOperand,
-                Issue::warning("Casting `mixed` to `bool`.".to_string()) // Warning, as it's a valid cast but loses type info
+                Issue::warning("Casting `mixed` to `bool`.") // Warning, as it's a valid cast but loses type info
                     .with_annotation(Annotation::primary(cast_expression.operand.span()).with_message("This expression has type `mixed`"))
                     .with_note("The truthiness of `mixed` cannot be determined statically. The result will be a general `bool`.")
                     .with_help("Consider adding type assertions or checks if a more specific boolean outcome is expected."),
@@ -1333,7 +1330,7 @@ where
                     TScalar::ClassLikeString(_) => {
                         context.collector.report_with_code(
                             IssueCode::InvalidTypeCast,
-                            Issue::warning("Class-like string implicitly cast to float `0.0`.".to_string())
+                            Issue::warning("Class-like string implicitly cast to float `0.0`.")
                                 .with_annotation(
                                     Annotation::primary(cast_expression.operand.span())
                                         .with_message("Class-string cast to float"),
@@ -1377,7 +1374,7 @@ where
             TAtomic::Resource(_) => {
                 context.collector.report_with_code(
                     IssueCode::InvalidTypeCast,
-                    Issue::warning("Implicit conversion of `resource` to `float` (its ID).".to_string())
+                    Issue::warning("Implicit conversion of `resource` to `float` (its ID).")
                         .with_annotation(Annotation::primary(cast_expression.operand.span()).with_message("Resource ID used as float"))
                         .with_note("PHP converts resources to their numeric ID when cast to float. This is rarely the intended behavior.")
                         .with_help("Avoid casting resources directly to float. Use resource-specific functions to get relevant numeric data if needed."),
@@ -1389,7 +1386,7 @@ where
             TAtomic::Mixed(_) => {
                 context.collector.report_with_code(
                     IssueCode::InvalidTypeCast,
-                    Issue::warning("Casting `mixed` to `float`.".to_string())
+                    Issue::warning("Casting `mixed` to `float`.")
                         .with_annotation(Annotation::primary(cast_expression.operand.span()).with_message("This expression has type `mixed`"))
                         .with_note("The float value of `mixed` cannot be determined statically. The result will be a general `float`.")
                         .with_help("Consider adding type assertions or checks if a more specific float outcome is expected."),
@@ -1652,7 +1649,7 @@ where
             TAtomic::Array(TArray::Keyed(keyed_array)) => {
                 let mut known_properties = BTreeMap::new();
                 if let Some(known_items) = &keyed_array.known_items {
-                    for (key, item) in known_items {
+                    for (key, item) in known_items.iter() {
                         let property_name = key.to_atom();
 
                         known_properties.insert(property_name, item.clone());
@@ -1662,10 +1659,10 @@ where
                     // so intersect the shape with `stdClass` to preserve both the shape
                     // information and the nominal `stdClass` type.
                     let mut named = TNamedObject::new(word("stdClass"));
-                    named.intersection_types = Some(vec![TAtomic::Object(TObject::new_with_properties(
+                    named.intersection_types = Some(Box::new(vec![TAtomic::Object(TObject::new_with_properties(
                         keyed_array.parameters.is_none(),
                         known_properties,
-                    ))]);
+                    ))]));
 
                     possibilities.push(TAtomic::Object(TObject::Named(named)));
                 }
@@ -2193,7 +2190,7 @@ mod tests {
                 // built-in
             }
 
-            /** @return array<string, mixed> */
+            /** @return array<array-key, mixed> */
             function example(stdClass $obj): array
             {
                 return (array) $obj;

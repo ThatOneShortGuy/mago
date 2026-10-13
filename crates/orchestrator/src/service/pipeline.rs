@@ -1,7 +1,11 @@
 #![allow(clippy::too_many_arguments)]
 
+use std::cmp::Reverse;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -11,7 +15,7 @@ use mago_php_version::PHPVersion;
 use rayon::prelude::*;
 
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::populator::populate_codebase;
+use mago_codex::populator::populate_codebase_parallel;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::scanner::scan_program;
 use mago_codex::signature_builder;
@@ -26,7 +30,7 @@ use mago_database::file::FileType;
 use mago_names::ResolvedNames;
 use mago_names::resolver::NameResolver;
 use mago_syntax::cst::Program;
-use mago_syntax::parser::parse_file_with_settings;
+use mago_syntax::parser::parse_file_borrowed_with_settings;
 use mago_syntax::settings::ParserSettings;
 
 use crate::error::OrchestratorError;
@@ -39,6 +43,8 @@ use crate::service::telemetry::HangWatcher;
 use crate::service::telemetry::SlowestFiles;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::measure;
+
+const LARGE_FILE_SIZE: u32 = 128 * 1024;
 
 // No-op `measure!` stub for wasm so the pipeline body compiles without
 // pulling in the telemetry module. On wasm `trace_enabled` is always
@@ -103,12 +109,7 @@ pub struct ParallelPipeline<T, I, R> {
     php_version: PHPVersion,
     reducer: Box<dyn Reducer<I, R> + Send + Sync>,
     should_use_progress_bar: bool,
-    /// Whether to compute per-file [`FileSignature`](mago_codex::signature::FileSignature)s
-    /// during the compile phase. Signatures are only consumed by incremental
-    /// re-analysis and language-server capabilities (e.g. code lenses); a
-    /// one-shot analysis never reads them, so building them for every source
-    /// file (including the whole vendor tree) is pure overhead there.
-    build_signatures: bool,
+    build_file_signatures: bool,
 }
 
 impl<T, I, R> std::fmt::Debug for ParallelPipeline<T, I, R>
@@ -126,7 +127,7 @@ where
             .field("php_version", &self.php_version)
             .field("reducer", &"<reducer>")
             .field("should_use_progress_bar", &self.should_use_progress_bar)
-            .field("build_signatures", &self.build_signatures)
+            .field("build_file_signatures", &self.build_file_signatures)
             .finish()
     }
 }
@@ -162,7 +163,6 @@ where
         php_version: PHPVersion,
         reducer: Box<dyn Reducer<I, R> + Send + Sync>,
         should_use_progress_bar: bool,
-        build_signatures: bool,
     ) -> Self {
         Self {
             task_name,
@@ -174,8 +174,13 @@ where
             php_version,
             reducer,
             should_use_progress_bar,
-            build_signatures,
+            build_file_signatures: true,
         }
+    }
+
+    pub(super) fn with_file_signatures(mut self, enabled: bool) -> Self {
+        self.build_file_signatures = enabled;
+        self
     }
 
     /// Executes the full pipeline with a given map function.
@@ -210,10 +215,10 @@ where
         let slowest_files = trace_enabled.then(|| Arc::new(SlowestFiles::new()));
 
         let mut source_discover_duration = Duration::ZERO;
-        let source_files: Vec<_> = measure!(
+        let mut source_files: Vec<_> = measure!(
             trace_enabled,
             source_discover_duration,
-            self.database.files().filter(|f| f.file_type != FileType::Builtin).collect()
+            self.database.files().filter(|f| f.file_type != FileType::Builtin).enumerate().collect()
         );
 
         if source_files.is_empty() {
@@ -229,18 +234,30 @@ where
 
         let parser_settings = self.parser_settings;
         let php_version = self.php_version;
-        let build_signatures = self.build_signatures;
+        let build_file_signatures = self.build_file_signatures;
         #[cfg(not(target_arch = "wasm32"))]
         let source_count = source_files.len();
 
+        // Start large files early, then restore database order before merging.
+        let parallel = rayon::current_num_threads() > 1;
+        if parallel {
+            source_files.sort_unstable_by_key(|(index, file)| (Reverse(file.size), *index));
+        }
+
         let mut compile_parallel_duration = Duration::ZERO;
-        let compiled: Vec<(CodebaseMetadata, Option<S>)> = measure!(
+        let mut compiled: Vec<(usize, (CodebaseMetadata, Option<S>))> = measure!(
             trace_enabled,
             compile_parallel_duration,
-            source_files
-                .into_par_iter()
-                .map_init(LocalArena::new, |arena, file| -> Result<_, OrchestratorError> {
-                    let program = parse_file_with_settings(arena, &file, parser_settings);
+            map_with_priority_queue(
+                &source_files,
+                || (LocalArena::new(), 0u32),
+                |(arena, previous_size), (index, file)| -> Result<_, OrchestratorError> {
+                    if parallel && *previous_size > LARGE_FILE_SIZE && file.size <= LARGE_FILE_SIZE {
+                        *arena = LocalArena::new();
+                    }
+                    *previous_size = file.size;
+
+                    let program = parse_file_borrowed_with_settings(arena, file, parser_settings);
                     if program.has_errors() {
                         tracing::warn!(
                             "Encountered {} parsing errors in file '{}'. Codebase analysis may be incomplete.",
@@ -252,28 +269,30 @@ where
                     let resolver = NameResolver::new(arena);
                     let resolved_names = resolver.resolve(program);
 
-                    let mut metadata = scan_program(arena, &file, program, &resolved_names, php_version);
-                    // File signatures drive incremental re-analysis and LSP
-                    // capabilities only; skip the extra AST walk + fingerprint in a
-                    // one-shot analysis, where nothing reads them.
-                    if build_signatures {
-                        let file_signature = signature_builder::build_file_signature(program, &resolved_names);
+                    let file_signature = build_file_signatures
+                        .then(|| signature_builder::build_file_signature(file, program, &resolved_names));
+
+                    let mut metadata = scan_program(arena, file, program, &resolved_names, php_version);
+                    if let Some(file_signature) = file_signature {
                         metadata.set_file_signature(file.id, file_signature);
                     }
+
                     if file.file_type.is_patch() {
                         metadata.convert_partial_to_patch();
                     }
-                    let captured = capture(&file, program, &resolved_names)?;
 
+                    let record = capture(file, program, &resolved_names)?;
                     arena.reset();
                     if let Some(compiling_bar) = &compiling_bar {
                         compiling_bar.inc(1);
                     }
 
-                    Ok((metadata, captured))
-                })
-                .collect::<Result<Vec<_>, _>>()?
+                    Ok((*index, (metadata, record)))
+                }
+            )?
         );
+        compiled.sort_unstable_by_key(|(index, _)| *index);
+        drop(source_files);
 
         let mut merged_codex = self.codebase;
         let mut captures = Vec::new();
@@ -282,30 +301,34 @@ where
         let mut replaced_classes = (!safe_symbol_members.is_empty()).then(WordSet::default);
         let mut merge_duration = Duration::ZERO;
         measure!(trace_enabled, merge_duration, {
-            for (partial, captured) in compiled {
-                captures.extend(captured);
-                for name in partial.class_likes.keys().chain(partial.patch_class_likes.keys()) {
-                    safe_symbols.remove(name);
-                    if let Some(replaced_classes) = &mut replaced_classes {
-                        replaced_classes.insert(*name);
+            let partials = compiled
+                .into_iter()
+                .map(|(_, (partial, record))| {
+                    captures.extend(record);
+                    for name in partial.class_likes.keys().chain(partial.patch_class_likes.keys()) {
+                        safe_symbols.remove(name);
+                        if let Some(replaced_classes) = &mut replaced_classes {
+                            replaced_classes.insert(*name);
+                        }
                     }
-                }
 
-                for (scope, member) in partial.function_likes.keys().chain(partial.patch_function_likes.keys()) {
-                    if member.is_empty() {
-                        safe_symbols.remove(scope);
-                    } else {
-                        safe_symbol_members.remove(&(*scope, *member));
+                    for (scope, member) in partial.function_likes.keys().chain(partial.patch_function_likes.keys()) {
+                        if member.is_empty() {
+                            safe_symbols.remove(scope);
+                        } else {
+                            safe_symbol_members.remove(&(*scope, *member));
+                        }
                     }
-                }
 
-                for name in partial.constants.keys().chain(partial.patch_constants.keys()) {
-                    safe_symbols.remove(name);
-                }
+                    for name in partial.constants.keys().chain(partial.patch_constants.keys()) {
+                        safe_symbols.remove(name);
+                    }
 
-                merged_codex.extend(partial);
-            }
+                    partial
+                })
+                .collect();
 
+            merged_codex.extend_many_parallel(partials);
             if let Some(replaced_classes) = replaced_classes {
                 safe_symbol_members.retain(|(scope, _)| !replaced_classes.contains(scope));
             }
@@ -316,7 +339,7 @@ where
         let mut symbol_references = self.symbol_references;
         let mut populate_duration = Duration::ZERO;
         measure!(trace_enabled, populate_duration, {
-            populate_codebase(&mut merged_codex, &mut symbol_references, safe_symbols, safe_symbol_members);
+            populate_codebase_parallel(&mut merged_codex, &mut symbol_references, safe_symbols, safe_symbol_members);
         });
 
         if let Some(compiling_bar) = compiling_bar {
@@ -324,10 +347,10 @@ where
         }
 
         let mut host_discover_duration = Duration::ZERO;
-        let host_files = measure!(
+        let mut host_files = measure!(
             trace_enabled,
             host_discover_duration,
-            self.database.files().filter(|f| f.file_type == FileType::Host).collect::<Vec<_>>()
+            self.database.files().filter(|f| f.file_type == FileType::Host).enumerate().collect::<Vec<_>>()
         );
 
         let before_map_result = before_map(&mut merged_codex, &mut symbol_references, captures)?;
@@ -336,6 +359,9 @@ where
             tracing::warn!("No host files found for analysis after compilation.");
             return self.reducer.reduce(merged_codex, symbol_references, before_map_result.into_iter().collect());
         }
+
+        // Start large files early, then restore database order before reduction.
+        host_files.sort_unstable_by_key(|(index, file)| (Reverse(file.size), *index));
 
         #[cfg(not(target_arch = "wasm32"))]
         let host_count = host_files.len();
@@ -353,12 +379,19 @@ where
         let hang_watcher = trace_enabled.then(|| HangWatcher::spawn(rayon::current_num_threads()));
 
         let mut analyze_parallel_duration = Duration::ZERO;
-        let mut results: Vec<I> = measure!(
+        let mut results: Vec<(usize, I)> = measure!(
             trace_enabled,
             analyze_parallel_duration,
-            host_files
-                .into_par_iter()
-                .map_init(LocalArena::new, |arena, file| {
+            map_with_priority_queue(
+                &host_files,
+                || (LocalArena::new(), 0u32),
+                |(arena, previous_size), (index, file)| {
+                    if *previous_size > LARGE_FILE_SIZE && file.size <= LARGE_FILE_SIZE {
+                        *arena = LocalArena::new();
+                    }
+                    *previous_size = file.size;
+
+                    let file = Arc::clone(file);
                     let context = self.shared_context.clone();
                     let codebase = Arc::clone(&final_codebase);
 
@@ -384,10 +417,13 @@ where
                         main_task_bar.inc(1);
                     }
 
-                    result
-                })
-                .collect::<Result<Vec<I>, OrchestratorError>>()?
+                    result.map(|result| (*index, result))
+                }
+            )?
         );
+
+        results.sort_unstable_by_key(|(index, _)| *index);
+        let mut results = results.into_iter().map(|(_, result)| result).collect::<Vec<_>>();
 
         if let Some(result) = before_map_result {
             results.insert(0, result);
@@ -652,5 +688,223 @@ where
         }
 
         reduced
+    }
+}
+
+/// Claims inputs in slice order, with one reusable state per worker.
+fn map_with_priority_queue<T, S, I, E, F, C>(items: &[T], initialize: C, map: F) -> Result<Vec<I>, E>
+where
+    T: Sync,
+    I: Send,
+    E: Send,
+    F: Fn(&mut S, &T) -> Result<I, E> + Sync,
+    C: Fn() -> S + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let cancelled = AtomicBool::new(false);
+    let worker_count = items.len().min(rayon::current_num_threads());
+    let batches = (0..worker_count)
+        .into_par_iter()
+        .with_max_len(1)
+        .map(|_| {
+            let mut state = initialize();
+            let mut results = Vec::new();
+            while !cancelled.load(Ordering::Relaxed) {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(item) = items.get(index) else {
+                    break;
+                };
+
+                match map(&mut state, item) {
+                    Ok(result) => results.push(result),
+                    Err(error) => {
+                        cancelled.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(results)
+        })
+        .collect::<Result<Vec<_>, E>>()?;
+
+    Ok(batches.into_iter().flatten().collect())
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use std::borrow::Cow;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use mago_codex::metadata::CodebaseMetadata;
+    use mago_codex::reference::SymbolReferences;
+    use mago_database::Database;
+    use mago_database::DatabaseConfiguration;
+    use mago_database::DatabaseReader;
+    use mago_database::file::File;
+    use mago_database::file::FileId;
+    use mago_database::file::FileType;
+    use mago_php_version::PHPVersion;
+    use mago_syntax::settings::ParserSettings;
+
+    use super::ParallelPipeline;
+    use super::Reducer;
+    use super::map_with_priority_queue;
+    use crate::error::OrchestratorError;
+
+    #[derive(Debug)]
+    struct FileIds;
+
+    impl Reducer<FileId, Vec<FileId>> for FileIds {
+        fn reduce(
+            &self,
+            _codebase: CodebaseMetadata,
+            _symbol_references: SymbolReferences,
+            results: Vec<FileId>,
+        ) -> Result<Vec<FileId>, OrchestratorError> {
+            Ok(results)
+        }
+    }
+
+    #[test]
+    fn analysis_preserves_host_coverage_and_result_order() -> Result<(), Box<dyn std::error::Error>> {
+        let configuration = DatabaseConfiguration::new(Path::new("."), vec![], vec![], vec![], vec![]);
+        let mut database = Database::new(configuration);
+        for index in 0..32 {
+            database.add(File::ephemeral(
+                Cow::Owned(format!("host-{index}.php").into_bytes()),
+                Cow::Owned(format!("<?php /* {} */", "x".repeat(index * 100)).into_bytes()),
+            ));
+        }
+        database.add(File::new(Cow::Borrowed(b"vendor.php"), FileType::Vendored, None, Cow::Borrowed(b"<?php")));
+
+        let snapshot = database.read_only();
+        let expected_captures = snapshot.files().map(|file| file.id).collect::<Vec<_>>();
+        let before_map_id = FileId::new(b"before-map");
+        let mut expected = vec![before_map_id];
+        expected.extend(snapshot.files().filter(|file| file.file_type == FileType::Host).map(|file| file.id));
+
+        for threads in [1, 4] {
+            let pipeline = ParallelPipeline::new(
+                "test",
+                // database,
+                database.read_only(),
+                CodebaseMetadata::new(),
+                SymbolReferences::new(),
+                (),
+                ParserSettings::default(),
+                PHPVersion::new(8, 4, 0),
+                Box::new(FileIds),
+                false,
+            );
+
+            let results = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?.install(|| {
+                pipeline.run(
+                    |file, _, _| Ok(Some(file.id)),
+                    |codebase, _, captures| {
+                        assert_eq!(captures, expected_captures, "Compilation keeps database order");
+                        assert_eq!(codebase.file_signatures.len(), 33, "Public pipelines keep all file signatures");
+                        Ok(Some(before_map_id))
+                    },
+                    |(), _, file, _| Ok(file.id),
+                )
+            })?;
+
+            assert_eq!(results, expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn workers_claim_largest_inputs_first_and_process_each_once() -> Result<(), Box<dyn std::error::Error>> {
+        let items = (0..32).rev().collect::<Vec<_>>();
+        let first_claims = Mutex::new(Vec::new());
+        let first_batch = Barrier::new(4);
+        let visits = [const { AtomicUsize::new(0) }; 32];
+        let initialized = AtomicUsize::new(0);
+        let mut results = rayon::ThreadPoolBuilder::new().num_threads(4).build()?.install(|| {
+            map_with_priority_queue(
+                &items,
+                || {
+                    initialized.fetch_add(1, Ordering::Relaxed);
+                    true
+                },
+                |first, value| {
+                    if *first {
+                        first_claims.lock().map_err(|_| "first-claim lock poisoned")?.push(*value);
+                        first_batch.wait();
+                        *first = false;
+                    }
+                    visits[*value].fetch_add(1, Ordering::Relaxed);
+                    Ok::<_, &'static str>(*value)
+                },
+            )
+        })?;
+
+        let mut first_claims = first_claims.into_inner().map_err(|_| "first-claim lock poisoned")?;
+        first_claims.sort_unstable();
+        assert_eq!(first_claims, [28, 29, 30, 31]);
+        assert_eq!(initialized.load(Ordering::Relaxed), 4);
+        assert!(visits.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+        results.sort_unstable();
+        assert_eq!(results, (0..32).collect::<Vec<_>>());
+        Ok(())
+    }
+
+    #[test]
+    fn empty_queue_does_not_initialize_workers() -> Result<(), std::convert::Infallible> {
+        let initialized = AtomicUsize::new(0);
+        let result = map_with_priority_queue(
+            &[] as &[usize],
+            || {
+                initialized.fetch_add(1, Ordering::Relaxed);
+            },
+            |(), value| Ok::<_, std::convert::Infallible>(*value),
+        );
+        assert!(result?.is_empty());
+        assert_eq!(initialized.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_errors_drop_completed_results() -> Result<(), Box<dyn std::error::Error>> {
+        struct ResultValue(Arc<AtomicUsize>);
+
+        impl Drop for ResultValue {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for threads in [1, 4] {
+            let created = AtomicUsize::new(0);
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let items = (0..64).collect::<Vec<_>>();
+            let result = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?.install(|| {
+                map_with_priority_queue(
+                    &items,
+                    || (),
+                    |(), value| {
+                        if *value == 5 {
+                            return Err("stop");
+                        }
+                        created.fetch_add(1, Ordering::Relaxed);
+                        Ok(ResultValue(Arc::clone(&dropped)))
+                    },
+                )
+            });
+            assert!(matches!(result, Err("stop")));
+            assert_eq!(created.load(Ordering::Relaxed), dropped.load(Ordering::Relaxed));
+            if threads == 1 {
+                assert_eq!(created.load(Ordering::Relaxed), 5);
+            }
+        }
+        Ok(())
     }
 }

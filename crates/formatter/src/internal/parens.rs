@@ -12,12 +12,14 @@ use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialApplication;
+use mago_syntax::cst::Yield;
 use mago_syntax::token::Associativity;
 use mago_syntax::token::GetPrecedence;
 use mago_syntax::token::Precedence;
 
 use crate::document::Document;
 use crate::document::Group;
+use crate::document::IfBreak;
 use crate::document::IndentIfBreak;
 use crate::document::Line;
 use crate::internal::FormatterState;
@@ -35,26 +37,32 @@ where
     ) -> Document<'arena, A> {
         if has_leading_comments || self.should_indent(node) {
             let group_id = self.next_id();
+            let condition_group_id = self
+                .condition_group_id
+                .filter(|_| matches!(node, Node::Binary(binary) if binary.operator.is_logical()));
+            let line = if self.settings.space_within_grouping_parenthesis { Line::default() } else { Line::soft() };
+            let wrap_line = || {
+                if let Some(condition_group_id) = condition_group_id {
+                    Document::IfBreak(
+                        IfBreak::new(self.arena, Document::Line(Line::hard()), Document::Line(line))
+                            .with_id(condition_group_id),
+                    )
+                } else {
+                    Document::Line(line)
+                }
+            };
 
             Document::Group(
                 Group::new(vec_in![self.arena;
                     Document::String(b"("),
                     Document::IndentIfBreak(IndentIfBreak::new(
-                        group_id,
+                        condition_group_id.unwrap_or(group_id),
                         vec_in![self.arena;
-                            if self.settings.space_within_grouping_parenthesis {
-                                Document::Line(Line::default())
-                            } else {
-                                Document::Line(Line::soft())
-                            },
+                            wrap_line(),
                             document,
                         ]
                     )),
-                    if self.settings.space_within_grouping_parenthesis {
-                        Document::Line(Line::default())
-                    } else {
-                        Document::Line(Line::soft())
-                    },
+                    wrap_line(),
                     Document::String(b")"),
                 ])
                 .with_id(group_id),
@@ -81,16 +89,20 @@ where
             return true;
         }
 
-        self.called_or_accessed_node_needs_parens(node)
-            || self.conditional_needs_parens(node)
-            || self.binary_node_needs_parens(node)
-            || self.unary_node_needs_parens(node)
-            || self.assignment_needs_parens(node)
-            || self.literal_needs_parens(node)
-            || self.pipe_node_needs_parens(node)
-            || self.class_constant_access_needs_parens(node)
-            || self.arrow_function_needs_parens(node)
-            || self.construct_needs_parens(node)
+        match node {
+            Node::Expression(_) => self.called_or_accessed_node_needs_parens(node),
+            Node::Conditional(_) => self.conditional_needs_parens(node),
+            Node::Binary(_) => self.binary_node_needs_parens(node),
+            Node::UnaryPrefix(_) | Node::UnaryPostfix(_) => self.unary_node_needs_parens(node),
+            Node::Assignment(_) => self.assignment_needs_parens(node),
+            Node::Literal(_) => self.literal_needs_parens(node),
+            Node::Pipe(_) => self.pipe_node_needs_parens(node),
+            Node::Access(Access::ClassConstant(_)) => self.class_constant_access_needs_parens(node),
+            Node::ArrowFunction(_) => self.arrow_function_needs_parens(node),
+            Node::Construct(_) => self.construct_needs_parens(node),
+            Node::Yield(_) => self.yield_needs_parens(node),
+            _ => false,
+        }
     }
 
     pub(crate) fn should_indent(&self, node: Node<'arena, 'arena>) -> bool {
@@ -225,6 +237,28 @@ where
         }
 
         matches!(self.nth_parent_kind(2), Some(Node::Binary(_) | Node::Conditional(_) | Node::Pipe(_)))
+    }
+
+    fn yield_needs_parens(&self, node: Node<'arena, 'arena>) -> bool {
+        let Node::Yield(r#yield) = node else {
+            return false;
+        };
+
+        for parent in self.stack.iter().rev().skip(2) {
+            match parent {
+                Node::Binary(binary) if binary.operator.start_offset() > node.end_offset() => {
+                    return match r#yield {
+                        Yield::Value(value) if value.value.is_none() => binary.operator.is_additive(),
+                        Yield::From(_) => binary.operator.precedence() > Precedence::YieldFrom,
+                        _ => binary.operator.precedence() > Precedence::Yield,
+                    };
+                }
+                Node::Binary(_) | Node::Expression(_) | Node::UnaryPrefix(_) => {}
+                _ => return false,
+            }
+        }
+
+        false
     }
 
     /// Check if a class constant access needs parentheses based on its parent context.
@@ -570,7 +604,11 @@ where
         )
     }
 
-    const fn function_callee_expression_need_parenthesis(&self, expression: &'arena Expression<'arena>) -> bool {
+    fn function_callee_expression_need_parenthesis(&self, expression: &'arena Expression<'arena>) -> bool {
+        if let Expression::Instantiation(instantiation) = expression {
+            return self.instantiation_needs_parens(instantiation);
+        }
+
         if let Expression::Construct(construct) = expression {
             return !construct.has_bounds();
         }

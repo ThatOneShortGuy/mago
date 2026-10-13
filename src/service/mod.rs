@@ -477,7 +477,7 @@ impl IssueProcessor {
         };
 
         let reporter = Reporter::new(read_database, reporter_configuration);
-        let status = reporter.report(issues_to_report, baseline)?;
+        let status = reporter.report_parallel(issues_to_report, baseline)?;
 
         if status.baseline_dead_issues > 0 {
             let dead = status.baseline_dead_issues;
@@ -575,7 +575,7 @@ impl IssueProcessor {
                 // Each batch contains all edits from a single issue - they must be applied together
                 for (rule_code, edits) in batches {
                     let rule_code = rule_code.as_deref().unwrap_or("unknown");
-                    let result = editor.apply_batch(edits, Some(|code: &[u8]| check_php_code(arena, file_id, code, parser_settings)));
+                    let result = editor.apply_unique_batch(edits, Some(|code: &[u8]| check_php_code(arena, file_id, code, parser_settings)));
                     arena.reset();
 
                     match result {

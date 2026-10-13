@@ -7,6 +7,7 @@ use mago_allocator::Arena;
 
 use mago_bytes::BytesDisplay;
 use mago_codex::context::ScopeContext;
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
@@ -320,10 +321,7 @@ fn check_unused_template_parameters<'ctx, A>(
         }
 
         for method_id in class_like_metadata.declaring_method_ids.values() {
-            let Some(function_like) = context
-                .codebase
-                .get_method(method_id.get_class_name().as_bytes(), method_id.get_method_name().as_bytes())
-            else {
+            let Some(function_like) = context.codebase.get_method_by_id(method_id) else {
                 continue;
             };
 
@@ -882,15 +880,12 @@ where
             }
 
             let Some(declaring_class_like_metadata) =
-                context.codebase.get_class_like(method_id.get_class_name().as_bytes())
+                context.codebase.get_class_like_by_name(method_id.get_class_name())
             else {
                 continue;
             };
 
-            let Some(function_like) = context
-                .codebase
-                .get_method(method_id.get_class_name().as_bytes(), method_id.get_method_name().as_bytes())
-            else {
+            let Some(function_like) = context.codebase.get_method_by_id(method_id) else {
                 continue;
             };
 
@@ -933,7 +928,7 @@ where
                 .chain(class_like_metadata.all_parent_interfaces.iter())
                 .chain(class_like_metadata.used_traits.iter())
             {
-                let Some(parent_metadata) = context.codebase.get_class_like(parent_fqcn.as_bytes()) else {
+                let Some(parent_metadata) = context.codebase.get_class_like_by_name(*parent_fqcn) else {
                     continue;
                 };
 
@@ -968,7 +963,7 @@ where
                             all_parent_class.any(|parent_class_fqcn| {
                                 context
                                     .codebase
-                                    .get_class_like(parent_class_fqcn.as_bytes())
+                                    .get_class_like_by_name(*parent_class_fqcn)
                                     .and_then(|parent| parent.properties.get(property_name))
                                     .is_some_and(|prop| {
                                         if prop.hooks.get(hook_name).is_some_and(|h| !h.is_abstract) {
@@ -1206,7 +1201,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
             if extended_class_metadata.kind.is_class() || extended_class_metadata.kind.is_trait() { "a" } else { "an" };
         let extended_class_span = extended_class_metadata.name_span.unwrap_or(extended_class_metadata.span);
 
-        if extended_class_metadata.flags.is_deprecated() {
+        if extended_class_metadata.flags.is_deprecated() && !class_like_metadata.flags.is_deprecated() {
             context.collector.report_with_code(
                 IssueCode::DeprecatedClass,
                 Issue::warning(format!("Use of deprecated class `{extended_name}` in `extends` clause"))
@@ -1545,7 +1540,7 @@ fn check_class_like_use<'ctx, 'arena, A>(
             );
         }
 
-        if used_trait_metadata.flags.is_deprecated() {
+        if used_trait_metadata.flags.is_deprecated() && !class_like_metadata.flags.is_deprecated() {
             context.collector.report_with_code(
                 IssueCode::DeprecatedTrait,
                 Issue::error(format!("Use of deprecated trait `{used_name}` in `{using_name}`"))
@@ -1828,7 +1823,10 @@ fn check_template_parameters<'ctx, A>(
                     &template_type,
                     &mut template_result,
                     context.codebase,
-                    DefinitionReplacementOptions::default(),
+                    DefinitionReplacementOptions {
+                        calling_class: Some(class_like_metadata.name),
+                        ..Default::default()
+                    },
                 );
 
                 expand_union(
@@ -1950,7 +1948,8 @@ fn check_template_variance_positions<'ctx, A>(
     let own_entity = GenericParent::ClassLike(class_like_metadata.name);
 
     for method_name in &class_like_metadata.methods {
-        let Some(method) = context.codebase.get_method(class_like_metadata.name.as_bytes(), method_name.as_bytes())
+        let Some(method) =
+            context.codebase.get_method_by_id(&MethodIdentifier::new(class_like_metadata.name, *method_name))
         else {
             continue;
         };
@@ -2045,7 +2044,7 @@ fn check_uninhabitable_diamonds<'ctx, A>(
             continue;
         }
 
-        let Some(ancestor_metadata) = context.codebase.get_class_like(ancestor_name.as_bytes()) else {
+        let Some(ancestor_metadata) = context.codebase.get_class_like_by_name(*ancestor_name) else {
             continue;
         };
         let ancestor_display = ancestor_metadata.original_name;
@@ -2059,7 +2058,8 @@ fn check_uninhabitable_diamonds<'ctx, A>(
                 continue;
             }
 
-            let Some(method) = context.codebase.get_method(ancestor_name.as_bytes(), method_name.as_bytes()) else {
+            let Some(method) = context.codebase.get_method_by_id(&MethodIdentifier::new(*ancestor_name, method_name))
+            else {
                 continue;
             };
 
@@ -2105,20 +2105,20 @@ fn check_abstract_method_signatures<'ctx, A>(
     A: Arena,
 {
     for (method_name_atom, overridden_method_ids) in &class_like_metadata.overridden_method_ids {
-        let method_name_str = method_name_atom.as_ref();
-
         let Some(declaring_method_id) = class_like_metadata.declaring_method_ids.get(method_name_atom) else {
             continue;
         };
 
         let declaring_fqcn = declaring_method_id.get_class_name();
-        let declaring_method_opt = context.codebase.get_method(declaring_fqcn.as_bytes(), method_name_str);
+        let declaring_method_opt = context.codebase.get_method_by_id(declaring_method_id);
 
         let (method_fqcn, appearing_method) = if let Some(method) = declaring_method_opt {
             (declaring_fqcn, method)
         } else if let Some(appearing_method_id) = class_like_metadata.appearing_method_ids.get(method_name_atom) {
             let appearing_fqcn = appearing_method_id.get_class_name();
-            let Some(method) = context.codebase.get_method(appearing_fqcn.as_bytes(), method_name_str) else {
+            let Some(method) =
+                context.codebase.get_method_by_id(&MethodIdentifier::new(appearing_fqcn, *method_name_atom))
+            else {
                 continue;
             };
 
@@ -2130,13 +2130,11 @@ fn check_abstract_method_signatures<'ctx, A>(
         let overridden_declaring_classes: Vec<Word> =
             overridden_method_ids.values().map(|id| id.get_class_name()).collect();
 
-        for (parent_fqcn, parent_declaring_method_id) in overridden_method_ids {
-            let parent_fqcn_str = parent_fqcn.as_ref();
-
+        for parent_declaring_method_id in overridden_method_ids.values() {
             let declaring_class_name = parent_declaring_method_id.get_class_name();
             let declaring_class_name_str = declaring_class_name.as_ref();
 
-            if should_skip_same_method(method_fqcn.as_bytes(), parent_fqcn_str) {
+            if declaring_method_id == parent_declaring_method_id {
                 continue;
             }
 
@@ -2151,17 +2149,16 @@ fn check_abstract_method_signatures<'ctx, A>(
                 continue;
             }
 
-            let Some(overridden_method) =
-                context.codebase.get_declaring_method(declaring_class_name_str, method_name_str)
+            let Some(overridden_method) = context.codebase.get_declaring_method_by_id(parent_declaring_method_id)
             else {
                 continue;
             };
 
-            let Some(overridden_class) = context.codebase.get_class_like(declaring_class_name_str) else {
+            let Some(overridden_class) = context.codebase.get_class_like_by_name(declaring_class_name) else {
                 continue;
             };
 
-            let Some(appearing_class) = context.codebase.get_class_like(method_fqcn.as_bytes()) else {
+            let Some(appearing_class) = context.codebase.get_class_like_by_name(method_fqcn) else {
                 continue;
             };
 
@@ -2179,6 +2176,22 @@ fn check_abstract_method_signatures<'ctx, A>(
                 continue;
             }
 
+            let final_parent_class = class_like_metadata.direct_parent_class.and_then(|parent_name| {
+                let exposed_parent = MethodIdentifier::new(parent_name, *method_name_atom);
+                if context.codebase.get_declaring_method_identifier(&exposed_parent) != *parent_declaring_method_id
+                    || !context.codebase.method_is_final(parent_name.as_bytes(), method_name_atom.as_bytes())
+                {
+                    return None;
+                }
+
+                let parent = context.codebase.get_class_like_by_name(parent_name)?;
+                let appearing_name = parent
+                    .appearing_method_ids
+                    .get(method_name_atom)
+                    .map_or(parent_name, MethodIdentifier::get_class_name);
+                context.codebase.get_class_like_by_name(appearing_name).or(Some(parent))
+            });
+
             let substituted_overridden_method =
                 get_substituted_method(overridden_method, class_like_metadata, declaring_class_name, context.codebase);
 
@@ -2190,6 +2203,7 @@ fn check_abstract_method_signatures<'ctx, A>(
                 class_like_metadata.name,
                 &substituted_appearing_method,
                 &substituted_overridden_method,
+                final_parent_class.is_some(),
             );
 
             if issues.is_empty() {
@@ -2206,7 +2220,7 @@ fn check_abstract_method_signatures<'ctx, A>(
                 report_signature_compatibility_issue(
                     context,
                     class_like_metadata,
-                    overridden_class,
+                    final_parent_class.unwrap_or(overridden_class),
                     *method_name_atom,
                     appearing_method,
                     incompatibility,
@@ -2245,27 +2259,26 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                 let first_trait_fqcn = &first_traits[k];
                 let second_trait_fqcn = &first_traits[l];
 
-                let Some(first_trait_metadata) = context.codebase.get_class_like(first_trait_fqcn.as_ref()) else {
+                let Some(first_trait_metadata) = context.codebase.get_class_like_by_name(*first_trait_fqcn) else {
                     continue;
                 };
-                let Some(second_trait_metadata) = context.codebase.get_class_like(second_trait_fqcn.as_ref()) else {
+                let Some(second_trait_metadata) = context.codebase.get_class_like_by_name(*second_trait_fqcn) else {
                     continue;
                 };
 
                 for (method_name, first_method_id) in &first_trait_metadata.declaring_method_ids {
                     if let Some(second_method_id) = second_trait_metadata.declaring_method_ids.get(method_name) {
-                        let first_method_str = method_name.as_ref();
-                        let Some(first_method) = context
-                            .codebase
-                            .get_declaring_method(first_method_id.get_class_name().as_ref(), first_method_str)
-                        else {
+                        let Some(first_method) = context.codebase.get_declaring_method_by_id(&MethodIdentifier::new(
+                            first_method_id.get_class_name(),
+                            *method_name,
+                        )) else {
                             continue;
                         };
 
-                        let Some(second_method) = context
-                            .codebase
-                            .get_declaring_method(second_method_id.get_class_name().as_ref(), first_method_str)
-                        else {
+                        let Some(second_method) = context.codebase.get_declaring_method_by_id(&MethodIdentifier::new(
+                            second_method_id.get_class_name(),
+                            *method_name,
+                        )) else {
                             continue;
                         };
 
@@ -2278,6 +2291,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                                 class_like_metadata.name,
                                 second_method,
                                 first_method,
+                                false,
                             );
 
                             for incompatibility in issues {
@@ -2301,29 +2315,26 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
 
         for (second_trait_use, second_traits) in trait_uses.iter().skip(i + 1) {
             for first_trait_fqcn in first_traits {
-                let Some(first_trait_metadata) = context.codebase.get_class_like(first_trait_fqcn.as_ref()) else {
+                let Some(first_trait_metadata) = context.codebase.get_class_like_by_name(*first_trait_fqcn) else {
                     continue;
                 };
 
                 for second_trait_fqcn in second_traits {
-                    let Some(second_trait_metadata) = context.codebase.get_class_like(second_trait_fqcn.as_ref())
+                    let Some(second_trait_metadata) = context.codebase.get_class_like_by_name(*second_trait_fqcn)
                     else {
                         continue;
                     };
 
                     for (method_name, first_method_id) in &first_trait_metadata.declaring_method_ids {
                         if let Some(second_method_id) = second_trait_metadata.declaring_method_ids.get(method_name) {
-                            let first_method_str = method_name.as_ref();
-                            let Some(first_method) = context
-                                .codebase
-                                .get_declaring_method(first_method_id.get_class_name().as_ref(), first_method_str)
-                            else {
+                            let Some(first_method) = context.codebase.get_declaring_method_by_id(
+                                &MethodIdentifier::new(first_method_id.get_class_name(), *method_name),
+                            ) else {
                                 continue;
                             };
-                            let Some(second_method) = context
-                                .codebase
-                                .get_declaring_method(second_method_id.get_class_name().as_ref(), first_method_str)
-                            else {
+                            let Some(second_method) = context.codebase.get_declaring_method_by_id(
+                                &MethodIdentifier::new(second_method_id.get_class_name(), *method_name),
+                            ) else {
                                 continue;
                             };
 
@@ -2338,6 +2349,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                                     class_like_metadata.name,
                                     second_method,
                                     first_method,
+                                    false,
                                 );
 
                                 for incompatibility in issues {
@@ -2736,11 +2748,12 @@ fn check_interface_method_signatures<'ctx, A>(
     }
 
     for (method_name_atom, interface_method_id) in &interface_metadata.declaring_method_ids {
-        let method_name_str = method_name_atom.as_ref();
         let interface_fqcn_word = interface_method_id.get_class_name();
         let interface_fqcn_str = interface_fqcn_word.as_bytes();
 
-        let Some(interface_method) = context.codebase.get_declaring_method(interface_fqcn_str, method_name_str) else {
+        let Some(interface_method) =
+            context.codebase.get_declaring_method_by_id(&MethodIdentifier::new(interface_fqcn_word, *method_name_atom))
+        else {
             continue;
         };
 
@@ -2750,7 +2763,9 @@ fn check_interface_method_signatures<'ctx, A>(
 
         let class_fqcn_word = class_method_id.get_class_name();
         let class_fqcn_str = class_fqcn_word.as_bytes();
-        let Some(class_method) = context.codebase.get_declaring_method(class_fqcn_str, method_name_str) else {
+        let Some(class_method) =
+            context.codebase.get_declaring_method_by_id(&MethodIdentifier::new(class_fqcn_word, *method_name_atom))
+        else {
             continue;
         };
 
@@ -2781,6 +2796,7 @@ fn check_interface_method_signatures<'ctx, A>(
             class_like_metadata.name,
             &substituted_class_method,
             &substituted_interface_method,
+            false,
         );
 
         for incompatibility in issues {
@@ -2788,7 +2804,8 @@ fn check_interface_method_signatures<'ctx, A>(
             let method_span = class_method.name_span.unwrap_or(class_method.span);
 
             // Get the actual declaring class for error reporting
-            let declaring_class = context.codebase.get_class_like(interface_fqcn_str).unwrap_or(interface_metadata);
+            let declaring_class =
+                context.codebase.get_class_like_by_name(interface_fqcn_word).unwrap_or(interface_metadata);
 
             report_signature_compatibility_issue(
                 context,
@@ -3143,8 +3160,7 @@ fn check_class_like_properties<'ctx, A>(
 
         // Check each parent class for this property
         for parent_fqcn in &class_like_metadata.all_parent_classes {
-            let parent_fqcn_str = parent_fqcn.as_ref();
-            let Some(parent_metadata) = context.codebase.get_class_like(parent_fqcn_str) else {
+            let Some(parent_metadata) = context.codebase.get_class_like_by_name(*parent_fqcn) else {
                 continue;
             };
 
@@ -3478,7 +3494,7 @@ fn check_class_like_properties<'ctx, A>(
 
         // Check interface hook by-ref signature compatibility
         for interface_fqcn in &class_like_metadata.all_parent_interfaces {
-            let Some(interface_metadata) = context.codebase.get_class_like(interface_fqcn.as_bytes()) else {
+            let Some(interface_metadata) = context.codebase.get_class_like_by_name(*interface_fqcn) else {
                 continue;
             };
 
@@ -3542,7 +3558,7 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 continue;
             };
 
-            let Some(trait_metadata) = context.codebase.get_class_like(trait_fqcn.as_bytes()) else {
+            let Some(trait_metadata) = context.codebase.get_class_like_by_name(*trait_fqcn) else {
                 continue;
             };
 
@@ -3621,8 +3637,7 @@ fn check_class_like_constants<'ctx, 'arena, A>(
             };
 
             for parent_fqcn in &class_like_metadata.all_parent_classes {
-                let parent_fqcn_str = parent_fqcn.as_ref();
-                let Some(parent_metadata) = context.codebase.get_class_like(parent_fqcn_str) else {
+                let Some(parent_metadata) = context.codebase.get_class_like_by_name(*parent_fqcn) else {
                     continue;
                 };
 
@@ -3727,8 +3742,7 @@ fn check_class_like_constants<'ctx, 'arena, A>(
             };
 
             for interface_fqcn in &class_like_metadata.all_parent_interfaces {
-                let interface_fqcn_str = interface_fqcn.as_ref();
-                let Some(interface_metadata) = context.codebase.get_class_like(interface_fqcn_str) else {
+                let Some(interface_metadata) = context.codebase.get_class_like_by_name(*interface_fqcn) else {
                     continue;
                 };
 

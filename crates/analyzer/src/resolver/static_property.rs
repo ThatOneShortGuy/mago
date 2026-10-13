@@ -16,6 +16,7 @@ use mago_syntax::cst::Variable;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::editor::MemberReference;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
@@ -24,6 +25,7 @@ use crate::expression::unary::cast_type_to_string;
 use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::resolver::property::PropertyResolutionResult;
 use crate::resolver::property::ResolvedProperty;
+use crate::resolver::property::report_deprecated_property;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
 use crate::visibility::check_static_property_read_visibility;
@@ -35,6 +37,7 @@ pub fn resolve_static_properties<'ctx, 'ast, 'arena, A>(
     artifacts: &mut AnalysisArtifacts,
     class_expression: &'ast Expression<'arena>,
     property_variable: &'ast Variable<'arena>,
+    for_assignment: bool,
 ) -> Result<PropertyResolutionResult, AnalysisError>
 where
     A: Arena,
@@ -110,6 +113,9 @@ where
         }
     };
 
+    let check_deprecation = !for_assignment
+        || artifacts.get_expression_type(&class_expression.span().join(property_variable.span())).is_none();
+
     for resolved_classname in classnames {
         if resolved_classname.is_from_mixed() {
             result.encountered_mixed = true;
@@ -135,10 +141,25 @@ where
                 property_variable,
                 class_expression,
                 &mut result,
+                check_deprecation,
             ) {
                 result.properties.push(resolved_property);
             }
         }
+    }
+
+    if let Some(editor) = &mut artifacts.editor {
+        let mut reference = MemberReference::property(
+            block_context.scope.get_reference_origin(),
+            class_expression.span(),
+            property_variable.span(),
+            word(""),
+        );
+        reference.static_access = true;
+        reference.dynamic = !matches!(property_variable, Variable::Direct(_));
+        reference.write = for_assignment;
+        reference.uncertain = result.encountered_null;
+        editor.record_properties(reference, &result);
     }
 
     Ok(result)
@@ -153,6 +174,7 @@ fn find_static_property_in_class<'ctx, 'ast, 'arena, A>(
     variable: &'ast Variable<'arena>,
     class_expr: &'ast Expression<'arena>,
     result: &mut PropertyResolutionResult,
+    check_deprecation: bool,
 ) -> Option<ResolvedProperty>
 where
     A: Arena,
@@ -200,6 +222,10 @@ where
                     continue;
                 }
 
+                if check_deprecation && !block_context.is_enclosing_scope_deprecated() {
+                    report_deprecated_property(context, required_declaring_metadata, prop_meta, variable.span());
+                }
+
                 let mut property_type =
                     prop_meta.type_metadata.as_ref().map_or_else(get_mixed, |metadata| metadata.type_union.clone());
 
@@ -214,6 +240,7 @@ where
                 );
 
                 return Some(ResolvedProperty {
+                    lookup_class: Some(class_id),
                     property_span: prop_meta.name_span.or(prop_meta.span),
                     property_name,
                     declaring_class_id: Some(required_declaring_id),
@@ -268,6 +295,10 @@ where
         return None;
     }
 
+    if check_deprecation && !block_context.is_enclosing_scope_deprecated() {
+        report_deprecated_property(context, declaring_class_metadata, property_metadata, variable.span());
+    }
+
     let mut property_type =
         property_metadata.type_metadata.as_ref().map_or_else(get_mixed, |metadata| metadata.type_union.clone());
 
@@ -282,6 +313,7 @@ where
     );
 
     Some(ResolvedProperty {
+        lookup_class: Some(class_id),
         property_span: property_metadata.name_span.or(property_metadata.span),
         property_name,
         declaring_class_id: Some(declaring_class_id),

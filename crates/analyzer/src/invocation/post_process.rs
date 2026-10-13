@@ -3,8 +3,7 @@ use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
-
+use mago_algebra::AssertionMap;
 use mago_algebra::assertion_set::AssertionSet;
 use mago_algebra::assertion_set::Conjunction;
 use mago_algebra::assertion_set::Disjunction;
@@ -96,7 +95,7 @@ where
     };
     let full_callable_name = OnceCell::new();
 
-    if metadata.flags.is_deprecated() {
+    if metadata.flags.is_deprecated() && !block_context.is_enclosing_scope_deprecated() {
         let full_callable_name =
             full_callable_name.get_or_init(|| display_callable_name(context, identifier, metadata.original_name));
         let issue_kind = match identifier {
@@ -294,7 +293,7 @@ fn apply_assertion_to_call_context<'ctx, 'arena, A>(
 
     let referenced_variable_ids: WordSet = type_assertions.keys().copied().collect();
     let mut changed_variable_ids: WordSet = WordSet::default();
-    let mut active_type_assertions = IndexMap::new();
+    let mut active_type_assertions = AssertionMap::default();
     for (variable, type_assertion) in &type_assertions {
         active_type_assertions.insert(*variable, (1..type_assertion.len()).collect());
     }
@@ -482,137 +481,48 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
     A: Arena,
 {
     let metadata = invocation.target.get_function_like_metadata();
-
-    let preserves_stable_method_results = metadata.is_some_and(|metadata| {
-        (metadata.flags.is_pure() || metadata.flags.is_mutation_free()) && !metadata.flags.suspends_fiber()
+    let suspends_fiber = metadata.is_some_and(|metadata| metadata.flags.suspends_fiber());
+    let preserves_stable_method_results = metadata
+        .is_some_and(|metadata| (metadata.flags.is_pure() || metadata.flags.is_mutation_free()) && !suspends_fiber);
+    let preserves_property_narrowings = metadata.is_some_and(|metadata| {
+        (metadata.flags.is_pure() || metadata.flags.is_mutation_free() || metadata.flags.is_external_mutation_free())
+            && !suspends_fiber
     });
+
     if !preserves_stable_method_results {
         block_context.stable_method_call_assertions.clear();
         block_context.stable_method_calls.clear();
-        let references_method_call_key = |key: Word| memchr::memmem::find(key.as_bytes(), b"()").is_some();
-        let references_method_call =
-            |clause: &Rc<Clause>| clause.possibilities.keys().copied().any(references_method_call_key);
-        block_context.locals.retain(|key, _| !references_method_call_key(*key));
-        block_context.clauses.retain(|clause| !references_method_call(clause));
-        block_context.reconciled_expression_clauses.retain(|clause| !references_method_call(clause));
-        block_context.retain_valid_class_type_relations();
+        if preserves_property_narrowings {
+            let references_method_call =
+                |clause: &Rc<Clause>| clause.possibilities.keys().copied().any(references_method_call_key);
+            block_context.locals.retain(|key, _| !references_method_call_key(*key));
+            block_context.clauses.retain(|clause| !references_method_call(clause));
+            block_context.reconciled_expression_clauses.retain(|clause| !references_method_call(clause));
+            block_context.retain_valid_class_type_relations();
+        }
     }
 
-    if let Some(metadata) = metadata
-        && (metadata.flags.is_pure() || metadata.flags.is_mutation_free() || metadata.flags.is_external_mutation_free())
-        && !metadata.flags.suspends_fiber()
-    {
-        // Mutation free functions are guaranteed not to have side effects, so we can skip clearing property narrowings.
-        // Exception: @suspends-fiber functions can yield, allowing other fibers to modify properties.
+    if preserves_property_narrowings {
         return;
     }
 
-    let this_property_is_readonly = |property_name: &[u8]| -> bool {
-        let Some(class_metadata) = block_context.scope.get_class_like() else {
-            return false;
-        };
-
-        if class_metadata.flags.is_readonly() {
-            return true;
-        }
-
-        let Some(property_metadata) = class_metadata.properties.get(&Word::new(property_name)) else {
-            return false;
-        };
-
-        property_metadata.flags.is_readonly()
-    };
-
+    let class_metadata = block_context.scope.get_class_like();
     let preserves_this_property = |var_id: Word| -> bool {
-        let s = var_id.as_bytes();
-        let Some(rest) = s.strip_prefix(b"$this->") else {
+        let Some(property_name) = var_id.as_bytes().strip_prefix(b"$this->") else {
             return false;
         };
-
-        if memchr::memmem::find(rest, b"->").is_some() || rest.contains(&b'[') {
+        if memchr::memmem::find(property_name, b"->").is_some() || property_name.contains(&b'[') {
             return false;
         }
 
-        this_property_is_readonly(rest)
+        class_metadata.is_some_and(|metadata| {
+            metadata.flags.is_readonly()
+                || metadata
+                    .properties
+                    .get(&Word::new(property_name))
+                    .is_some_and(|property| property.flags.is_readonly())
+        })
     };
-
-    // When a function is marked @suspends-fiber, it can yield execution to other fibers
-    // that may modify any $this property. Always clear $this-> memoized properties,
-    // except for readonly ones, readonly properties can never be reassigned by
-    // any concurrently running fiber either.
-    let suspends_fiber = metadata.is_some_and(|m| m.flags.suspends_fiber());
-    if suspends_fiber {
-        let resource_ids: WordSet = block_context
-            .locals
-            .iter()
-            .filter_map(|(var_id, current_type)| {
-                current_type
-                    .types
-                    .iter()
-                    .any(|atomic| matches!(atomic, TAtomic::Resource(resource) if resource.is_open()))
-                    .then_some(*var_id)
-            })
-            .collect();
-
-        for resource_id in &resource_ids {
-            let Some(current_type) = block_context.locals.get(resource_id).cloned() else {
-                continue;
-            };
-
-            let mut widened = (*current_type).clone();
-            for atomic in widened.types.to_mut() {
-                if let TAtomic::Resource(resource) = atomic
-                    && resource.is_open()
-                {
-                    *resource = TResource::new(None);
-                }
-            }
-
-            block_context.locals.insert(*resource_id, Rc::new(widened));
-        }
-
-        if !resource_ids.is_empty() {
-            block_context.clauses.retain(|clause| {
-                clause.wedge || !clause.possibilities.keys().copied().any(|var_id| resource_ids.contains(&var_id))
-            });
-
-            block_context.reconciled_expression_clauses.retain(|clause| {
-                clause.wedge || !clause.possibilities.keys().copied().any(|var_id| resource_ids.contains(&var_id))
-            });
-        }
-    }
-
-    if suspends_fiber && block_context.scope.get_class_like_name().is_some() {
-        let keys_to_remove: Vec<_> = block_context
-            .locals
-            .keys()
-            .copied()
-            .filter(|var_id| var_id.as_bytes().starts_with(b"$this->") && !preserves_this_property(*var_id))
-            .collect();
-
-        for key in &keys_to_remove {
-            block_context.locals.remove(key);
-        }
-
-        block_context.clauses.retain(|clause| {
-            clause.wedge
-                || !clause
-                    .possibilities
-                    .keys()
-                    .copied()
-                    .any(|k| k.as_bytes().starts_with(b"$this->") && !preserves_this_property(k))
-        });
-
-        block_context.reconciled_expression_clauses.retain(|clause| {
-            clause.wedge
-                || !clause
-                    .possibilities
-                    .keys()
-                    .copied()
-                    .any(|k| k.as_bytes().starts_with(b"$this->") && !preserves_this_property(k))
-        });
-    }
-
     let is_self_method_call = matches!(receiver_variable, Some(v) if v == b"$this")
         && match invocation.target.get_function_like_identifier() {
             Some(FunctionLikeIdentifier::Method(class_name, _)) => block_context
@@ -621,72 +531,65 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
                 .is_some_and(|current_class| current_class.as_bytes().eq_ignore_ascii_case(class_name.as_bytes())),
             _ => false,
         };
-
+    let clears_this = is_self_method_call || (suspends_fiber && block_context.scope.get_class_like_name().is_some());
     if is_self_method_call {
         block_context.definitely_uninitialized_property_ids.clear();
-
-        let keys_to_remove: Vec<_> = block_context
-            .locals
-            .keys()
-            .copied()
-            .filter(|var_id| var_id.as_bytes().starts_with(b"$this->") && !preserves_this_property(*var_id))
-            .collect();
-
-        for key in &keys_to_remove {
-            block_context.locals.remove(key);
-        }
-
-        block_context.clauses.retain(|clause| {
-            clause.wedge
-                || !clause
-                    .possibilities
-                    .keys()
-                    .copied()
-                    .any(|k| k.as_bytes().starts_with(b"$this->") && !preserves_this_property(k))
-        });
-
-        block_context.reconciled_expression_clauses.retain(|clause| {
-            clause.wedge
-                || !clause
-                    .possibilities
-                    .keys()
-                    .copied()
-                    .any(|k| k.as_bytes().starts_with(b"$this->") && !preserves_this_property(k))
-        });
     }
 
-    // Superglobal array entries (`$_SESSION['x']`, `$_GET['y']`, ...) are reachable from
-    // every function body, so any non-pure call can mutate them whether or not it was
-    // passed any arguments. Reset each superglobal variable in locals back to its
-    // declared type (wiping the caller's narrowed known-items), and drop any clauses
-    // or separately-keyed index entries that refer to them.
+    let mut resource_ids = WordSet::default();
     block_context.locals.retain(|var_id, current_type| {
+        if references_method_call_key(*var_id) {
+            return false;
+        }
+
+        if suspends_fiber
+            && current_type
+                .types
+                .iter()
+                .any(|atomic| matches!(atomic, TAtomic::Resource(resource) if resource.is_open()))
+        {
+            resource_ids.insert(*var_id);
+            let mut widened = (**current_type).clone();
+            for atomic in widened.types.to_mut() {
+                if let TAtomic::Resource(resource) = atomic
+                    && resource.is_open()
+                {
+                    *resource = TResource::new(None);
+                }
+            }
+            *current_type = Rc::new(widened);
+        }
+
+        if clears_this && var_id.as_bytes().starts_with(b"$this->") && !preserves_this_property(*var_id) {
+            return false;
+        }
         if is_superglobal_index_key(*var_id) {
             return false;
         }
-
         if is_superglobal_name(var_id.as_bytes()) {
-            if let Some(declared) = crate::common::global::get_global_variable_type(var_id.as_bytes()) {
+            if let Some(declared) = crate::common::global::get_global_variable_type(*var_id) {
                 *current_type = declared;
                 return true;
             }
-
             return false;
         }
-
         true
     });
 
-    let touches_superglobal = |var: Word| {
-        let s = var.as_bytes();
-        is_superglobal_index_key(var) || is_superglobal_name(s)
+    let retains_clause = |clause: &Rc<Clause>| {
+        !clause.possibilities.keys().copied().any(|var_id| {
+            references_method_call_key(var_id)
+                || (!clause.wedge
+                    && (resource_ids.contains(&var_id)
+                        || (clears_this
+                            && var_id.as_bytes().starts_with(b"$this->")
+                            && !preserves_this_property(var_id))
+                        || is_superglobal_index_key(var_id)
+                        || is_superglobal_name(var_id.as_bytes())))
+        })
     };
-    block_context
-        .clauses
-        .retain(|clause| clause.wedge || !clause.possibilities.keys().copied().any(touches_superglobal));
-    block_context
-        .reconciled_expression_clauses
-        .retain(|clause| clause.wedge || !clause.possibilities.keys().copied().any(touches_superglobal));
+    block_context.clauses.retain(retains_clause);
+    block_context.reconciled_expression_clauses.retain(retains_clause);
 
     // If the callee imports any variables via `global $x;` anywhere in its body, it can
     // reassign them in the caller's global scope. Widen any literal narrowings we were
@@ -796,6 +699,11 @@ fn clear_object_property_narrowings<'ctx, 'arena, A>(
     block_context.retain_valid_class_type_relations();
 }
 
+fn references_method_call_key(key: Word) -> bool {
+    let bytes = key.as_bytes();
+    memchr::memchr_iter(b'(', bytes).any(|index| bytes.get(index + 1) == Some(&b')'))
+}
+
 fn is_property_or_index_key(var_id: Word) -> bool {
     let s = var_id.as_bytes();
     memchr::memmem::find(s, b"->").is_some() || (s.starts_with(b"$") && s.contains(&b'['))
@@ -885,6 +793,9 @@ where
 /// might mutate them regardless of its arguments.
 fn is_superglobal_index_key(var_id: Word) -> bool {
     let s = var_id.as_bytes();
+    if !s.starts_with(b"$_") && !s.starts_with(b"$GLOBALS[") {
+        return false;
+    }
     let Some(bracket_pos) = memchr::memchr(b'[', s) else {
         return false;
     };
@@ -917,11 +828,11 @@ fn resolve_invocation_assertion<'ctx, 'arena, A>(
     template_result: &TemplateResult,
     parameters: &WordMap<TUnion>,
     is_unconditional_assert: bool,
-) -> IndexMap<Word, AssertionSet>
+) -> AssertionMap<Word, AssertionSet>
 where
     A: Arena,
 {
-    let mut type_assertions: IndexMap<Word, AssertionSet> = IndexMap::new();
+    let mut type_assertions: AssertionMap<Word, AssertionSet> = AssertionMap::default();
     if assertions.is_empty() {
         return type_assertions;
     }
@@ -1629,4 +1540,85 @@ where
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use mago_word::Word;
+
+    use super::is_superglobal_index_key;
+    use super::is_superglobal_name;
+    use super::references_method_call_key;
+
+    #[test]
+    fn superglobal_index_keys_preserve_first_bracket_matching() {
+        let roots: [&[u8]; 16] = [
+            b"$_SESSION",
+            b"$_GET",
+            b"$_POST",
+            b"$_COOKIE",
+            b"$_SERVER",
+            b"$_ENV",
+            b"$_FILES",
+            b"$_REQUEST",
+            b"$GLOBALS",
+            b"$_UNKNOWN",
+            b"$global",
+            b"$GLOBALSx",
+            b"$_GET->property",
+            b"$local",
+            b"",
+            b"\xff",
+        ];
+        let suffixes: [&[u8]; 7] = [b"", b"[0]", b"['key']", b"[0][1]", b"->property[0]", b"\0[0]", b"\xff[0]"];
+        for root in roots {
+            for suffix in suffixes {
+                let key = [root, suffix].concat();
+                let expected =
+                    key.iter().position(|byte| *byte == b'[').is_some_and(|index| is_superglobal_name(&key[..index]));
+                assert_eq!(is_superglobal_index_key(Word::new(&key)), expected, "{key:?}");
+            }
+        }
+    }
+
+    fn check_method_call_key(bytes: &[u8]) {
+        assert_eq!(
+            references_method_call_key(Word::new(bytes)),
+            bytes.windows(2).any(|pair| pair == b"()"),
+            "{bytes:?}"
+        );
+    }
+
+    #[test]
+    fn method_call_keys_match_byte_pair_search() {
+        let alphabet = [b'(', b')', b'$', b'a', 0, 0xff];
+        for length in 0..=4 {
+            for mut value in 0..alphabet.len().pow(length) {
+                let mut bytes = vec![0; length as usize];
+                for byte in &mut bytes {
+                    *byte = alphabet[value % alphabet.len()];
+                    value /= alphabet.len();
+                }
+                check_method_call_key(&bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn method_call_keys_match_at_scan_boundaries() {
+        for length in [15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257] {
+            let mut bytes = vec![b'('; length];
+            check_method_call_key(&bytes);
+            bytes.push(b')');
+            check_method_call_key(&bytes);
+
+            bytes.fill(0xff);
+            check_method_call_key(&bytes);
+            for index in 0..bytes.len() - 1 {
+                bytes[index..index + 2].copy_from_slice(b"()");
+                check_method_call_key(&bytes);
+                bytes[index..index + 2].fill(0xff);
+            }
+        }
+    }
 }

@@ -31,7 +31,7 @@ use crate::invocation::InvocationTarget;
 use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::analyzer::analyze_invocation;
-use crate::visibility::check_method_visibility;
+use crate::visibility::check_method_visibility_by_id;
 use mago_bytes::BytesDisplay;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,8 +106,10 @@ where
     for attribute in attributes {
         let attribute_name_bytes = context.resolved_names.get(&attribute.name);
         let attribute_name = BytesDisplay(attribute_name_bytes);
+        let attribute_class = mago_word::ascii_lowercase_word(attribute_name_bytes);
+        artifacts.symbol_references.add_reference_to_symbol(&block_context.scope, attribute_class, false);
 
-        let Some(metadata) = context.codebase.get_class_like(attribute_name_bytes) else {
+        let Some(metadata) = context.codebase.get_class_like_by_name(attribute_class) else {
             context.collector.report_with_code(
                 IssueCode::NonExistentAttributeClass,
                 Issue::error(format!("Attribute class `{attribute_name}` not found or could not be autoloaded."))
@@ -344,11 +346,10 @@ where
 
     // Attributes are instantiated by reflection, never from the annotated declaration, so
     // the constructor must be reachable from the global scope.
-    check_method_visibility(
+    check_method_visibility_by_id(
         context,
         None,
-        declaring_constructor_id.get_class_name().as_bytes(),
-        declaring_constructor_id.get_method_name().as_bytes(),
+        &declaring_constructor_id,
         attribute.span(),
         Some(attribute.name.span()),
     );

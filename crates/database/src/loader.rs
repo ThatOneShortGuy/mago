@@ -3,8 +3,15 @@
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::PoisonError;
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 
 use foldhash::HashMap;
 use foldhash::HashSet;
@@ -42,13 +49,14 @@ pub struct DatabaseLoader<'config> {
     configuration: DatabaseConfiguration<'config>,
     memory_sources: Vec<(&'static [u8], &'static [u8], FileType)>,
     stdin_override: Option<(Cow<'config, [u8]>, Vec<u8>)>,
+    directory_symlinks: Option<Mutex<HashSet<PathBuf>>>,
 }
 
 impl<'config> DatabaseLoader<'config> {
     #[inline]
     #[must_use]
     pub fn new(configuration: DatabaseConfiguration<'config>) -> Self {
-        Self { configuration, memory_sources: vec![], database: None, stdin_override: None }
+        Self { configuration, memory_sources: vec![], database: None, stdin_override: None, directory_symlinks: None }
     }
 
     #[inline]
@@ -85,6 +93,24 @@ impl<'config> DatabaseLoader<'config> {
     /// - A file exceeds the maximum supported size
     #[inline]
     pub fn load(mut self) -> Result<Database<'config>, DatabaseError> {
+        self.load_inner()
+    }
+
+    /// Load files and retain directory symlinks found during directory walks, including empty ones.
+    /// Links with missing targets are retained too; their target type is not yet known.
+    /// File-only globs expose matching files, so they do not discover empty directory symlinks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::load`].
+    pub fn load_with_directory_symlinks(mut self) -> Result<(Database<'config>, Vec<PathBuf>), DatabaseError> {
+        self.directory_symlinks = Some(Mutex::default());
+        let database = self.load_inner()?;
+        let symlinks = self.directory_symlinks.unwrap_or_default().into_inner().unwrap_or_else(PoisonError::into_inner);
+        Ok((database, symlinks.into_iter().collect()))
+    }
+
+    fn load_inner(&mut self) -> Result<Database<'config>, DatabaseError> {
         let mut db = self.database.take().unwrap_or_else(|| Database::new(self.configuration.clone()));
 
         // Update database configuration to use the loader's configuration
@@ -165,24 +191,34 @@ impl<'config> DatabaseLoader<'config> {
                 )
             },
         );
+
         let host_files_with_spec = host_files_with_spec?;
         let vendored_files_with_spec = vendored_files_with_spec?;
         let patch_files_with_spec = patch_files_with_spec?;
 
-        let mut all_files: HashMap<FileId, File> = HashMap::default();
         // Per-file maximum specificity for each tier the file matched. `None` in a slot means
         // the file did not match any configured pattern in that tier; otherwise it carries the
         // best specificity score that tier could offer, scored by `calculate_pattern_specificity`.
         type TierSpecs = (Option<usize>, Option<usize>, Option<usize>);
-        let mut tier_specs: HashMap<FileId, TierSpecs> = HashMap::default();
+        let file_count = host_files_with_spec.len() + vendored_files_with_spec.len() + patch_files_with_spec.len();
+        let mut all_files: HashMap<FileId, (File, TierSpecs)> =
+            HashMap::with_capacity_and_hasher(file_count, foldhash::fast::RandomState::default());
 
         // Process host files (from paths)
         for file_with_spec in host_files_with_spec {
             let file_id = file_with_spec.file.id;
             let specificity = file_with_spec.specificity;
 
-            all_files.insert(file_id, file_with_spec.file);
-            bump_spec(&mut tier_specs.entry(file_id).or_insert((None, None, None)).0, specificity);
+            match all_files.entry(file_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert((file_with_spec.file, (Some(specificity), None, None)));
+                }
+                Entry::Occupied(mut entry) => {
+                    let (file, specs) = entry.get_mut();
+                    *file = file_with_spec.file;
+                    bump_spec(&mut specs.0, specificity);
+                }
+            }
         }
 
         // When stdin override is set, ensure that the file is in the database
@@ -204,9 +240,9 @@ impl<'config> DatabaseLoader<'config> {
                 } else {
                     self.configuration.workspace.join(excl.as_ref())
                 };
+
                 let canonical = canonical.canonicalize().unwrap_or(canonical);
                 let canonical_str = canonical.to_string_lossy();
-
                 virtual_path_str.starts_with(canonical_str.as_ref())
                     && matches!(virtual_path_str.as_bytes().get(canonical_str.len()), None | Some(&b'/' | &b'\\'))
             });
@@ -215,9 +251,7 @@ impl<'config> DatabaseLoader<'config> {
                 let file = File::ephemeral(Cow::Owned(name.as_ref().to_vec()), Cow::Owned(content.clone()));
                 let file_id = file.id;
                 if let Entry::Vacant(e) = all_files.entry(file_id) {
-                    e.insert(file);
-
-                    bump_spec(&mut tier_specs.entry(file_id).or_insert((None, None, None)).0, usize::MAX);
+                    e.insert((file, (Some(usize::MAX), None, None)));
                 }
             }
         }
@@ -225,34 +259,57 @@ impl<'config> DatabaseLoader<'config> {
         for file_with_spec in vendored_files_with_spec {
             let file_id = file_with_spec.file.id;
             let vendored_specificity = file_with_spec.specificity;
-
-            all_files.entry(file_id).or_insert(file_with_spec.file);
-            bump_spec(&mut tier_specs.entry(file_id).or_insert((None, None, None)).1, vendored_specificity);
+            let (_, specs) = all_files.entry(file_id).or_insert((file_with_spec.file, (None, None, None)));
+            bump_spec(&mut specs.1, vendored_specificity);
         }
 
         for file_with_spec in patch_files_with_spec {
             let file_id = file_with_spec.file.id;
             let specificity = file_with_spec.specificity;
-            all_files.entry(file_id).or_insert(file_with_spec.file);
-            bump_spec(&mut tier_specs.entry(file_id).or_insert((None, None, None)).2, specificity);
+            let (_, specs) = all_files.entry(file_id).or_insert((file_with_spec.file, (None, None, None)));
+            bump_spec(&mut specs.2, specificity);
         }
 
-        db.reserve(tier_specs.len() + self.memory_sources.len());
-
-        for (file_id, (host_spec, vendored_spec, patch_spec)) in tier_specs {
-            if let Some(mut file) = all_files.remove(&file_id) {
-                file.file_type = resolve_file_type(host_spec, vendored_spec, patch_spec);
-                db.add(file);
-            }
+        db.reserve(all_files.len() + self.memory_sources.len());
+        for (_, (mut file, (host_spec, vendored_spec, patch_spec))) in all_files {
+            file.file_type = resolve_file_type(host_spec, vendored_spec, patch_spec);
+            db.add(file);
         }
 
-        for (name, contents, file_type) in self.memory_sources {
+        for (name, contents, file_type) in std::mem::take(&mut self.memory_sources) {
             let file = File::new(Cow::Borrowed(name), file_type, None, Cow::Borrowed(contents));
 
             db.add(file);
         }
 
         Ok(db)
+    }
+
+    #[allow(clippy::set_contains_or_insert, reason = "A duplicate insert can grow a full set.")]
+    fn record_directory_symlink(&self, entry: &walkdir::DirEntry) {
+        if let Some(symlinks) = &self.directory_symlinks
+            && entry.file_type().is_dir()
+            && entry.path_is_symlink()
+        {
+            let mut symlinks = symlinks.lock().unwrap_or_else(PoisonError::into_inner);
+            if !symlinks.contains(entry.path()) {
+                symlinks.insert(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    #[allow(clippy::set_contains_or_insert, reason = "A duplicate insert can grow a full set.")]
+    fn record_missing_symlink(&self, error: &walkdir::Error) {
+        let Some(symlinks) = &self.directory_symlinks else { return };
+        if error.io_error().is_some_and(|error| matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory))
+            && let Some(path) = error.path()
+            && path.read_link().is_ok()
+        {
+            let mut symlinks = symlinks.lock().unwrap_or_else(PoisonError::into_inner);
+            if !symlinks.contains(path) {
+                symlinks.insert(path.to_path_buf());
+            }
+        }
     }
 
     /// Discovers and reads all files from a set of root paths or glob patterns in parallel.
@@ -371,13 +428,17 @@ impl<'config> DatabaseLoader<'config> {
                                     &canonical_excludes,
                                     dir_prune_globs,
                                 ) {
+                                    self.record_directory_symlink(&entry);
                                     directory_roots.push((entry.into_path(), specificity));
                                 }
                             } else {
                                 paths_to_process.push((entry.into_path(), specificity, false));
                             }
                         }
-                        Err(err) => warn_walk_error(&err, canonical_root.as_path()),
+                        Err(err) => {
+                            self.record_missing_symlink(&err);
+                            warn_walk_error(&err, canonical_root.as_path());
+                        }
                     }
                 }
             }
@@ -414,23 +475,24 @@ impl<'config> DatabaseLoader<'config> {
             }
 
             let workspace = canonical_workspace.as_path();
-            #[cfg(windows)]
-            let logical_name =
-                path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let logical_name = path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().into_owned();
+            if let Some((override_name, override_content)) = &self.stdin_override {
+                #[cfg(windows)]
+                let logical_name =
+                    path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().replace('\\', "/");
+                #[cfg(not(windows))]
+                let logical_name =
+                    path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().into_owned();
 
-            if let Some((override_name, override_content)) = &self.stdin_override
-                && override_name.as_ref() == logical_name.as_bytes()
-            {
-                let file = File::new(
-                    Cow::Owned(logical_name.into_bytes()),
-                    file_type,
-                    Some(path),
-                    Cow::Owned(override_content.clone()),
-                );
+                if override_name.as_ref() == logical_name.as_bytes() {
+                    let file = File::new(
+                        Cow::Owned(logical_name.into_bytes()),
+                        file_type,
+                        Some(path),
+                        Cow::Owned(override_content.clone()),
+                    );
 
-                return Some(Ok(FileWithSpecificity { file, specificity }));
+                    return Some(Ok(FileWithSpecificity { file, specificity }));
+                }
             }
 
             match read_file(workspace, &path, file_type) {
@@ -445,28 +507,80 @@ impl<'config> DatabaseLoader<'config> {
                 directory_roots
                     .into_par_iter()
                     .map(|(root, specificity)| {
+                        #[cfg(unix)]
+                        if rayon::current_num_threads() > 1
+                            && root.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_dir())
+                        {
+                            let fallback = AtomicBool::new(false);
+                            if let Some(files) = try_load_directory_parallel(
+                                &root,
+                                specificity,
+                                &load_path,
+                                &|path| {
+                                    is_pruned_directory(
+                                        path,
+                                        canonical_workspace.as_path(),
+                                        &canonical_excludes,
+                                        dir_prune_globs,
+                                    )
+                                },
+                                &fallback,
+                                0,
+                            ) {
+                                return files;
+                            }
+                        }
+
                         let walker = WalkDir::new(&root).follow_links(true).into_iter().filter_entry(|entry| {
-                            entry.depth() == 0
+                            let keep = entry.depth() == 0
                                 || !entry.file_type().is_dir()
                                 || !is_pruned_directory(
                                     entry.path(),
                                     canonical_workspace.as_path(),
                                     &canonical_excludes,
                                     dir_prune_globs,
-                                )
+                                );
+
+                            if keep {
+                                self.record_directory_symlink(entry);
+                            }
+
+                            keep
                         });
 
-                        let mut files = Vec::new();
-                        for entry in walker {
-                            match entry {
-                                Ok(entry) if !entry.file_type().is_dir() => {
-                                    if let Some(file) = load_path((entry.into_path(), specificity, false)) {
-                                        files.push(file?);
-                                    }
-                                }
-                                Ok(_) => {}
-                                Err(err) => warn_walk_error(&err, root.as_path()),
+                        let mut paths = walker.filter_map(|entry| match entry {
+                            Ok(entry) if !entry.file_type().is_dir() => Some((entry.into_path(), specificity, false)),
+                            Ok(_) => None,
+                            Err(err) => {
+                                self.record_missing_symlink(&err);
+                                warn_walk_error(&err, root.as_path());
+                                None
                             }
+                        });
+
+                        let batches = std::iter::from_fn(|| {
+                            let batch: Vec<_> = paths.by_ref().take(128).collect();
+                            (!batch.is_empty()).then_some(batch)
+                        });
+
+                        let loaded = Mutex::new(Vec::new());
+                        let load_path = &load_path;
+                        // Let workers read batches while this worker walks the directory.
+                        rayon::scope(|scope| {
+                            for (index, paths) in batches.enumerate() {
+                                let loaded = &loaded;
+                                scope.spawn(move |_| {
+                                    let files = paths.into_iter().filter_map(load_path).collect::<Result<Vec<_>, _>>();
+                                    loaded.lock().unwrap_or_else(PoisonError::into_inner).push((index, files));
+                                });
+                            }
+                        });
+
+                        let mut loaded = loaded.into_inner().unwrap_or_else(PoisonError::into_inner);
+                        loaded.sort_unstable_by_key(|(index, _)| *index);
+                        let mut files = Vec::new();
+                        for (_, batch) in loaded {
+                            files.extend(batch?);
                         }
 
                         Ok(files)
@@ -480,6 +594,95 @@ impl<'config> DatabaseLoader<'config> {
 
         Ok(files)
     }
+}
+
+#[cfg(unix)]
+enum LoadedDirectoryEntry {
+    File(Option<Result<FileWithSpecificity, DatabaseError>>),
+    Directory(Option<Result<Vec<FileWithSpecificity>, DatabaseError>>),
+}
+
+// Windows WalkDir also opens ancestor handles, with distinct error behavior.
+#[cfg(unix)]
+fn try_load_directory_parallel<F, P>(
+    root: &Path,
+    specificity: usize,
+    load_path: &F,
+    is_pruned: &P,
+    fallback: &AtomicBool,
+    depth: usize,
+) -> Option<Result<Vec<FileWithSpecificity>, DatabaseError>>
+where
+    F: Fn((PathBuf, usize, bool)) -> Option<Result<FileWithSpecificity, DatabaseError>> + Sync,
+    P: Fn(&Path) -> bool + Sync,
+{
+    let use_walker = || {
+        fallback.store(true, Ordering::Relaxed);
+        None
+    };
+
+    if depth == 64 || fallback.load(Ordering::Relaxed) {
+        return use_walker();
+    }
+
+    let Ok(directory) = std::fs::read_dir(root) else {
+        return use_walker();
+    };
+
+    let entries = directory
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.path(), entry.file_type()?))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>();
+    let Ok(entries) = entries else {
+        return use_walker();
+    };
+    if entries.iter().any(|(_, file_type)| !file_type.is_file() && !file_type.is_dir()) {
+        return use_walker();
+    }
+
+    // Drop directory handles before recursing; keep native entry order in the result.
+    let entries: Vec<_> = entries
+        .into_par_iter()
+        .map(|(path, file_type)| {
+            if fallback.load(Ordering::Relaxed) {
+                LoadedDirectoryEntry::Directory(None)
+            } else if file_type.is_dir() {
+                if is_pruned(&path) {
+                    LoadedDirectoryEntry::File(None)
+                } else {
+                    LoadedDirectoryEntry::Directory(try_load_directory_parallel(
+                        &path,
+                        specificity,
+                        load_path,
+                        is_pruned,
+                        fallback,
+                        depth + 1,
+                    ))
+                }
+            } else {
+                LoadedDirectoryEntry::File(load_path((path, specificity, false)))
+            }
+        })
+        .collect();
+    if fallback.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let mut files = Vec::new();
+    for entry in entries {
+        match entry {
+            LoadedDirectoryEntry::File(Some(Ok(file))) => files.push(file),
+            LoadedDirectoryEntry::Directory(Some(Ok(children))) => files.extend(children),
+            LoadedDirectoryEntry::File(Some(Err(error))) | LoadedDirectoryEntry::Directory(Some(Err(error))) => {
+                return Some(Err(error));
+            }
+            LoadedDirectoryEntry::File(None) | LoadedDirectoryEntry::Directory(None) => {}
+        }
+    }
+
+    Some(Ok(files))
 }
 
 fn workspace_relative_string(path: &Path, workspace: &Path) -> String {
@@ -715,6 +918,87 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(file_path, content).unwrap();
+    }
+
+    #[test]
+    fn test_batched_walk_keeps_file_order() {
+        let temp_dir = TempDir::new().unwrap();
+        for index in 0..385 {
+            create_test_file(&temp_dir, &format!("src/nested/{}/{index}.php", index / 64), "<?php");
+        }
+
+        let root = temp_dir.path().join("src/nested").canonicalize().unwrap();
+        let expected: Vec<_> = WalkDir::new(root)
+            .follow_links(true)
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| !entry.file_type().is_dir())
+            .map(walkdir::DirEntry::into_path)
+            .collect();
+
+        let config = create_test_config(&temp_dir, vec!["src"], vec![]);
+        let loader = DatabaseLoader::new(config);
+        let extensions = std::iter::once(OsString::from("php")).collect();
+        let globs = GlobSet::empty();
+        let path_excludes = HashSet::default();
+        // ?
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let files = pool
+                .install(|| {
+                    loader.load_paths(
+                        &loader.configuration.paths,
+                        FileType::Host,
+                        &extensions,
+                        &globs,
+                        &globs,
+                        &path_excludes,
+                    )
+                })
+                .unwrap();
+            let actual: Vec<_> = files.into_iter().map(|entry| entry.file.path.unwrap()).collect();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_nested_files_match_with_one_and_many_threads() {
+        let temp_dir = TempDir::new().unwrap();
+        create_test_file(&temp_dir, "src/deep/a.php", "<?php // host");
+        create_test_file(&temp_dir, "src/deep/b.php", "<?php // vendor");
+        create_test_file(&temp_dir, "src/deep/patch/c.php", "<?php // patch");
+        create_test_file(&temp_dir, "src/deep/skip/d.php", "<?php // excluded");
+        create_test_file(&temp_dir, "src/deep/e.txt", "<?php // wrong extension");
+
+        let mut config = create_test_config_with_patches(
+            &temp_dir,
+            vec!["src", "src/deep/a.php"],
+            vec!["src/deep"],
+            vec!["src/deep/patch"],
+        );
+        config.excludes.push(Exclusion::Pattern(Cow::Borrowed("src/deep/skip/**")));
+
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let db = pool.install(|| {
+                DatabaseLoader::new(config.clone())
+                    .with_stdin_override(b"src/deep/a.php", b"<?php // edited".to_vec())
+                    .load()
+                    .unwrap()
+            });
+            let mut files =
+                db.files().map(|file| (file.name.to_vec(), file.file_type, file.contents.to_vec())).collect::<Vec<_>>();
+            files.sort_by(|left, right| left.0.cmp(&right.0));
+
+            assert_eq!(
+                files,
+                vec![
+                    (b"src/deep/a.php".to_vec(), FileType::Host, b"<?php // edited".to_vec()),
+                    (b"src/deep/b.php".to_vec(), FileType::Vendored, b"<?php // vendor".to_vec()),
+                    (b"src/deep/patch/c.php".to_vec(), FileType::Patch, b"<?php // patch".to_vec()),
+                ],
+            );
+        }
     }
 
     #[test]
@@ -991,18 +1275,102 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn directory_walks_report_empty_symlinks_without_changing_loaded_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        create_test_file(&temp_dir, "vendor/Kept.php", "<?php class Kept {}\n");
+        std::fs::create_dir_all(temp_dir.path().join("vendor/deep")).unwrap();
+        for path in ["vendor/shallow", "vendor/deep/package"] {
+            std::os::unix::fs::symlink(external.path(), temp_dir.path().join(path)).unwrap();
+        }
+        let config = create_test_config(&temp_dir, vec![], vec!["vendor/"]);
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let (database, mut symlinks) =
+                pool.install(|| DatabaseLoader::new(config.clone()).load_with_directory_symlinks().unwrap());
+            symlinks.sort();
+            let root = temp_dir.path().canonicalize().unwrap();
+            assert_eq!(symlinks, [root.join("vendor/deep/package"), root.join("vendor/shallow")]);
+            let ordinary = pool.install(|| DatabaseLoader::new(config.clone()).load().unwrap());
+            let summarize = |database: &Database<'_>| {
+                database
+                    .files()
+                    .map(|file| (file.name.to_vec(), file.file_type, file.contents.to_vec()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(summarize(&database), summarize(&ordinary));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_walks_report_dangling_symlinks_without_changing_loaded_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        create_test_file(&temp_dir, "vendor/Kept.php", "<?php class Kept {}\n");
+        create_test_file(&external, "blocked", "not a directory");
+        std::fs::create_dir_all(temp_dir.path().join("vendor/deep")).unwrap();
+        for (link, target) in [
+            ("vendor/shallow", external.path().join("missing")),
+            ("vendor/deep/relative", PathBuf::from("../../missing")),
+            ("vendor/deep/blocked", external.path().join("blocked/child")),
+        ] {
+            std::os::unix::fs::symlink(target, temp_dir.path().join(link)).unwrap();
+        }
+        let config = create_test_config(&temp_dir, vec![], vec!["vendor/"]);
+        let root = temp_dir.path().canonicalize().unwrap();
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let (database, mut symlinks) =
+                pool.install(|| DatabaseLoader::new(config.clone()).load_with_directory_symlinks().unwrap());
+            symlinks.sort();
+            assert_eq!(
+                symlinks,
+                [root.join("vendor/deep/blocked"), root.join("vendor/deep/relative"), root.join("vendor/shallow")]
+            );
+
+            let ordinary = pool.install(|| DatabaseLoader::new(config.clone()).load().unwrap());
+            let summarize = |database: &Database<'_>| {
+                database
+                    .files()
+                    .map(|file| (file.name.to_vec(), file.file_type, file.contents.to_vec()))
+                    .collect::<Vec<_>>()
+            };
+
+            assert_eq!(summarize(&database), summarize(&ordinary));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_only_globs_do_not_discover_empty_directory_symlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("vendor")).unwrap();
+        std::os::unix::fs::symlink(external.path(), temp_dir.path().join("vendor/package")).unwrap();
+        let config = create_test_config(&temp_dir, vec![], vec!["vendor/**/*.php"]);
+        let (database, symlinks) = DatabaseLoader::new(config).load_with_directory_symlinks().unwrap();
+        assert!(database.files().next().is_none());
+        assert!(symlinks.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn test_symlink_cycle_is_warned_and_skipped() {
         let temp_dir = TempDir::new().unwrap();
-        create_test_file(&temp_dir, "src/Real.php", "<?php class Real {}\n");
-        std::os::unix::fs::symlink(temp_dir.path().join("src"), temp_dir.path().join("src/loop")).unwrap();
+        create_test_file(&temp_dir, "src/nested/Real.php", "<?php class Real {}\n");
+        std::os::unix::fs::symlink(temp_dir.path().join("src/nested"), temp_dir.path().join("src/nested/loop"))
+            .unwrap();
 
         let config = create_test_config(&temp_dir, vec![], vec!["src/"]);
-        let db = DatabaseLoader::new(config).load().expect("symlink cycle should not abort the load");
-
-        assert!(
-            db.files().any(|f| name_str(&f.name).contains("Real.php")),
-            "Real.php still reachable despite the loop"
-        );
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let db = pool.install(|| {
+                DatabaseLoader::new(config.clone()).load().expect("symlink cycle should not abort the load")
+            });
+            let names = db.files().map(|file| file.name.to_vec()).collect::<Vec<_>>();
+            assert_eq!(names, [b"src/nested/Real.php".to_vec()]);
+        }
     }
 
     #[test]

@@ -33,7 +33,7 @@ use mago_names::resolver::NameResolver;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_semantics::SemanticsChecker;
-use mago_syntax::parser::parse_file_with_settings;
+use mago_syntax::parser::parse_file_borrowed_with_settings;
 use mago_syntax::settings::ParserSettings;
 use mago_word::WordSet;
 
@@ -113,7 +113,7 @@ impl AnalysisService {
 
         let arena = LocalArena::new();
 
-        let program = parse_file_with_settings(&arena, &file, self.parser_settings);
+        let program = parse_file_borrowed_with_settings(&arena, &file, self.parser_settings);
         let resolved_names = NameResolver::new(&arena).resolve(program);
 
         let mut issues = IssueCollection::new();
@@ -238,12 +238,28 @@ impl AnalysisService {
     ///
     /// Returns [`OrchestratorError`] when scanning, codebase population, or per-file analysis fails.
     pub fn run(self) -> Result<AnalysisResult, OrchestratorError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        const ANALYSIS_DURATION_THRESHOLD: Duration = Duration::from_secs(5);
+        self.run_inner(true)
+    }
+
+    /// Runs analysis and returns issues, releasing project references when plugins do not need them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestratorError`] when scanning, codebase population, or per-file analysis fails.
+    pub fn run_issues(self) -> Result<IssueCollection, OrchestratorError> {
+        self.run_inner(false).map(|result| result.issues)
+    }
+
+    fn run_inner(self, retain_project_references: bool) -> Result<AnalysisResult, OrchestratorError> {
         const ANALYSIS_PROGRESS_PREFIX: &str = "🔬 Analyzing";
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let analysis_duration_threshold =
+            Duration::from_millis(u64::from(self.settings.slow_file_warning_threshold_ms));
         let external_session =
             self.plugin_registry.create_external_analysis_session(self.database.files()).map(Arc::new);
+        let retain_project_references =
+            retain_project_references || self.plugin_registry.has_custom_plugins() || external_session.is_some();
         let codebase_scan_plan =
             self.plugin_registry.external_codebase_scan_plan().map_err(AnalysisError::from)?.map(Arc::new);
         let lifecycle_capabilities = Arc::new(OnceLock::new());
@@ -268,9 +284,10 @@ impl AnalysisService {
             self.settings.version,
             Box::new(reducer),
             self.use_progress_bars,
-            // One-shot analysis never diffs signatures, so don't build them.
-            false,
-        );
+        )
+        // We only need file signatures if there's a custom plugin that can inspect them,
+        // so just don't bother computing them here
+        .with_file_signatures(self.plugin_registry.has_custom_plugins());
 
         let plugin_registry = Arc::clone(&self.plugin_registry);
         let before_plugin_registry = Arc::clone(&self.plugin_registry);
@@ -316,6 +333,9 @@ impl AnalysisService {
                     symbol_references.extend(before.references.clone());
                     let _result = before_additional_symbol_references.set(Arc::new(before.references));
                 }
+                if !retain_project_references {
+                    *symbol_references = SymbolReferences::new();
+                }
                 let issues = before.issues;
 
                 #[cfg(not(target_arch = "wasm32"))]
@@ -345,7 +365,7 @@ impl AnalysisService {
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let parse_start = trace_enabled.then(Instant::now);
-                let program = parse_file_with_settings(arena, &source_file, parser_settings);
+                let program = parse_file_borrowed_with_settings(arena, &source_file, parser_settings);
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(start) = parse_start {
                     telemetry_for_closure.parse_ns.fetch_add(start.elapsed().as_nanos() as u64, Relaxed);
@@ -397,7 +417,12 @@ impl AnalysisService {
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let analyze_start = trace_enabled.then(Instant::now);
-                let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+                let artifacts = if after_file || after_analysis {
+                    Some(analyzer.analyze_with_artifacts(program, &mut analysis_result)?)
+                } else {
+                    analyzer.analyze(program, &mut analysis_result)?;
+                    None
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(start) = analyze_start {
                     telemetry_for_closure.analyze_ns.fetch_add(start.elapsed().as_nanos() as u64, Relaxed);
@@ -410,24 +435,24 @@ impl AnalysisService {
                 }
 
                 #[cfg(not(target_arch = "wasm32"))]
-                if analysis_result.time_in_analysis > ANALYSIS_DURATION_THRESHOLD {
+                if analysis_result.time_in_analysis > analysis_duration_threshold {
                     tracing::warn!(
                         "Analysis of source file '{}' took longer than {}s: {}s",
                         mago_bytes::BytesDisplay(&source_file.name),
-                        ANALYSIS_DURATION_THRESHOLD.as_secs_f32(),
+                        analysis_duration_threshold.as_secs_f32(),
                         analysis_result.time_in_analysis.as_secs_f32()
                     );
                 }
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let snapshot_start = (trace_enabled && (after_file || after_analysis)).then(Instant::now);
-                let snapshot = if after_file || after_analysis {
+                let snapshot = if let Some(artifacts) = &artifacts {
                     Some(Arc::new(
                         FileAnalysisSnapshot::new(
                             &source_file,
                             program,
                             &resolved_names,
-                            &artifacts,
+                            artifacts,
                             &codebase,
                             node_analysis_requirements.as_ref(),
                         )
@@ -445,6 +470,9 @@ impl AnalysisService {
                     telemetry_for_closure.snapshots.fetch_add(1, Relaxed);
                 }
 
+                if !retain_project_references {
+                    analysis_result.symbol_references = SymbolReferences::new();
+                }
                 Ok(AnalysisTaskResult { result: analysis_result, snapshot })
             },
         );
@@ -484,13 +512,17 @@ impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
         results: Vec<AnalysisTaskResult>,
     ) -> Result<AnalysisResult, OrchestratorError> {
         let mut aggregated_result = AnalysisResult::new(symbol_references);
+        let codebase_issues = codebase.take_issues(true);
+        aggregated_result
+            .issues
+            .reserve(codebase_issues.len() + results.iter().map(|result| result.result.issues.len()).sum::<usize>());
         let mut snapshots = Vec::new();
         for result in results {
             aggregated_result.extend(result.result);
             snapshots.extend(result.snapshot);
         }
 
-        aggregated_result.issues.extend(codebase.take_issues(true));
+        aggregated_result.issues.extend(codebase_issues);
         let after_file = self.plugin_registry.has_external_after_file_analysis_hooks().map_err(AnalysisError::from)?;
         if after_file {
             #[cfg(not(target_arch = "wasm32"))]
@@ -548,6 +580,16 @@ impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
             .map_err(AnalysisError::from)?;
         aggregated_result.issues.extend(pragma_reconciler.reconcile(after_issues)?);
         aggregated_result.issues.extend(pragma_reconciler.finish()?);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if codebase.class_likes.len() + codebase.function_likes.len() >= 4096 && rayon::current_num_threads() > 1 {
+            let class_likes = std::mem::take(&mut codebase.class_likes);
+            let function_likes = std::mem::take(&mut codebase.function_likes);
+            rayon::join(
+                || class_likes.into_par_iter().for_each(drop),
+                || rayon::join(|| function_likes.into_par_iter().for_each(drop), || drop(codebase)),
+            );
+        }
 
         Ok(aggregated_result)
     }

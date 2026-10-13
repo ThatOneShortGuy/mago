@@ -1,12 +1,46 @@
 use std::borrow::Cow;
 
 use foldhash::HashMap;
+use mago_allocator::Arena;
 
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::UseType;
 
 use crate::kind::NameKind;
+
+pub(crate) enum NameParts<'scope, 'name> {
+    Input(&'name [u8]),
+    Alias(&'scope [u8]),
+    Qualified(&'scope [u8], &'name [u8]),
+}
+
+impl<'name> NameParts<'_, 'name> {
+    fn into_cow(self) -> Cow<'name, [u8]> {
+        match self {
+            Self::Input(name) => Cow::Borrowed(name),
+            Self::Alias(name) => Cow::Owned(name.to_vec()),
+            Self::Qualified(prefix, name) => Cow::Owned(concat_with_sep(&[prefix, name], b'\\')),
+        }
+    }
+
+    pub(crate) fn into_arena<A>(self, arena: &'name A) -> &'name [u8]
+    where
+        A: Arena,
+    {
+        match self {
+            Self::Input(name) => name,
+            Self::Alias(name) => arena.alloc_slice_copy(name),
+            Self::Qualified(prefix, name) => {
+                let mut qualified = mago_allocator::vec::Vec::with_capacity_in(prefix.len() + name.len() + 1, arena);
+                qualified.extend_from_slice(prefix);
+                qualified.push(b'\\');
+                qualified.extend_from_slice(name);
+                qualified.leak()
+            }
+        }
+    }
+}
 
 #[inline]
 pub(crate) fn trim_start_byte(s: &[u8], byte: u8) -> &[u8] {
@@ -274,12 +308,16 @@ impl NamespaceScope {
     }
 
     /// non-generic version of `qualify_name` that takes a Vec<u8> slice.
-    fn qualify_name_str<'name>(&self, name_ref: &'name [u8]) -> Cow<'name, [u8]> {
+    pub(crate) fn qualify_name_str<'name>(&self, name_ref: &'name [u8]) -> Cow<'name, [u8]> {
+        self.qualify_name_parts(name_ref).into_cow()
+    }
+
+    pub(crate) fn qualify_name_parts<'name>(&self, name_ref: &'name [u8]) -> NameParts<'_, 'name> {
         match &self.namespace_name {
             // If we have a non-empty namespace, prepend it.
-            Some(ns) if !ns.is_empty() => Cow::Owned(concat_with_sep(&[ns, name_ref], b'\\')),
+            Some(ns) if !ns.is_empty() => NameParts::Qualified(ns, name_ref),
             // Otherwise (no namespace, or empty namespace), return the name as is.
-            _ => Cow::Borrowed(name_ref),
+            _ => NameParts::Input(name_ref),
         }
     }
 
@@ -305,13 +343,23 @@ impl NamespaceScope {
     #[inline]
     #[must_use]
     pub fn resolve_str<'name>(&self, kind: NameKind, name_ref: &'name [u8]) -> (Cow<'name, [u8]>, bool) {
+        let (parts, imported) = self.resolve_parts(kind, name_ref);
+        (parts.into_cow(), imported)
+    }
+
+    pub(crate) fn resolve_parts<'name>(&self, kind: NameKind, name_ref: &'name [u8]) -> (NameParts<'_, 'name>, bool) {
         // Try resolving using explicit aliases and constructs
-        if let Some(resolved_name) = self.resolve_alias_bytes(kind, name_ref) {
+        if let Some(resolved_name) = self.resolve_alias_parts(kind, name_ref) {
             return (resolved_name, true); // Resolved via alias or explicit construct
         }
 
+        // `clone`, `exit`, and `die` compile to fully-qualified global calls.
+        if kind.is_function() && is_never_namespaced_function(name_ref) {
+            return (NameParts::Input(name_ref), true);
+        }
+
         // Qualify it using the current namespace.
-        (self.qualify_name_str(name_ref), false)
+        (self.qualify_name_parts(name_ref), false)
     }
 
     /// Attempts to resolve a name using *only* explicit aliases and constructs.
@@ -329,18 +377,18 @@ impl NamespaceScope {
     /// * `None` if no explicit rule resolves the name.
     #[inline]
     pub fn resolve_alias(&self, kind: NameKind, name: impl AsRef<[u8]>) -> Option<Vec<u8>> {
-        self.resolve_alias_bytes(kind, name.as_ref()).map(std::borrow::Cow::into_owned)
+        self.resolve_alias_parts(kind, name.as_ref()).map(|parts| parts.into_cow().into_owned())
     }
 
     /// non-generic version of `resolve_alias` that takes a string slice.
-    fn resolve_alias_bytes<'name>(&self, kind: NameKind, name_ref: &'name [u8]) -> Option<Cow<'name, [u8]>> {
+    fn resolve_alias_parts<'name>(&self, kind: NameKind, name_ref: &'name [u8]) -> Option<NameParts<'_, 'name>> {
         if name_ref.is_empty() {
             return None;
         }
 
         // Handle `\FQN`
         if let Some(fqn) = name_ref.strip_prefix(b"\\") {
-            return Some(Cow::Borrowed(fqn));
+            return Some(NameParts::Input(fqn));
         }
 
         // Split into `first_part` and `suffix` at the first backslash (memchr).
@@ -348,40 +396,152 @@ impl NamespaceScope {
             Some(i) => (&name_ref[..i], Some(&name_ref[i + 1..])),
             None => (name_ref, None),
         };
-        let first_part_lower = first_part.to_ascii_lowercase();
+        if let Some(suffix) = suffix
+            && first_part.eq_ignore_ascii_case(b"namespace")
+        {
+            return Some(match &self.namespace_name {
+                Some(namespace) => NameParts::Qualified(namespace, suffix),
+                None => NameParts::Input(suffix),
+            });
+        }
 
-        if let Some(suffix) = suffix {
-            // Handle `namespace\Suffix`
-            if first_part_lower == b"namespace" {
-                match &self.namespace_name {
-                    Some(namespace_prefix) => {
-                        let mut resolved = namespace_prefix.clone();
-                        resolved.push(b'\\');
-                        resolved.extend_from_slice(suffix);
-                        Some(Cow::Owned(resolved))
-                    }
-                    None => Some(Cow::Owned(suffix.to_vec())), // Relative to global "" namespace
-                }
-            } else {
-                // Handle `Alias\Suffix`
-                match self.default_aliases.get(first_part_lower.as_slice()) {
-                    Some(resolved_alias_fqn) => {
-                        let mut resolved = resolved_alias_fqn.clone();
-                        resolved.push(b'\\');
-                        resolved.extend_from_slice(suffix);
-                        Some(Cow::Owned(resolved))
-                    }
-                    None => None, // Alias not found
-                }
-            }
+        let aliases = if suffix.is_some() {
+            &self.default_aliases
         } else {
-            // Handle single-part alias lookup
-            (match kind {
-                NameKind::Default => self.default_aliases.get(first_part_lower.as_slice()).cloned(),
-                NameKind::Function => self.function_aliases.get(first_part_lower.as_slice()).cloned(),
-                NameKind::Constant => self.constant_aliases.get(first_part_lower.as_slice()).cloned(),
-            })
-            .map(Cow::Owned)
+            match kind {
+                NameKind::Default => &self.default_aliases,
+                NameKind::Function => &self.function_aliases,
+                NameKind::Constant => &self.constant_aliases,
+            }
+        };
+        if aliases.is_empty() {
+            return None;
+        }
+
+        let mut stack = [0; 256];
+        let heap;
+        let key: &[u8] = if !first_part.iter().any(u8::is_ascii_uppercase) {
+            first_part
+        } else if first_part.len() <= stack.len() {
+            let key = &mut stack[..first_part.len()];
+            key.copy_from_slice(first_part);
+            key.make_ascii_lowercase();
+            key
+        } else {
+            heap = first_part.to_ascii_lowercase();
+            &heap
+        };
+        let resolved = aliases.get(key)?;
+
+        Some(match suffix {
+            Some(suffix) => NameParts::Qualified(resolved, suffix),
+            None => NameParts::Alias(resolved),
+        })
+    }
+}
+
+/// Returns whether `name` is a function PHP always resolves in the global namespace.
+///
+/// `clone`, `exit`, and `die` stay keywords. Bare calls compile as `\clone`, `\exit`,
+/// and `\die`; they cannot be defined or imported inside a namespace.
+#[inline]
+#[must_use]
+pub fn is_never_namespaced_function(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(b"clone") || name.eq_ignore_ascii_case(b"exit") || name.eq_ignore_ascii_case(b"die")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_names_without_aliases() {
+        let global = NamespaceScope::global();
+        let namespaced = NamespaceScope::for_namespace(b"App".to_vec());
+
+        for kind in [NameKind::Default, NameKind::Function, NameKind::Constant] {
+            assert_eq!(global.resolve(kind, b"Name"), (b"Name".to_vec(), false));
+            assert_eq!(global.resolve(kind, b"\\Name"), (b"Name".to_vec(), true));
+            assert_eq!(global.resolve(kind, b"NaMeSpAcE\\Name"), (b"Name".to_vec(), true));
+            assert_eq!(namespaced.resolve(kind, b"Name"), (b"App\\Name".to_vec(), false));
+            assert_eq!(namespaced.resolve(kind, b"\\Name"), (b"Name".to_vec(), true));
+            assert_eq!(namespaced.resolve(kind, b"NaMeSpAcE\\Name"), (b"App\\Name".to_vec(), true));
+            assert_eq!(namespaced.resolve(kind, b"Other\\Name"), (b"App\\Other\\Name".to_vec(), false));
+        }
+    }
+
+    #[test]
+    fn keeps_alias_kinds_separate() {
+        let mut scope = NamespaceScope::for_namespace(b"App".to_vec());
+        scope.add(NameKind::Default, b"Library\\Type", &Some(b"Alias"));
+        scope.add(NameKind::Function, b"Library\\function", &Some(b"Alias"));
+        scope.add(NameKind::Constant, b"Library\\VALUE", &Some(b"Alias"));
+
+        for alias in [b"alias", b"Alias", b"ALIAS"] {
+            assert_eq!(scope.resolve(NameKind::Default, alias), (b"Library\\Type".to_vec(), true));
+            assert_eq!(scope.resolve(NameKind::Function, alias), (b"Library\\function".to_vec(), true));
+            assert_eq!(scope.resolve(NameKind::Constant, alias), (b"Library\\VALUE".to_vec(), true));
+        }
+
+        for kind in [NameKind::Default, NameKind::Function, NameKind::Constant] {
+            assert_eq!(scope.resolve(kind, b"ALIAS\\Child"), (b"Library\\Type\\Child".to_vec(), true));
+        }
+    }
+
+    #[test]
+    fn resolves_names_when_only_another_alias_kind_exists() {
+        let mut scope = NamespaceScope::global();
+        scope.add(NameKind::Default, b"Library\\Name", &Some(b"Name"));
+
+        assert_eq!(scope.resolve(NameKind::Function, b"Name"), (b"Name".to_vec(), false));
+        assert_eq!(scope.resolve(NameKind::Constant, b"Name"), (b"Name".to_vec(), false));
+        assert_eq!(scope.resolve(NameKind::Function, b"Name\\Call"), (b"Library\\Name\\Call".to_vec(), true));
+    }
+
+    #[test]
+    fn namespace_keyword_takes_precedence_over_aliases() {
+        let mut scope = NamespaceScope::for_namespace(b"".to_vec());
+        scope.add(NameKind::Default, b"Library", &Some(b"namespace"));
+
+        assert_eq!(scope.resolve(NameKind::Default, b"namespace"), (b"Library".to_vec(), true));
+        assert_eq!(scope.resolve(NameKind::Default, b"NAMESPACE\\Name"), (b"\\Name".to_vec(), true));
+    }
+
+    #[test]
+    fn folds_only_ascii_bytes_in_aliases() {
+        let mut scope = NamespaceScope::global();
+        scope.add(NameKind::Default, b"Library\\Name", &Some(b"\xffAlias"));
+
+        assert_eq!(scope.resolve(NameKind::Default, b"\xffALIAS"), (b"Library\\Name".to_vec(), true));
+        assert_eq!(scope.resolve(NameKind::Default, b"\xfeALIAS"), (b"\xfeALIAS".to_vec(), false));
+    }
+
+    #[test]
+    fn resolves_never_namespaced_functions_globally() {
+        let namespaced = NamespaceScope::for_namespace(b"App".to_vec());
+
+        for name in [b"clone".as_slice(), b"exit", b"die", b"ClOnE", b"EXIT", b"DiE"] {
+            assert_eq!(namespaced.resolve(NameKind::Function, name), (name.to_vec(), true));
+        }
+
+        assert_eq!(namespaced.resolve(NameKind::Default, b"clone"), (b"App\\clone".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Constant, b"exit"), (b"App\\exit".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Function, b"clone_object"), (b"App\\clone_object".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Function, b"exit_now"), (b"App\\exit_now".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Function, b"die_hard"), (b"App\\die_hard".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Function, b"Other\\clone"), (b"App\\Other\\clone".to_vec(), false));
+        assert_eq!(namespaced.resolve(NameKind::Function, b"\\clone"), (b"clone".to_vec(), true));
+    }
+
+    #[test]
+    fn resolves_long_aliases() {
+        let mut scope = NamespaceScope::global();
+        for length in [255, 256, 257, 1024] {
+            let alias = vec![b'a'; length];
+            scope.add(NameKind::Default, b"Library\\Name", &Some(&alias));
+
+            assert_eq!(scope.resolve(NameKind::Default, vec![b'A'; length]), (b"Library\\Name".to_vec(), true));
+            assert_eq!(scope.resolve(NameKind::Default, &alias), (b"Library\\Name".to_vec(), true));
         }
     }
 }

@@ -27,7 +27,7 @@ Every release publishes a JSON schema describing the full configuration tree. Ed
 
 The schema is hosted at:
 
-- `https://mago.carthage.software/<version>/schema.json` — pinned to a specific release such as `1.51.2`.
+- `https://mago.carthage.software/<version>/schema.json` — pinned to a specific release such as `1.56.3`.
 - `https://mago.carthage.software/latest/schema.json` — the most recent stable release.
 - `https://mago.carthage.software/main/schema.json` — the development build from `main`.
 
@@ -36,20 +36,20 @@ Pin the URL to the version of Mago you have installed so the schema and your bin
 How you reference it depends on the format:
 
 ```toml
-#:schema https://mago.carthage.software/1.51.2/schema.json
+#:schema https://mago.carthage.software/1.56.3/schema.json
 version = "1"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.2/schema.json
+# yaml-language-server: $schema=https://mago.carthage.software/1.56.3/schema.json
 version: "1"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.2/schema.json",
+  "$schema": "https://mago.carthage.software/1.56.3/schema.json",
   "version": "1",
   "php-version": "8.3"
 }
@@ -148,7 +148,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `version` | string | none | Pins the Mago version this project is tested against. Accepts a major (`"1"`), minor (`"1.51"`), or exact (`"1.51.2"`) pin. See [version pinning](#version-pinning). |
+| `version` | string | none | Pins the Mago version this project is tested against. Accepts a major (`"1"`), minor (`"1.56"`), or exact (`"1.56.3"`) pin. See [version pinning](#version-pinning). |
 | `php-version` | string | latest stable | The PHP version Mago should target for parsing and analysis. `mago init` autodetects this from `composer.json` when possible. |
 | `allow-unsupported-php-version` | boolean | `false` | Allow Mago to run on a PHP version it does not officially support. Not recommended. |
 | `no-version-check` | boolean | `false` | Silences the warning emitted when the installed binary drifts from the pinned version. Major-version drift is always fatal. |
@@ -163,8 +163,8 @@ Pinning the version surfaces drift between the installed binary and the project'
 Three pin levels:
 
 - **Major pin** (`version = "1"`): any `1.x.y` satisfies the pin. A bump to `2.x` is a hard error because a new major may ship with incompatible defaults, schema changes, or rule behaviour. This is the default `mago init` writes.
-- **Minor pin** (`version = "1.51"`): any `1.51.y` satisfies the pin. Drift to a different minor warns; drift across majors is still fatal.
-- **Exact pin** (`version = "1.51.2"`): any drift warns; drift across majors is still fatal.
+- **Minor pin** (`version = "1.56"`): any `1.56.y` satisfies the pin. Drift to a different minor warns; drift across majors is still fatal.
+- **Exact pin** (`version = "1.56.3"`): any drift warns; drift across majors is still fatal.
 
 The warning can be silenced with `--no-version-check`, the `MAGO_NO_VERSION_CHECK` environment variable, or `no-version-check = true` in the config. None of those affect major-version drift, which is the entire point of pinning.
 
@@ -188,7 +188,7 @@ Mago distinguishes between your code, third-party code, patches to third-party c
 
 - **`paths`** are your source files. Mago analyses, lints, and formats them.
 - **`includes`** are dependencies (typically `vendor`). Mago parses them so it can resolve symbols and types, but never analyses, lints, or rewrites them.
-- **`patches`** are PHP files that override type information for vendored or built-in code. Mago honours their type declarations and PHPDoc — which take precedence over `includes` and built-ins — but never analyses, lints, or formats them. See [Patching vendor types](#patching-vendor-types) for what a patch may change.
+- **`patches`** are PHP files that refine type information and supported semantic PHPDoc flags for vendored or built-in code. Mago honours their type declarations and PHPDoc — which take precedence over `includes` and built-ins — but never analyses, lints, or formats them. See [Patching vendor types](#patching-vendor-types) for what a patch may change.
 - **`excludes`** are paths or globs Mago ignores entirely. They apply to every tool.
 
 If a file matches both `paths` and `includes`, the more specific pattern wins. Exact file paths are most specific, then deeper directory paths, then shallow ones, then glob patterns. When patterns are equally specific, `includes` wins, which lets you explicitly mark a path as a dependency.
@@ -222,13 +222,13 @@ excludes = [
 | :--- | :--- | :--- | :--- |
 | `paths` | string list | `[]` | Directories or globs for your source code. If empty, the entire workspace is scanned. |
 | `includes` | string list | `[]` | Directories or globs for third-party code Mago should parse but not modify. |
-| `patches` | string list | `[]` | Directories or globs for type patches. Their PHPDoc and type declarations override those from `includes` and built-ins. Not analysed, linted, or formatted. |
+| `patches` | string list | `[]` | Directories or globs for type and semantic PHPDoc flag patches. Their PHPDoc and type declarations override those from `includes` and built-ins. Not analysed, linted, or formatted. |
 | `excludes` | string list | `[]` | Globs or paths excluded from every tool. |
 | `extensions` | string list | `["php"]` | File extensions treated as PHP. |
 
 ### Patching vendor types
 
-A patch is a plain PHP file that redeclares a vendored or built-in symbol by its fully-qualified name. Mago reads only the type information from it; the body is ignored. A patch **refines** an existing symbol — it never replaces it, and it can never make a symbol exist that the vendor code does not already declare.
+A patch is a plain PHP file that redeclares a vendored or built-in symbol by its fully-qualified name. Mago reads its type information and supported semantic PHPDoc flags; the body is ignored. A patch **refines** an existing symbol — it never replaces it, and it can never make a symbol exist that the vendor code does not already declare.
 
 At most one patch may target a given symbol. If two patches target the same symbol, Mago reports a diagnostic on the conflicting patches rather than silently picking one — merge them into a single patch or remove all but one.
 
@@ -236,8 +236,12 @@ At most one patch may target a given symbol. If two patches target the same symb
 
 - Method signatures: parameter types, return type, `@throws`, `@template`, and `@psalm-assert`-style assertions. Each field is applied only when the patch specifies it, so a sparsely-typed patch never erases richer information already known.
 - Property and constant types.
+- Semantic PHPDoc flags: common tags (`@deprecated`, `@not-deprecated`, `@internal`, `@experimental`, and `@api`); function and method tags (`@pure`, `@impure`, `@mutation-free`, `@external-mutation-free`, `@must-use`, `@no-named-arguments`, and `@suspends-fiber`); and class tags (`@consistent-constructor` and `@consistent-templates`). Existing PHPStan and Psalm aliases are supported where the scanner recognizes them. A flag changes only when the patch explicitly declares its tag; omitted tags preserve the original flag. `@impure` clears `@pure`, and `@not-deprecated` clears `@deprecated`.
 - Class-level `@template` declarations (existing ones are refined by name, new ones are appended) and type aliases.
+- Generic parent bindings through `@extends` and `@implements`. The patch replaces the type arguments for each parent it names and keeps the other bindings.
 - Magic members: `@method`, `@property`, `@property-read`, and `@property-write` annotations may be added even when no such member exists on the original, because they are pure type annotations for `__call`/`__get`/`__set`.
+
+Semantic flags are applied only to declarations where those tags are supported. Structural modifiers and analysis-control flags, including `final`, `readonly`, `static`, suppression flags, and body-derived flags, remain governed by the original declaration.
 
 **What a patch may not change**
 

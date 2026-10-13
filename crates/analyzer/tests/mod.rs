@@ -54,6 +54,13 @@ macro_rules! test_case {
 }
 
 test_case!(accessing_undefined_class_constant);
+test_case!(generic_docblock_native_return);
+test_case!(ds_map_defaults);
+test_case!(ds_map_default_type_errors);
+test_case!(rdkafka_producer);
+test_case!(rdkafka_consumer);
+test_case!(rdkafka_metadata);
+test_case!(rdkafka_type_errors);
 test_case!(attribute_target_constant);
 test_case!(attribute_target_constant_php84, {
     let mut settings = default_test_settings();
@@ -355,6 +362,8 @@ test_case!(docblock_callable_optional_param);
 test_case!(docblock_callable_variadic);
 test_case!(docblock_deprecated_function);
 test_case!(docblock_deprecated_method);
+test_case!(malformed_phpdoc_tags);
+test_case!(deprecated_inside_deprecated_scope);
 test_case!(docblock_template_constraint_array_key);
 test_case!(docblock_template_constraint_object);
 test_case!(template_default_class_no_args);
@@ -764,6 +773,16 @@ test_case!(trait_constant_conflicts);
 test_case!(trait_constant_direct_access);
 test_case!(trait_constant_access);
 test_case!(trait_override_final_methods);
+test_case!(trait_final_same_source, {
+    let mut settings = default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP83;
+    settings
+});
+test_case!(trait_final_alias_adaptations, {
+    let mut settings = default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP83;
+    settings
+});
 test_case!(inheritdoc_basic_parent_class);
 test_case!(inheritdoc_multiple_interfaces);
 test_case!(inheritdoc_nested_generics);
@@ -809,6 +828,21 @@ test_case!(partial_application_templates);
 test_case!(partial_application_type_inference);
 test_case!(partial_application_simple);
 test_case!(partial_application_named_argument_reordering);
+test_case!(partial_origin_preserves_reduced_parameters, mago_analyzer::settings::Settings::default());
+test_case!(nested_partial_keeps_reduced_parameter_order_and_names, mago_analyzer::settings::Settings::default());
+test_case!(partial_conditional_capture_waits_for_its_argument, mago_analyzer::settings::Settings::default());
+test_case!(nested_partial_keeps_captured_argument_constraints, mago_analyzer::settings::Settings::default());
+test_case!(
+    nested_partial_checks_a_capture_when_its_last_dependency_is_bound,
+    mago_analyzer::settings::Settings::default()
+);
+test_case!(get_current_closure_keeps_parent_signature, mago_analyzer::settings::Settings::default());
+test_case!(partial_closure_keeps_parameter_dependencies, mago_analyzer::settings::Settings::default());
+test_case!(closure_calls_bind_parent_parameters, mago_analyzer::settings::Settings::default());
+test_case!(closure_conditional_types_bind_class_context, mago_analyzer::settings::Settings::default());
+test_case!(escaped_closure_effects_keep_class_context, mago_analyzer::settings::Settings::default());
+test_case!(trait_closure_parent_types_follow_each_using_class, mago_analyzer::settings::Settings::default());
+test_case!(closure_parent_signature_types, mago_analyzer::settings::Settings::default());
 test_case!(octal_zero_prefix);
 test_case!(switch_semicolon);
 test_case!(redundant_assert);
@@ -907,6 +941,7 @@ test_case!(undefined_type_reference);
 test_case!(duplicate_definition);
 test_case!(method_call_assertions);
 test_case!(stable_method_call_narrowing);
+test_case!(stable_method_call_narrowing_logical_and);
 test_case!(invalid_default_values);
 test_case!(class_must_be_final, {
     let mut s = crate::framework::default_test_settings();
@@ -1207,6 +1242,7 @@ test_case!(callables_wrong_argument_type);
 test_case!(callables_null_argument_to_non_null);
 test_case!(callables_false_argument_to_non_false);
 test_case!(callables_named_argument_basic);
+test_case!(issue_2498_named_arguments);
 test_case!(callables_named_argument_unknown);
 test_case!(callables_named_argument_overrides_positional);
 test_case!(callables_variadic_int_basic);
@@ -1225,6 +1261,10 @@ test_case!(callables_closure_use_by_reference);
 test_case!(callables_arrow_function_inherits_scope);
 test_case!(callables_static_closure);
 test_case!(callables_static_arrow_function);
+test_case!(closure_this_static_scopes, mago_analyzer::settings::Settings::default());
+test_case!(closure_this_property_cache, mago_analyzer::settings::Settings::default());
+test_case!(closure_this_instance_and_binding, mago_analyzer::settings::Settings::default());
+test_case!(closure_this_static_binding, mago_analyzer::settings::Settings::default());
 test_case!(callables_first_class_callable_function);
 test_case!(callables_first_class_static_method);
 test_case!(callables_first_class_instance_method);
@@ -1322,6 +1362,7 @@ test_case!(strings_redundant_string_eq_literal);
 test_case!(strings_redundant_strlen_of_literal);
 test_case!(strings_string_intersected_with_stringable);
 test_case!(strings_stringable_to_string_implicit);
+test_case!(stringable_interfaces);
 test_case!(stringable_names);
 test_case!(strings_ucfirst_with_int);
 test_case!(strings_ucwords_with_array);
@@ -2791,6 +2832,48 @@ test_case!(issue_2411, {
 });
 test_case!(issue_2418);
 test_case!(issue_2419);
+test_case!(issue_2434);
+test_case!(issue_2435);
+test_case!(issue_2440);
+test_case!(issue_2463);
+test_case!(issue_2466);
+test_case!(issue_2467);
+test_case!(issue_2472);
+test_case!(issue_2473);
+test_case!(issue_2478);
+test_case!(issue_2483);
+test_case!(issue_2484);
+test_case!(issue_2485);
+test_case!(issue_2499);
+test_case!(simplexml_truthiness);
+test_case!(closure_capture_by_reference_array);
+test_case!(nullable_receiver_method_call);
+test_case!(enum_case_constant_array_isset);
+test_case!(parameter_null_default_native_type);
+test_case!(parameter_null_default_docblock_type);
+test_case!(parameter_null_default_php90, crate::framework::php_90_settings());
+test_case!(multilevel_inheritance_unbound_template_bound);
+test_case!(partial_union_method_call);
+test_case!(iterator_foreach_value_type);
+test_case!(possibly_undefined_switch_finally);
+test_case!(inline_var_tag_undefined_variable);
+test_case!(phpdoc_native_type_merge);
+
+#[test]
+fn issue_2478_without_property_memoization() {
+    let mut settings = default_test_settings();
+    settings.memoize_properties = false;
+
+    framework::TestCase::new("issue_2478", include_bytes!("cases/issue_2478.php")).settings(settings).run();
+}
+
+#[test]
+fn issue_2478_php84() {
+    let mut settings = default_test_settings();
+    settings.version = mago_php_version::PHPVersion::PHP84;
+
+    framework::TestCase::new("issue_2478", include_bytes!("cases/issue_2478.php")).settings(settings).run();
+}
 
 /// Apply every fix edit carried by the `match-not-exhaustive` issue in
 /// `source`, returning the fixed source.
@@ -3049,7 +3132,7 @@ enum Suit: string
 #[test]
 #[cfg_attr(miri, ignore)]
 fn test_all_test_cases_are_ran() {
-    let test_case_file = include_str!("mod.rs");
+    let test_case_file = include_str!("mod.rs").split_whitespace().collect::<String>();
     let test_cases_dir = fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cases")).unwrap();
 
     for entry in test_cases_dir {

@@ -64,7 +64,7 @@ fn bench_build_file_signature(c: &mut Criterion) {
         let resolved_names = resolver.resolve(program);
 
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| black_box(build_file_signature(black_box(program), black_box(&resolved_names))));
+            b.iter(|| black_box(build_file_signature(black_box(&file), black_box(program), black_box(&resolved_names))));
         });
     }
 

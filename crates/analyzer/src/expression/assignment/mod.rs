@@ -1,7 +1,7 @@
 use mago_allocator::Arena;
 use std::rc::Rc;
 
-use indexmap::IndexMap;
+use mago_algebra::AssertionMap;
 
 use mago_algebra::clause::Clause;
 use mago_algebra::disjoin_clauses;
@@ -41,6 +41,7 @@ use mago_word::WordSet;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CheckpointAction;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
@@ -125,6 +126,7 @@ where
     }
 
     if let (Some(source_expression), Some(target_variable_id)) = (source_expression, &target_variable_id)
+        && assignment_operator.is_none()
         && matches!(target_expression, Expression::Variable(_))
         && is_closure_expression(source_expression)
         && let Some(preliminary_type) = get_closure_expression_type(context.source_file, source_expression)
@@ -143,6 +145,7 @@ where
             }
             // this rewrites $a += 4 and $a ??= 4 to $a = $a + 4 and $a = $a ?? 4 respectively
             Some(assignment_operator) => {
+                artifacts.begin_expression_type_checkpoint();
                 block_context.flags.set_inside_assignment_operation(true);
 
                 let binary_expression = Expression::Binary(Binary {
@@ -167,26 +170,18 @@ where
                     rhs: context.arena.alloc(source_expression.clone()),
                 });
 
-                binary_expression.analyze(context, block_context, artifacts)?;
+                if let Err(error) = binary_expression.analyze(context, block_context, artifacts) {
+                    artifacts.finish_expression_type_checkpoint(CheckpointAction::Keep);
+                    return Err(error);
+                }
                 block_context.flags.set_inside_assignment_operation(false);
-
-                // The synthetic binary reuses the real operand spans, so analyzing it
-                // has already recorded every sub-expression type in `expression_types`
-                // in place; the operation's own result is kept in a local instead, so
-                // it does not overwrite the source expression's recorded type.
-                //
-                // This previously snapshotted the entire `expression_types` map, then
-                // restored it and re-applied the post-analysis entries — O(map) work on
-                // every compound assignment, and quadratic across a large scope. Since
-                // expression analysis only ever inserts/overwrites entries (the removals
-                // and full-map restores all live in loop/if/switch *statement* analysis,
-                // which cannot appear inside an assignment's RHS expression), the
-                // snapshot/restore was a no-op and is dropped.
                 assignment_operation_type = if let Some(assignment_span) = assignment_span {
                     artifacts.get_rc_expression_type(&assignment_span).cloned()
                 } else {
                     None
                 };
+
+                artifacts.finish_expression_type_checkpoint(CheckpointAction::Merge);
             }
         }
 
@@ -340,9 +335,9 @@ fn add_nullsafe_assignment_clauses<'ctx, 'arena, A>(
 
         let target_null = Assertion::IsType(TAtomic::Null);
         let base_not_null = Assertion::IsNotType(TAtomic::Null);
-        let possibilities = IndexMap::from([
-            (target_variable_id, IndexMap::from([(target_null.to_hash(), target_null)])),
-            (base_id, IndexMap::from([(base_not_null.to_hash(), base_not_null)])),
+        let possibilities = AssertionMap::from_iter([
+            (target_variable_id, AssertionMap::from_iter([(target_null.to_hash(), target_null)])),
+            (base_id, AssertionMap::from_iter([(base_not_null.to_hash(), base_not_null)])),
         ]);
 
         block_context.clauses.push(Rc::new(Clause::new(
@@ -1240,6 +1235,10 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
     let right_clauses =
         BlockContext::filter_clauses(context, variable_id, right_clauses.into_iter().map(Rc::new).collect(), None);
 
+    if right_clauses.is_empty() {
+        return;
+    }
+
     let mut covered_variable_ids: WordSet = WordSet::default();
     covered_variable_ids.insert(variable_id);
     for clause in &right_clauses {
@@ -1250,8 +1249,8 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
 
     block_context.parent_conflicting_clause_variables.retain(|var| !covered_variable_ids.contains(var));
 
-    let mut possibilities = IndexMap::default();
-    possibilities.insert(variable_id, IndexMap::from([(Assertion::Falsy.to_hash(), Assertion::Falsy)]));
+    let mut possibilities = AssertionMap::default();
+    possibilities.insert(variable_id, AssertionMap::from_iter([(Assertion::Falsy.to_hash(), Assertion::Falsy)]));
 
     block_context.clauses.extend(
         disjoin_clauses(

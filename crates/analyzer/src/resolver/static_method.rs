@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_word::Word;
-use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use mago_codex::identifier::method::MethodIdentifier;
@@ -43,8 +42,8 @@ use crate::resolver::method::report_possibly_missing_magic_call;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
-use crate::visibility::check_method_visibility;
-use crate::visibility::is_method_visible;
+use crate::visibility::check_method_visibility_by_id;
+use crate::visibility::is_method_visible_by_id;
 
 /// Resolves all possible static method targets from a class expression and a member selector.
 ///
@@ -114,6 +113,18 @@ where
         }
     }
 
+    if let Some(editor) = &mut artifacts.editor {
+        editor.record_methods(
+            context.codebase,
+            block_context.scope.get_reference_origin(),
+            class_expr.span(),
+            method_selector,
+            access_span,
+            true,
+            &result,
+        );
+    }
+
     Ok(result)
 }
 
@@ -140,7 +151,7 @@ where
          method_name: Word,
          has_magic_static_call: bool,
          result: Option<&mut MethodResolutionResult>| {
-            let Some(defining_class_metadata) = context.codebase.get_class_like(fq_class_id.as_bytes()) else {
+            let Some(defining_class_metadata) = context.codebase.get_class_like_by_name(fq_class_id) else {
                 return (false, None);
             };
 
@@ -279,7 +290,7 @@ where
     // If method not found, try to find in mixins
     if resolved_methods.is_empty()
         && let Some(fq_class_id) = first_class_id
-        && let Some(class_metadata) = context.codebase.get_class_like(fq_class_id.as_bytes())
+        && let Some(class_metadata) = context.codebase.get_class_like_by_name(fq_class_id)
         && !class_metadata.mixins.is_empty()
         // Try to find method in mixin types
         && let Some(resolved_method) = find_static_method_in_mixins(
@@ -327,13 +338,13 @@ where
                     let identifier = FunctionLikeIdentifier::Method(fq_class_id, method_name);
                     let has_incomplete_hierarchy = context
                         .codebase
-                        .get_class_like(fq_class_id.as_bytes())
+                        .get_class_like_by_name(fq_class_id)
                         .or(current_class_metadata)
                         .is_some_and(ClassLikeMetadata::has_incomplete_hierarchy);
 
                     if context.external_analysis_session.is_some()
                         && context.plugin_registry.may_have_callable_signature_provider(&identifier)
-                        && let Some(class_metadata) = context.codebase.get_class_like(fq_class_id.as_bytes())
+                        && let Some(class_metadata) = context.codebase.get_class_like_by_name(fq_class_id)
                     {
                         result.unresolved_methods.push(UnresolvedMethod {
                             classname: class_metadata.original_name,
@@ -403,7 +414,7 @@ where
             for required_class in
                 defining_class_metadata.require_extends.iter().chain(defining_class_metadata.require_implements.iter())
             {
-                let Some(required_metadata) = context.codebase.get_class_like(required_class.as_bytes()) else {
+                let Some(required_metadata) = context.codebase.get_class_like_by_name(*required_class) else {
                     continue;
                 };
                 let req_method_id = MethodIdentifier::new(required_metadata.original_name, method_name);
@@ -419,11 +430,10 @@ where
     };
 
     if let Some(result) = result
-        && !check_method_visibility(
+        && !check_method_visibility_by_id(
             context,
             block_context.scope.get_class_like_name(),
-            method_id.get_class_name().as_bytes(),
-            method_id.get_method_name().as_bytes(),
+            &method_id,
             access_span,
             Some(selector.span()),
         )
@@ -463,7 +473,7 @@ where
         get_static_class_type(context, current_class_metadata, classname, fq_class_id, defining_class_metadata);
 
     // Get the class it was called on - need original name for callable creation
-    let called_on_class_metadata = context.codebase.get_class_like(fq_class_id.as_bytes())?;
+    let called_on_class_metadata = context.codebase.get_class_like_by_name(fq_class_id)?;
 
     Some(ResolvedMethod {
         // Use the original name of the class it was called on
@@ -544,12 +554,12 @@ where
         interface_type.is_this = false;
         intersections.push(TAtomic::Object(TObject::Named(interface_type)));
         if let Some(interface_intersactions) = interface_intersactions {
-            intersections.extend(interface_intersactions);
+            intersections.extend(*interface_intersactions);
         }
     }
 
     for required_class in &class_like_metadata.require_extends {
-        let Some(parent_class_metadata) = context.codebase.get_class_like(required_class.as_bytes()) else {
+        let Some(parent_class_metadata) = context.codebase.get_class_like_by_name(*required_class) else {
             continue;
         };
 
@@ -565,7 +575,7 @@ where
         parent_type.is_this = false;
         intersections.push(TAtomic::Object(TObject::Named(parent_type)));
         if let Some(parent_intersections) = parent_intersections {
-            intersections.extend(parent_intersections);
+            intersections.extend(*parent_intersections);
         }
     }
 
@@ -601,13 +611,13 @@ where
                             }))
                         }
                     })
-                    .collect::<Vec<_>>(),
+                    .collect::<Box<[_]>>(),
             )
         },
         variances: None,
         is_static: true,
         is_this: true,
-        intersection_types: if intersections.is_empty() { None } else { Some(intersections) },
+        intersection_types: if intersections.is_empty() { None } else { Some(Box::new(intersections)) },
         remapped_parameters: false,
     })
 }
@@ -629,13 +639,17 @@ fn has_real_ancestor_method<'ctx, A>(
 where
     A: Arena,
 {
-    let method_name_lc = ascii_lowercase_word(method_name.as_bytes());
+    let method_name_lc = method_name.to_ascii_lowercase();
 
     class_metadata.all_parent_classes.iter().chain(class_metadata.used_traits.iter()).any(|ancestor_name| {
-        context.codebase.get_class_like(ancestor_name.as_bytes()).is_some_and(|ancestor| {
+        context.codebase.get_class_like_by_name(*ancestor_name).is_some_and(|ancestor| {
             ancestor.declaring_method_ids.get(&method_name_lc).is_some_and(|declaring_id| {
                 context.codebase.get_method_by_id(declaring_id).is_some_and(|m| !m.flags.is_magic_method())
-                    && is_method_visible(context, block_context, ancestor_name.as_bytes(), method_name_lc.as_bytes())
+                    && is_method_visible_by_id(
+                        context,
+                        block_context,
+                        &MethodIdentifier::new(*ancestor_name, method_name_lc),
+                    )
             })
         })
     })
@@ -861,7 +875,7 @@ fn find_static_method_in_single_mixin<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    let mixin_metadata = context.codebase.get_class_like(mixin_class_name.as_bytes())?;
+    let mixin_metadata = context.codebase.get_class_like_by_name(mixin_class_name)?;
 
     let method_id = MethodIdentifier::new(mixin_metadata.original_name, method_name);
     let declaring_method_id = context.codebase.get_declaring_method_identifier(&method_id);
@@ -875,11 +889,10 @@ where
     }
 
     // Check visibility
-    if !check_method_visibility(
+    if !check_method_visibility_by_id(
         context,
         block_context.scope.get_class_like_name(),
-        method_id.get_class_name().as_bytes(),
-        method_id.get_method_name().as_bytes(),
+        &method_id,
         access_span,
         Some(selector.span()),
     ) {

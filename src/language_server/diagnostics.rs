@@ -81,7 +81,7 @@ fn push_issue(database: &Database<'_>, by_url: &mut HashMap<Uri, Vec<Diagnostic>
 }
 
 fn render_message(issue: &Issue) -> String {
-    let mut out = issue.message.clone();
+    let mut out = issue.message.to_string();
     for note in &issue.notes {
         out.push_str("\n\nnote: ");
         out.push_str(note);

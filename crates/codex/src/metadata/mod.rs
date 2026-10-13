@@ -27,6 +27,12 @@ use crate::metadata::constant::ConstantMetadata;
 use crate::metadata::enum_case::EnumCaseMetadata;
 use crate::metadata::flags::MetadataFlags;
 use crate::metadata::function_like::FunctionLikeMetadata;
+use crate::metadata::inherited_methods::collect_inherited_patch_methods;
+use crate::metadata::inherited_methods::reset_patch_methods;
+use crate::metadata::inherited_methods::resolve_inherited_patch_methods;
+use crate::metadata::patch::PATCHABLE_FUNCTION_DOCBLOCK_FLAGS;
+use crate::metadata::patch::merge_explicit_docblock_flags;
+use crate::metadata::patch::propagate_inherited_docblock_flags;
 use crate::metadata::property::PropertyMetadata;
 use crate::metadata::ttype::TypeMetadata;
 use crate::reference::SymbolReferences;
@@ -35,6 +41,10 @@ use crate::symbol::SymbolKind;
 use crate::symbol::Symbols;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::object::TObject;
+use crate::ttype::expander::StaticClassType;
+use crate::ttype::expander::TypeExpansionOptions;
+use crate::ttype::expander::expand_union;
+use crate::ttype::get_mixed;
 use crate::ttype::union::TUnion;
 use crate::visibility::Visibility;
 
@@ -42,20 +52,26 @@ pub mod attribute;
 pub mod class_like;
 pub mod class_like_constant;
 pub mod constant;
+mod entry_spans;
 pub mod enum_case;
 pub mod flags;
 pub mod function_like;
+mod inherited_methods;
 pub mod parameter;
+mod patch;
 pub mod property;
 pub mod property_hook;
+mod trait_adaptation;
 pub mod ttype;
 pub mod version_constraint;
+
+pub use entry_spans::CodebaseEntrySpans;
 
 /// Lightweight set of keys extracted from a per-file [`CodebaseMetadata`].
 ///
 /// Used by the incremental engine to efficiently remove a file's contributions from the
 /// merged codebase without keeping a full `CodebaseMetadata` clone per file.
-/// Created via [`CodebaseMetadata::extract_keys()`].
+/// Created via [`CodebaseMetadata::extract_owned_keys()`].
 #[derive(Debug, Clone)]
 pub struct CodebaseEntryKeys {
     /// Class-like FQCN atoms (also used for symbol removal).
@@ -82,7 +98,7 @@ pub struct CodebaseMetadata {
     /// Configuration flag: Should types be inferred based on usage patterns?
     pub infer_types_from_usage: bool,
     /// Map from class-like FQCN (`Word`) to its detailed metadata (`ClassLikeMetadata`).
-    pub class_likes: WordMap<ClassLikeMetadata>,
+    pub class_likes: WordMap<Box<ClassLikeMetadata>>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub class_like_aliases: WordMap<Word>,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -91,7 +107,7 @@ pub struct CodebaseMetadata {
     class_like_aliases_dirty: bool,
     /// Map from a function/method identifier tuple `(scope_id, function_id)` to its metadata (`FunctionLikeMetadata`).
     /// `scope_id` is the FQCN for methods or often `Word::empty()` for global functions.
-    pub function_likes: HashMap<(Word, Word), FunctionLikeMetadata>,
+    pub function_likes: HashMap<(Word, Word), Box<FunctionLikeMetadata>>,
     /// Stores the kind (Class, Interface, etc.) for every known symbol FQCN.
     pub symbols: Symbols,
     /// Map from global constant FQN (`Word`) to its metadata (`ConstantMetadata`).
@@ -114,12 +130,12 @@ pub struct CodebaseMetadata {
     /// the same FQCN is diagnosed as a [`PatchDuplicateTarget`](ScanningIssueKind::PatchDuplicateTarget)
     /// rather than silently overwriting the first. Entries here are folded into `class_likes`
     /// by [`apply_patches_pass`](Self::apply_patches_pass).
-    pub patch_class_likes: WordMap<ClassLikeMetadata>,
+    pub patch_class_likes: WordMap<Box<ClassLikeMetadata>>,
     /// Per-patch function-like metadata, keyed by `(scope, name)`.
     ///
     /// The key matches the existing `function_likes` key shape: the FQCN for methods,
     /// `empty_word()` for free functions.
-    pub patch_function_likes: HashMap<(Word, Word), FunctionLikeMetadata>,
+    pub patch_function_likes: HashMap<(Word, Word), Box<FunctionLikeMetadata>>,
     /// Per-patch constant metadata, keyed by FQN.
     pub patch_constants: WordMap<ConstantMetadata>,
 }
@@ -149,7 +165,7 @@ impl CodebaseMetadata {
         self.class_like_alias_declarations.iter().map(|(alias, (target, span, _))| (*alias, *target, *span))
     }
 
-    pub(crate) fn populate_class_like_aliases(&mut self) -> bool {
+    pub fn populate_class_like_aliases(&mut self) -> bool {
         if !self.class_like_aliases_dirty {
             return false;
         }
@@ -231,20 +247,20 @@ impl CodebaseMetadata {
     #[inline]
     pub(crate) fn get_class_like_by_word(&self, name: Word) -> Option<&ClassLikeMetadata> {
         if let Some(metadata) = self.class_likes.get(&name) {
-            return Some(metadata);
+            return Some(metadata.as_ref());
         }
 
         if self.class_like_aliases.is_empty() {
             return None;
         }
 
-        self.class_like_aliases.get(&name).and_then(|actual| self.class_likes.get(actual))
+        self.class_like_aliases.get(&name).and_then(|actual| self.class_likes.get(actual)).map(Box::as_ref)
     }
 
     #[inline]
     fn get_method_by_words(&self, class: Word, method: Word) -> Option<&FunctionLikeMetadata> {
         if let Some(metadata) = self.function_likes.get(&(class, method)) {
-            return Some(metadata);
+            return Some(metadata.as_ref());
         }
 
         if self.class_like_aliases.is_empty() {
@@ -252,7 +268,7 @@ impl CodebaseMetadata {
         }
 
         let actual = self.class_like_aliases.get(&class)?;
-        self.function_likes.get(&(*actual, method))
+        self.function_likes.get(&(*actual, method)).map(Box::as_ref)
     }
 
     /// Checks if a class exists in the codebase (case-insensitive).
@@ -330,8 +346,8 @@ impl CodebaseMetadata {
     #[inline]
     #[must_use]
     pub fn method_identifier_exists(&self, method_id: &MethodIdentifier) -> bool {
-        let lowercase_class = ascii_lowercase_word(method_id.get_class_name().as_bytes());
-        let lowercase_method = ascii_lowercase_word(method_id.get_method_name().as_bytes());
+        let lowercase_class = method_id.get_class_name().to_ascii_lowercase();
+        let lowercase_method = method_id.get_method_name().to_ascii_lowercase();
         self.get_method_by_words(lowercase_class, lowercase_method).is_some()
     }
 
@@ -440,13 +456,20 @@ impl CodebaseMetadata {
         self.get_class_like_by_word(lowercase_name)
     }
 
+    /// Retrieves class-like metadata by interned name, ignoring ASCII case.
+    #[inline]
+    #[must_use]
+    pub fn get_class_like_by_name(&self, name: Word) -> Option<&ClassLikeMetadata> {
+        self.get_class_like_by_word(name.to_ascii_lowercase())
+    }
+
     /// Retrieves metadata for a global function (case-insensitive).
     #[inline]
     #[must_use]
     pub fn get_function(&self, name: &[u8]) -> Option<&FunctionLikeMetadata> {
         let lowercase_name = ascii_lowercase_word(name);
         let identifier = (empty_word(), lowercase_name);
-        self.function_likes.get(&identifier)
+        self.function_likes.get(&identifier).map(Box::as_ref)
     }
 
     /// Retrieves metadata for a method (case-insensitive for both class and method names).
@@ -463,7 +486,7 @@ impl CodebaseMetadata {
     #[inline]
     #[must_use]
     pub fn get_closure(&self, synthetic_name: &Word) -> Option<&FunctionLikeMetadata> {
-        self.function_likes.get(&(empty_word(), *synthetic_name))
+        self.function_likes.get(&(empty_word(), *synthetic_name)).map(Box::as_ref)
     }
 
     /// Retrieves metadata for a closure declared at the given file and span.
@@ -480,9 +503,17 @@ impl CodebaseMetadata {
     #[inline]
     #[must_use]
     pub fn get_method_by_id(&self, method_id: &MethodIdentifier) -> Option<&FunctionLikeMetadata> {
-        let lowercase_class = ascii_lowercase_word(method_id.get_class_name().as_bytes());
-        let lowercase_method = ascii_lowercase_word(method_id.get_method_name().as_bytes());
+        let lowercase_class = method_id.get_class_name().to_ascii_lowercase();
+        let lowercase_method = method_id.get_method_name().to_ascii_lowercase();
         self.get_method_by_words(lowercase_class, lowercase_method)
+    }
+
+    pub(crate) fn can_replace_inherited_method(&self, current: MethodIdentifier, parent: Word) -> bool {
+        let Some(method) = self.get_method_by_id(&current) else { return false };
+        method.method_metadata.as_ref().is_some_and(|metadata| metadata.is_abstract)
+            || (method.flags.is_magic_method()
+                && self.class_likes.get(&current.get_class_name()).is_some_and(|class| class.kind.is_trait())
+                && self.class_likes.get(&parent).is_some_and(|class| !class.kind.is_trait()))
     }
 
     /// Retrieves the declaring method metadata, following the inheritance chain.
@@ -491,11 +522,14 @@ impl CodebaseMetadata {
     #[must_use]
     pub fn get_declaring_method(&self, class: &[u8], method: &[u8]) -> Option<&FunctionLikeMetadata> {
         let method_id = MethodIdentifier::new(word(class), word(method));
-        let declaring_method_id = self.get_declaring_method_identifier(&method_id);
-        self.get_method(
-            declaring_method_id.get_class_name().as_bytes(),
-            declaring_method_id.get_method_name().as_bytes(),
-        )
+        self.get_declaring_method_by_id(&method_id)
+    }
+
+    /// Retrieves the declaring method by identifier, following inheritance and ignoring ASCII case.
+    #[inline]
+    #[must_use]
+    pub fn get_declaring_method_by_id(&self, method_id: &MethodIdentifier) -> Option<&FunctionLikeMetadata> {
+        self.get_method_by_id(&self.get_declaring_method_identifier(method_id))
     }
 
     /// Retrieves metadata for any function-like construct (function, method, or closure).
@@ -508,8 +542,12 @@ impl CodebaseMetadata {
     ) -> Option<&FunctionLikeMetadata> {
         use crate::identifier::function_like::FunctionLikeIdentifier;
         match identifier {
-            FunctionLikeIdentifier::Function(name) => self.get_function(name.as_bytes()),
-            FunctionLikeIdentifier::Method(class, method) => self.get_method(class.as_bytes(), method.as_bytes()),
+            FunctionLikeIdentifier::Function(name) => {
+                self.function_likes.get(&(empty_word(), name.to_ascii_lowercase())).map(Box::as_ref)
+            }
+            FunctionLikeIdentifier::Method(class, method) => {
+                self.get_method_by_id(&MethodIdentifier::new(*class, *method))
+            }
             FunctionLikeIdentifier::Closure(name) => self.get_closure(name),
         }
     }
@@ -635,13 +673,43 @@ impl CodebaseMetadata {
         // It's a regular class constant
         let constant_meta = class_meta.constants.get(&constant_name)?;
 
-        // Prefer the type signature if available
-        if let Some(type_meta) = constant_meta.type_metadata.as_ref() {
-            return Some(Cow::Borrowed(&type_meta.type_union));
-        }
+        Some(Cow::Owned(self.get_expanded_class_constant_type(class_meta, constant_meta)))
+    }
 
-        // Fall back to inferred type
-        constant_meta.inferred_type.as_ref().map(|atomic| Cow::Owned(TUnion::from_atomic(atomic.clone())))
+    /// Computes the type of a class constant the same way the analyzer does for a
+    /// class constant access: the `@var` docblock type wins, otherwise the inferred
+    /// type is preferred over the declared one. References inside the type, such as
+    /// enum cases (`Locale::DeDe`), are expanded.
+    fn get_expanded_class_constant_type(
+        &self,
+        class_meta: &ClassLikeMetadata,
+        constant_meta: &ClassLikeConstantMetadata,
+    ) -> TUnion {
+        let mut constant_type = if let Some(type_metadata) = &constant_meta.type_metadata
+            && type_metadata.from_docblock
+        {
+            type_metadata.type_union.clone()
+        } else {
+            constant_meta
+                .inferred_type
+                .clone()
+                .map(TUnion::from_atomic)
+                .or_else(|| constant_meta.type_metadata.as_ref().map(|type_metadata| type_metadata.type_union.clone()))
+                .unwrap_or_else(get_mixed)
+        };
+
+        expand_union(
+            self,
+            &mut constant_type,
+            &TypeExpansionOptions {
+                self_class: Some(class_meta.name),
+                static_class_type: StaticClassType::Name(class_meta.name),
+                function_is_final: class_meta.flags.is_final(),
+                ..Default::default()
+            },
+        );
+
+        constant_type
     }
     // Inheritance Queries
 
@@ -816,8 +884,18 @@ impl CodebaseMetadata {
     #[inline]
     #[must_use]
     pub fn get_declaring_method_class(&self, class: &[u8], method: &[u8]) -> Option<Word> {
-        let lowercase_class = ascii_lowercase_word(class);
-        let lowercase_method = ascii_lowercase_word(method);
+        self.get_declaring_method_class_by_id(&MethodIdentifier::new(
+            ascii_lowercase_word(class),
+            ascii_lowercase_word(method),
+        ))
+    }
+
+    /// Gets the declaring class of an interned method name, ignoring ASCII case.
+    #[inline]
+    #[must_use]
+    pub fn get_declaring_method_class_by_id(&self, method: &MethodIdentifier) -> Option<Word> {
+        let lowercase_class = method.get_class_name().to_ascii_lowercase();
+        let lowercase_method = method.get_method_name().to_ascii_lowercase();
 
         self.get_class_like_by_word(lowercase_class)?
             .declaring_method_ids
@@ -828,8 +906,8 @@ impl CodebaseMetadata {
     /// Gets the declaring method identifier for a method.
     #[must_use]
     pub fn get_declaring_method_identifier(&self, method_id: &MethodIdentifier) -> MethodIdentifier {
-        let lowercase_class = ascii_lowercase_word(method_id.get_class_name().as_bytes());
-        let lowercase_method = ascii_lowercase_word(method_id.get_method_name().as_bytes());
+        let lowercase_class = method_id.get_class_name().to_ascii_lowercase();
+        let lowercase_method = method_id.get_method_name().to_ascii_lowercase();
 
         let Some(class_meta) = self.get_class_like_by_word(lowercase_class) else {
             return *method_id;
@@ -876,37 +954,39 @@ impl CodebaseMetadata {
     pub fn method_is_final(&self, class: &[u8], method: &[u8]) -> bool {
         let lowercase_class = ascii_lowercase_word(class);
         let lowercase_method = ascii_lowercase_word(method);
-        self.get_method_by_words(lowercase_class, lowercase_method)
+        let Some(class) = self.get_class_like_by_word(lowercase_class) else { return false };
+        let declaring = self.get_declaring_method_identifier(&MethodIdentifier::new(lowercase_class, lowercase_method));
+        self.get_method_by_id(&declaring)
             .and_then(|meta| meta.method_metadata.as_ref())
-            .is_some_and(|method_meta| method_meta.is_final)
+            .is_some_and(|method| method.is_final)
+            || self.effective_trait_method_modifiers(class, lowercase_method, declaring).is_final
     }
 
-    /// Gets the effective visibility of a method, taking into account trait alias visibility overrides.
-    ///
-    /// When a trait method is aliased with a visibility modifier (e.g., `use Trait { method as public aliasedMethod; }`),
-    /// the visibility is stored in the class's `trait_visibility_map`. This method checks that map first,
-    /// then falls back to the method's declared visibility.
+    /// Gets a method's visibility through inheritance and trait adaptations.
+    /// The nearest visibility adaptation wins; otherwise the source declaration supplies it.
     #[inline]
     #[must_use]
     pub fn get_method_visibility(&self, class: &[u8], method: &[u8]) -> Option<Visibility> {
-        let lowercase_class = ascii_lowercase_word(class);
-        let lowercase_method = ascii_lowercase_word(method);
+        self.get_method_visibility_by_id(&MethodIdentifier::new(
+            ascii_lowercase_word(class),
+            ascii_lowercase_word(method),
+        ))
+    }
 
-        // First check if there's a trait visibility override for this method
-        if let Some(class_meta) = self.get_class_like_by_word(lowercase_class)
-            && let Some(overridden_visibility) = class_meta.trait_visibility_map.get(&lowercase_method)
-        {
-            return Some(*overridden_visibility);
-        }
+    /// Gets a method's visibility from interned names, including trait visibility overrides.
+    #[inline]
+    #[must_use]
+    pub fn get_method_visibility_by_id(&self, method: &MethodIdentifier) -> Option<Visibility> {
+        let lowercase_class = method.get_class_name().to_ascii_lowercase();
+        let lowercase_method = method.get_method_name().to_ascii_lowercase();
+        let class_meta = self.get_class_like_by_word(lowercase_class)?;
 
-        // Fall back to the method's declared visibility
-        let declaring_class = self.get_declaring_method_class(class, method)?;
-        let identifier = (declaring_class, lowercase_method);
-
-        self.function_likes
-            .get(&identifier)
-            .and_then(|meta| meta.method_metadata.as_ref())
-            .map(|method_meta| method_meta.visibility)
+        let declaring = *class_meta.declaring_method_ids.get(&lowercase_method)?;
+        self.effective_trait_method_modifiers(class_meta, lowercase_method, declaring).visibility.or_else(|| {
+            self.get_method_by_id(&declaring)
+                .and_then(|meta| meta.method_metadata.as_ref())
+                .map(|method| method.visibility)
+        })
     }
 
     /// Gets thrown types for a function-like, including inherited throws.
@@ -931,7 +1011,7 @@ impl CodebaseMetadata {
         let method_name = &function_like.name;
 
         if let Some(overridden_map) = class_like.overridden_method_ids.get(method_name) {
-            for (parent_class_name, parent_method_id) in overridden_map {
+            for (parent_class_name, parent_method_id) in overridden_map.iter() {
                 if class_like.name.as_bytes().eq_ignore_ascii_case(parent_class_name.as_bytes()) {
                     continue; // Skip self-recursion if the method overrides itself
                 }
@@ -1000,7 +1080,7 @@ impl CodebaseMetadata {
     #[must_use]
     pub fn get_anonymous_class(&self, file: &File, span: Span) -> Option<&ClassLikeMetadata> {
         let name = Self::get_anonymous_class_name(file, span);
-        self.get_class_like(name.as_bytes())
+        self.get_class_like_by_name(name)
     }
 
     /// Gets the file signature for a given file ID.
@@ -1095,21 +1175,7 @@ impl CodebaseMetadata {
 
         self.merge_class_like_alias_declarations(other.class_like_alias_declarations);
 
-        for (k, mut v) in other.function_likes {
-            match self.function_likes.entry(k) {
-                Entry::Occupied(mut entry) => {
-                    if should_replace_metadata(entry.get().flags, entry.get().span, v.flags, v.span) {
-                        v.version_constraint.merge(entry.get().version_constraint.clone());
-                        entry.insert(v);
-                    } else {
-                        entry.get_mut().version_constraint.merge(v.version_constraint);
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(v);
-                }
-            }
-        }
+        merge_function_likes(&mut self.function_likes, other.function_likes);
 
         for (k, mut v) in other.constants {
             match self.constants.entry(k) {
@@ -1137,13 +1203,42 @@ impl CodebaseMetadata {
             self.direct_classlike_descendants.entry(k).or_default().extend(v);
         }
 
-        self.file_signatures.extend(other.file_signatures);
+        for (file_id, signature) in other.file_signatures {
+            self.file_signatures.entry(file_id).insert_entry(signature);
+        }
+
         self.safe_symbols.extend(other.safe_symbols);
         self.safe_symbol_members.extend(other.safe_symbol_members);
         self.infer_types_from_usage |= other.infer_types_from_usage;
         self.merge_patch_class_likes(other.patch_class_likes);
         self.merge_patch_function_likes(other.patch_function_likes);
         self.merge_patch_constants(other.patch_constants);
+    }
+
+    /// Merges file metadata in order, with function metadata on a separate worker.
+    pub fn extend_many_parallel(&mut self, mut others: Vec<Self>) {
+        if others.len() < 128 || rayon::current_num_threads() == 1 {
+            for other in others {
+                self.extend(other);
+            }
+            return;
+        }
+
+        let mut function_likes = std::mem::take(&mut self.function_likes);
+        let functions: Vec<_> = others.iter_mut().map(|other| std::mem::take(&mut other.function_likes)).collect();
+        rayon::join(
+            || {
+                for incoming in functions {
+                    merge_function_likes(&mut function_likes, incoming);
+                }
+            },
+            || {
+                for other in others {
+                    self.extend(other);
+                }
+            },
+        );
+        self.function_likes = function_likes;
     }
 
     /// Extends this codebase with another by reference, cloning only individual entries.
@@ -1248,7 +1343,7 @@ impl CodebaseMetadata {
     /// entry is kept and a [`PatchDuplicateTarget`](ScanningIssueKind::PatchDuplicateTarget)
     /// diagnostic referencing both sites is attached to it, rather than letting one silently
     /// overwrite the other in hash-order.
-    fn merge_patch_class_likes(&mut self, incoming: impl IntoIterator<Item = (Word, ClassLikeMetadata)>) {
+    fn merge_patch_class_likes(&mut self, incoming: impl IntoIterator<Item = (Word, Box<ClassLikeMetadata>)>) {
         for (k, v) in incoming {
             match self.patch_class_likes.entry(k) {
                 Entry::Occupied(mut entry) => {
@@ -1265,7 +1360,10 @@ impl CodebaseMetadata {
     /// Merges patch function-likes from another codebase, diagnosing collisions on free
     /// functions. Method collisions are subsumed by the enclosing class's duplicate
     /// diagnostic, so only keys with an empty class component are reported here.
-    fn merge_patch_function_likes(&mut self, incoming: impl IntoIterator<Item = ((Word, Word), FunctionLikeMetadata)>) {
+    fn merge_patch_function_likes(
+        &mut self,
+        incoming: impl IntoIterator<Item = ((Word, Word), Box<FunctionLikeMetadata>)>,
+    ) {
         for (k, v) in incoming {
             match self.patch_function_likes.entry(k) {
                 Entry::Occupied(mut entry) => {
@@ -1333,10 +1431,13 @@ impl CodebaseMetadata {
     /// Must be called after all partials have been merged so the slots patches target are
     /// present.
     pub fn apply_patches_pass(&mut self) {
+        reset_patch_methods(self);
         // `(class, method)` slots where a patch overrides a method inherited from an ancestor.
         // No function-like exists at these keys yet, so the function loop below materializes
         // them from the patch's own scanned declaration rather than treating them as orphans.
         let mut inherited_overrides: HashSet<(Word, Word)> = HashSet::default();
+        let mut inherited_methods = collect_inherited_patch_methods(self);
+        let mut applied_classes = Vec::new();
 
         let class_keys: Vec<Word> = self.patch_class_likes.keys().copied().collect();
         for fqcn in class_keys {
@@ -1354,48 +1455,78 @@ impl CodebaseMetadata {
             }
 
             let mut working = target.clone();
-            let inherited =
-                collect_inherited_patch_methods(&working, &self.patch_class_likes[&fqcn], &self.class_likes);
+            let inherited = inherited_methods.remove(&fqcn).unwrap_or_default();
             inherited_overrides.extend(inherited.iter().map(|method| (fqcn, *method)));
-            if let Some(patch_entry) = self.patch_class_likes.get_mut(&fqcn) {
-                working.apply_patch(patch_entry, &inherited);
+            let constructor_name = word("__construct");
+            let patch_declares_constructor = self.patch_class_likes[&fqcn].methods.contains(&constructor_name);
+            if let Some(patch_entry) = self.patch_class_likes.get_mut(&fqcn)
+                && working.apply_patch(patch_entry, &inherited)
+            {
+                applied_classes.push(fqcn);
+            }
+            if working.flags.has_consistent_constructor()
+                && !patch_declares_constructor
+                && !inherited.contains(&constructor_name)
+                && let Some(constructor) = working.add_implicit_constructor()
+            {
+                self.function_likes.entry((fqcn, constructor_name)).or_insert_with(|| Box::new(constructor));
             }
             self.class_likes.insert(fqcn, working);
         }
 
+        propagate_inherited_docblock_flags(self, applied_classes);
+
         let func_keys: Vec<(Word, Word)> = self.patch_function_likes.keys().copied().collect();
-        for key in func_keys {
-            let Some(target) = self.function_likes.get(&key) else {
-                if inherited_overrides.contains(&key) {
-                    // The patch overrides a method inherited from an ancestor, so no slot exists
-                    // at `(class, method)` yet. The patch file declares the method in full, so
-                    // promote its scanned function-like as this class's own declaration; the
-                    // class loop has already pointed the declaring/appearing ids at this slot.
-                    if let Some(p) = self.patch_function_likes.get(&key) {
-                        let materialized = p.clone();
-                        self.function_likes.insert(key, materialized);
-                    }
-                    continue;
-                }
-                // Methods of an orphan patch class are covered by the class-level diagnostic;
-                // only free functions need their own orphan diagnostic.
-                if key.0.is_empty()
-                    && let Some(p) = self.patch_function_likes.get_mut(&key)
-                {
-                    let diag = orphan_patch_function_diagnostic(p);
-                    p.issues.push(diag);
-                }
-                continue;
-            };
+        for key in &func_keys {
+            let Some(target) = self.function_likes.get(key) else { continue };
             if target.flags.is_user_defined() {
                 continue;
             }
 
             let mut working = target.clone();
-            if let Some(patch_entry) = self.patch_function_likes.get_mut(&key) {
+            if let Some(patch_entry) = self.patch_function_likes.get_mut(key) {
                 working.apply_patch(patch_entry);
             }
-            self.function_likes.insert(key, working);
+            self.function_likes.insert(*key, working);
+        }
+
+        let inherited_keys: Vec<_> = func_keys
+            .iter()
+            .copied()
+            .filter(|key| inherited_overrides.contains(key) && !self.function_likes.contains_key(key))
+            .map(|(class, method)| MethodIdentifier::new(class, method))
+            .collect();
+
+        for inherited in resolve_inherited_patch_methods(self, inherited_keys) {
+            let key = inherited.target.get_key();
+            let Some(patch) = self.patch_function_likes.get(&key) else { continue };
+            let mut materialized = patch.clone();
+            if let Some(inherited_flags) = inherited
+                .source
+                .and_then(|source| self.function_likes.get(&source.get_key()))
+                .map(|source| source.flags)
+            {
+                let patch_origin_flag = materialized.flags & MetadataFlags::PATCH;
+                materialized.flags = inherited_flags | patch_origin_flag;
+                materialized.flags.remove(MetadataFlags::POPULATED);
+                merge_explicit_docblock_flags(
+                    &mut materialized.flags,
+                    patch.flags,
+                    patch.explicit_docblock_flags,
+                    PATCHABLE_FUNCTION_DOCBLOCK_FLAGS,
+                );
+            }
+            self.function_likes.insert(key, materialized);
+        }
+
+        for key in func_keys {
+            if self.function_likes.contains_key(&key) || !key.0.is_empty() {
+                continue;
+            }
+            if let Some(patch) = self.patch_function_likes.get_mut(&key) {
+                let diag = orphan_patch_function_diagnostic(patch);
+                patch.issues.push(diag);
+            }
         }
 
         let const_keys: Vec<Word> = self.patch_constants.keys().copied().collect();
@@ -1563,22 +1694,6 @@ impl CodebaseMetadata {
     }
 }
 
-/// Returns the subset of methods declared by `patch` that are inherited by `target` from
-/// an ancestor but not declared on `target` itself. Used by `apply_patch` on class-like
-/// metadata to distinguish patch-declared overrides of inherited methods (allowed) from
-/// patch-introduced new methods (disallowed).
-fn collect_inherited_patch_methods(
-    target: &ClassLikeMetadata,
-    patch: &ClassLikeMetadata,
-    class_likes: &WordMap<ClassLikeMetadata>,
-) -> WordSet {
-    if patch.methods.is_empty() {
-        return WordSet::default();
-    }
-    let ancestor_methods = class_like::collect_ancestor_methods(target, class_likes);
-    patch.methods.iter().filter(|m| ancestor_methods.contains(*m)).copied().collect()
-}
-
 fn duplicate_patch_class_diagnostic(kept: &ClassLikeMetadata, dropped: &ClassLikeMetadata) -> Issue {
     Issue::error(format!(
         "Multiple patches target `{}`; at most one patch may target a given symbol.",
@@ -1651,6 +1766,27 @@ fn orphan_patch_constant_diagnostic(meta: &ConstantMetadata) -> Issue {
     )
 }
 
+fn merge_function_likes(
+    target: &mut HashMap<(Word, Word), Box<FunctionLikeMetadata>>,
+    incoming: HashMap<(Word, Word), Box<FunctionLikeMetadata>>,
+) {
+    for (key, mut metadata) in incoming {
+        match target.entry(key) {
+            Entry::Occupied(mut entry) => {
+                if should_replace_metadata(entry.get().flags, entry.get().span, metadata.flags, metadata.span) {
+                    metadata.version_constraint.merge(entry.get().version_constraint.clone());
+                    entry.insert(metadata);
+                } else {
+                    entry.get_mut().version_constraint.merge(metadata.version_constraint);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(metadata);
+            }
+        }
+    }
+}
+
 /// Determines which metadata value to keep when merging duplicates.
 ///
 /// Priority:
@@ -1708,6 +1844,27 @@ fn should_replace_metadata(
 #[cfg(test)]
 mod should_replace_metadata_tests {
     use super::*;
+
+    #[test]
+    fn replacing_file_signatures_keeps_map_capacity() {
+        let mut codebase = CodebaseMetadata::new();
+        codebase.file_signatures.reserve(3);
+        let capacity = codebase.file_signatures.capacity();
+        for index in 0..capacity {
+            codebase.set_file_signature(FileId::new(format!("{index}.php").as_bytes()), FileSignature::default());
+        }
+
+        let file_id = FileId::new(b"0.php");
+
+        for hash in 1..=3 {
+            let mut incoming = CodebaseMetadata::new();
+            incoming.set_file_signature(file_id, FileSignature { hash, ..FileSignature::default() });
+            codebase.extend(incoming);
+            assert_eq!(codebase.file_signatures.len(), capacity);
+            assert_eq!(codebase.file_signatures.capacity(), capacity);
+            assert_eq!(codebase.file_signatures[&file_id].hash, hash);
+        }
+    }
 
     #[test]
     fn non_polyfill_replaces_polyfill() {
@@ -1806,8 +1963,8 @@ mod should_replace_metadata_tests {
     #[test]
     #[allow(clippy::expect_used)]
     fn patch_function_like_leaves_vendor_owning_slot() {
-        // Patches may only refine type information on an existing function-like; they must
-        // never become the slot owner. The non-patch source's span/file id stay put so that
+        // Patches may only refine types and supported flags on an existing function-like; they
+        // must never become the slot owner. The non-patch source's span/file id stay put so that
         // `extract_owned_keys` records vendor-as-owner — otherwise the patch's entry would
         // outlive a vendor deletion in incremental mode (orphan function-like bug).
         use crate::metadata::function_like::FunctionLikeKind;
@@ -1820,10 +1977,10 @@ mod should_replace_metadata_tests {
         let vendor =
             FunctionLikeMetadata::new(FunctionLikeKind::Function, name, name, vendor_span, MetadataFlags::empty());
         let mut codebase = CodebaseMetadata::new();
-        codebase.function_likes.insert(key, vendor);
+        codebase.function_likes.insert(key, Box::new(vendor));
 
         let patch = FunctionLikeMetadata::new(FunctionLikeKind::Function, name, name, patch_span, MetadataFlags::PATCH);
-        codebase.patch_function_likes.insert(key, patch);
+        codebase.patch_function_likes.insert(key, Box::new(patch));
 
         codebase.apply_patches_pass();
 
@@ -1842,14 +1999,14 @@ mod should_replace_metadata_tests {
         user_class.methods.insert(method_existing);
 
         let mut codebase = CodebaseMetadata::new();
-        codebase.class_likes.insert(class_name, user_class);
+        codebase.class_likes.insert(class_name, Box::new(user_class));
 
         let mut patch_class =
             ClassLikeMetadata::new(class_name, class_name, Span::dummy(0, 50), None, MetadataFlags::PATCH);
         let method_new = word("patchedMethod");
         patch_class.methods.insert(method_new);
 
-        codebase.patch_class_likes.insert(class_name, patch_class);
+        codebase.patch_class_likes.insert(class_name, Box::new(patch_class));
 
         codebase.apply_patches_pass();
 

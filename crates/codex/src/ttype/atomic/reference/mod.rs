@@ -35,14 +35,10 @@ impl TReferenceMemberSelector {
 }
 
 /// Selector variants usable for global-constant references.
-///
-/// Unlike class members, a bare `*` already resolves to `Type::Wildcard` (an alias
-/// for `mixed`), so the global-reference form only expresses prefix or suffix
-/// matches. Bare identifiers in type positions remain class-like references —
-/// PHPDoc does not treat them as constant references.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TGlobalReferenceSelector {
+    Identifier(Word),
     /// A global constant whose name starts with a given prefix, e.g. `FILTER_FLAG_*`.
     StartsWith(Word),
     /// A global constant whose name ends with a given suffix, e.g. `*_SUFFIX`.
@@ -55,6 +51,7 @@ impl TGlobalReferenceSelector {
     #[must_use]
     pub fn matches(&self, name: Word) -> bool {
         match self {
+            Self::Identifier(identifier) => name == *identifier,
             Self::StartsWith(prefix) => name.as_bytes().starts_with(prefix.as_bytes()),
             Self::EndsWith(suffix) => name.as_bytes().ends_with(suffix.as_bytes()),
         }
@@ -67,6 +64,7 @@ impl TGlobalReferenceSelector {
 /// into a concrete type (`TObject`, `TEnum`, constant type, etc.).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[allow(clippy::box_collection, reason = "Keep the collection header off the stack to shrink every TAtomic.")]
 pub enum TReference {
     /// A reference to a symbol name (class, interface, trait, enum, ..etc).
     /// Example: `Foo`, `Bar<int>`, `T`.
@@ -76,10 +74,10 @@ pub enum TReference {
         /// Generic arguments provided at the reference site, e.g., the `<int>` in `Foo<int>`.
         /// Kept original name `type_params` as requested for fields.
         parameters: Option<Vec<TUnion>>,
-        variances: Option<Vec<Variance>>,
+        variances: Option<Box<Vec<Variance>>>,
         /// Represents additional types in an intersection type (`&B&S` part of `A&B&S`).
         /// Contains other *atomic* types (boxed due to potential recursion).
-        intersection_types: Option<Vec<TAtomic>>,
+        intersection_types: Option<Box<Vec<TAtomic>>>,
     },
     /// A reference to a member within a class-like scope (class constant, enum case).
     /// Example: `Client::THRESHOLD`, `Status::Ok`.
@@ -89,11 +87,10 @@ pub enum TReference {
         /// The name of the member being referenced (constant name, case name).
         member_selector: TReferenceMemberSelector,
     },
-    /// A wildcard reference over global constants, e.g. `FILTER_FLAG_*` or `*_SUFFIX`.
-    /// Resolved at expansion time by iterating the codebase's global constants and
-    /// collecting those whose name satisfies the selector.
+    /// A reference to a global constant or a wildcard, e.g. `FILTER_FLAG_*` or `*_SUFFIX`.
+    /// Resolved at expansion time against the codebase's global constants.
     Global {
-        /// The prefix/suffix selector used to match global constant names.
+        /// Selects an exact name, prefix, or suffix.
         selector: TGlobalReferenceSelector,
     },
 }
@@ -108,8 +105,7 @@ impl TReference {
 }
 
 impl TType for TReference {
-    fn get_child_nodes(&self) -> Vec<TypeRef<'_>> {
-        let mut children = Vec::new();
+    fn append_child_nodes<'types>(&'types self, children: &mut Vec<TypeRef<'types>>) {
         if let TReference::Symbol { parameters, intersection_types, .. } = self {
             if let Some(params) = parameters {
                 for param in params {
@@ -118,13 +114,11 @@ impl TType for TReference {
             }
 
             if let Some(intersection_types) = intersection_types {
-                for atomic in intersection_types {
+                for atomic in intersection_types.iter() {
                     children.push(TypeRef::Atomic(atomic));
                 }
             }
         }
-
-        children
     }
 
     fn can_be_intersected(&self) -> bool {
@@ -133,14 +127,14 @@ impl TType for TReference {
 
     fn get_intersection_types(&self) -> Option<&[TAtomic]> {
         match self {
-            TReference::Symbol { intersection_types, .. } => intersection_types.as_deref(),
+            TReference::Symbol { intersection_types, .. } => intersection_types.as_deref().map(Vec::as_slice),
             _ => None,
         }
     }
 
     fn get_intersection_types_mut(&mut self) -> Option<&mut Vec<TAtomic>> {
         match self {
-            TReference::Symbol { intersection_types, .. } => intersection_types.as_mut(),
+            TReference::Symbol { intersection_types, .. } => intersection_types.as_deref_mut(),
             _ => None,
         }
     }
@@ -158,7 +152,7 @@ impl TType for TReference {
                 if let Some(intersection_types) = intersection_types {
                     intersection_types.push(intersection_type);
                 } else {
-                    *intersection_types = Some(vec![intersection_type]);
+                    *intersection_types = Some(Box::new(vec![intersection_type]));
                 }
 
                 true
@@ -195,6 +189,7 @@ impl TType for TReference {
                 }
             },
             TReference::Global { selector } => match selector {
+                TGlobalReferenceSelector::Identifier(name) => concat_word!(b"unknown-global-ref(", name, b")"),
                 TGlobalReferenceSelector::StartsWith(name) => {
                     concat_word!(b"unknown-global-ref(", name, b"*)")
                 }

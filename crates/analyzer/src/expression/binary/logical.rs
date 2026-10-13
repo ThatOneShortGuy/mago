@@ -4,9 +4,10 @@ use std::rc::Rc;
 use foldhash::HashSet;
 
 use mago_algebra::find_satisfying_assignments;
+use mago_algebra::find_satisfying_assignments_iter;
 use mago_algebra::saturate_clauses;
+use mago_algebra::saturate_shared_clauses;
 use mago_bytes::BytesDisplay;
-use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combine_union_types_rc;
 use mago_codex::ttype::get_bool;
 use mago_codex::ttype::get_false;
@@ -26,7 +27,6 @@ use mago_word::WordSet;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
-use crate::artifacts::get_expression_range;
 use crate::assertion::get_class_type_relations;
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -160,6 +160,11 @@ where
         right_block_context.known_functions.extend(left_block_context.known_functions.iter().copied());
         right_block_context.known_constants.extend(left_block_context.known_constants.iter().copied());
 
+        // The right-hand side only runs after the left-hand side, so method calls evaluated on
+        // the left must stay stable while reconciling the left assertions below.
+        right_block_context.stable_method_calls.clone_from(&left_block_context.stable_method_calls);
+        right_block_context.stable_method_call_assertions.clone_from(&left_block_context.stable_method_call_assertions);
+
         for variable_id in left_assertions.keys() {
             if let Some(variable_type) = left_block_context.locals.get(variable_id) {
                 right_block_context.locals.entry(*variable_id).or_insert_with(|| Rc::clone(variable_type));
@@ -284,6 +289,15 @@ where
         .parent_conflicting_clause_variables
         .extend(right_block_context.parent_conflicting_clause_variables.iter().copied());
 
+    // The right-hand side context started from the left-hand side context, so it holds every
+    // method call that is still stable after either operand ran. Narrowings recorded before this
+    // expression survive only if neither operand invalidated them.
+    block_context.stable_method_calls.clone_from(&right_block_context.stable_method_calls);
+    block_context.stable_method_call_assertions.retain(|method_call, _| {
+        left_block_context.stable_method_call_assertions.contains_key(method_call)
+            && right_block_context.stable_method_call_assertions.contains_key(method_call)
+    });
+
     if let Some(if_body_context) = &block_context.if_body_context {
         let mut if_body_context_inner = if_body_context.borrow_mut();
 
@@ -300,6 +314,10 @@ where
                 .assigned_variable_ids
                 .extend(block_context.assigned_variable_ids.iter().map(|(k, v)| (*k, *v)));
             if_body_context_inner.reconciled_expression_clauses.extend(partitioned_clauses.1);
+            if_body_context_inner.stable_method_calls.clone_from(&block_context.stable_method_calls);
+            if_body_context_inner
+                .stable_method_call_assertions
+                .retain(|method_call, _| block_context.stable_method_call_assertions.contains_key(method_call));
         }
     } else {
         let left_locals = left_block_context.locals;
@@ -351,18 +369,16 @@ where
             block_context.remove_variable_from_conflicting_clauses(context, *var_id, None);
         }
 
-        let cloned_vars = block_context.locals.clone();
         for (var_id, left_type) in &left_block_context.locals {
-            if let Some(context_type) = cloned_vars.get(var_id) {
-                block_context.locals.insert(
-                    *var_id,
-                    Rc::new(combine_union_types(
-                        context_type,
-                        left_type,
-                        context.codebase,
-                        context.settings.combiner_options(),
-                    )),
+            if let Some(context_type) = block_context.locals.get(var_id) {
+                let combined_type = combine_union_types_rc(
+                    context_type,
+                    left_type,
+                    context.codebase,
+                    context.settings.combiner_options(),
                 );
+
+                block_context.locals.insert(*var_id, combined_type);
             } else if left_block_context.assigned_variable_ids.contains_key(var_id) {
                 block_context.locals.insert(*var_id, Rc::clone(left_type));
             }
@@ -378,9 +394,8 @@ where
     } else {
         let mut if_scope = IfScope::default();
 
-        let (if_conditional_scope, applied_block_context) =
-            conditional::analyze(context, block_context.clone(), artifacts, &mut if_scope, binary.lhs, false)?;
-        *block_context = applied_block_context;
+        let if_conditional_scope =
+            conditional::analyze(context, block_context, artifacts, &mut if_scope, binary.lhs, false)?;
 
         left_block_context = if_conditional_scope.if_body_context;
         left_referenced_var_ids = if_conditional_scope.conditionally_referenced_variable_ids;
@@ -429,13 +444,13 @@ where
         }
     }
 
-    let clauses_for_right_analysis = saturate_clauses(
-        block_context.clauses.iter().map(|v| &**v).chain(negated_left_clauses.iter()),
+    let clauses_for_right_analysis = saturate_shared_clauses(
+        block_context.clauses.iter().cloned().chain(negated_left_clauses.into_iter().map(Rc::new)),
         &context.settings.algebra_thresholds(),
     );
 
-    let (negated_type_assertions, active_negated_type_assertions) = find_satisfying_assignments(
-        clauses_for_right_analysis.as_slice(),
+    let (negated_type_assertions, active_negated_type_assertions) = find_satisfying_assignments_iter(
+        clauses_for_right_analysis.iter().map(Rc::as_ref),
         Some(binary.lhs.span()),
         &mut left_referenced_var_ids,
     );
@@ -466,7 +481,7 @@ where
             );
         }
 
-        right_block_context.clauses = clauses_for_right_analysis.iter().map(|v| Rc::new(v.clone())).collect();
+        right_block_context.clauses.clone_from(&clauses_for_right_analysis);
 
         if !changed_var_ids.is_empty() {
             let partiioned_clauses =
@@ -557,19 +572,19 @@ where
         )
         .unwrap_or_default();
 
-        let mut clauses_for_right_analysis = BlockContext::remove_reconciled_clauses(
+        let mut clauses_for_right_analysis = BlockContext::remove_reconciled_clause_refs(
             &clauses_for_right_analysis,
             &right_assigned_var_ids.into_keys().collect::<WordSet>(),
         )
         .0;
 
-        clauses_for_right_analysis.extend(right_clauses);
+        clauses_for_right_analysis.extend(right_clauses.into_iter().map(Rc::new));
 
         let combined_right_clauses =
-            saturate_clauses(clauses_for_right_analysis.iter(), &context.settings.algebra_thresholds());
+            saturate_shared_clauses(clauses_for_right_analysis, &context.settings.algebra_thresholds());
 
-        let (right_type_assertions, active_right_type_assertions) = find_satisfying_assignments(
-            combined_right_clauses.as_slice(),
+        let (right_type_assertions, active_right_type_assertions) = find_satisfying_assignments_iter(
+            combined_right_clauses.iter().map(Rc::as_ref),
             Some(binary.rhs.span()),
             &mut right_referenced_var_ids,
         );
@@ -598,19 +613,16 @@ where
 
     if let Some(if_body_context) = &block_context.if_body_context {
         let mut if_body_context_inner = if_body_context.borrow_mut();
-        let left_vars = left_block_context.locals.clone();
-        let if_vars = if_body_context_inner.locals.clone();
-        for (var_id, right_type) in right_block_context.locals.clone() {
-            if let Some(if_type) = if_vars.get(&var_id) {
+        for (var_id, right_type) in &right_block_context.locals {
+            if let Some(if_type) = if_body_context_inner.locals.get(var_id) {
+                let combined_type =
+                    combine_union_types_rc(right_type, if_type, context.codebase, context.settings.combiner_options());
+                if_body_context_inner.locals.insert(*var_id, combined_type);
+            } else if let Some(left_type) = left_block_context.locals.get(var_id) {
                 if_body_context_inner.locals.insert(
-                    var_id,
-                    combine_union_types_rc(&right_type, if_type, context.codebase, context.settings.combiner_options()),
-                );
-            } else if let Some(left_type) = left_vars.get(&var_id) {
-                if_body_context_inner.locals.insert(
-                    var_id,
+                    *var_id,
                     combine_union_types_rc(
-                        &right_type,
+                        right_type,
                         left_type,
                         context.codebase,
                         context.settings.combiner_options(),
@@ -695,7 +707,7 @@ where
         _ => get_bool(),
     };
 
-    artifacts.expression_types.insert(get_expression_range(binary), Rc::new(result_type));
+    artifacts.set_rc_expression_type(binary, Rc::new(result_type));
 
     Ok(())
 }

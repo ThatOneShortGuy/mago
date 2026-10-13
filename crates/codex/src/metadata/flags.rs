@@ -1,6 +1,6 @@
 use mago_database::file::FileType;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MetadataFlags(u64);
 
@@ -52,6 +52,8 @@ impl MetadataFlags {
     pub const POLYFILL: MetadataFlags = MetadataFlags(1 << 41);
     pub const PATCH: MetadataFlags = MetadataFlags(1 << 42);
     pub const EXTERNAL: MetadataFlags = MetadataFlags(1 << 43);
+    pub const USES_FUNC_GET_ARGS: MetadataFlags = MetadataFlags(1 << 44);
+    pub const ALLOWS_DYNAMIC_PROPERTIES: MetadataFlags = MetadataFlags(1 << 45);
 }
 
 impl MetadataFlags {
@@ -102,6 +104,12 @@ impl MetadataFlags {
 
     #[inline]
     #[must_use]
+    pub const fn allows_dynamic_properties(self) -> bool {
+        self.contains(Self::ALLOWS_DYNAMIC_PROPERTIES)
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn is_abstract(self) -> bool {
         self.contains(Self::ABSTRACT)
     }
@@ -116,6 +124,12 @@ impl MetadataFlags {
     #[must_use]
     pub const fn has_yield(self) -> bool {
         self.contains(Self::HAS_YIELD)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn uses_func_get_args(self) -> bool {
+        self.contains(Self::USES_FUNC_GET_ARGS)
     }
 
     #[inline]

@@ -24,7 +24,9 @@ use crate::ttype::atomic::scalar::string::TStringCasing;
 use crate::ttype::atomic::scalar::string::TStringLiteral;
 use crate::ttype::comparator::ComparisonResult;
 use crate::ttype::comparator::union_comparator;
+use crate::ttype::expander::StaticClassType;
 use crate::ttype::expander::TypeExpansionOptions;
+use crate::ttype::flags::UnionFlags;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::ttype::shared::ARRAYKEY_ATOMIC;
 use crate::ttype::shared::BOOL_ATOMIC;
@@ -96,6 +98,7 @@ pub mod cast;
 pub mod combination;
 pub mod combiner;
 pub mod comparator;
+pub mod display;
 pub mod error;
 pub mod expander;
 pub mod flags;
@@ -115,8 +118,13 @@ pub enum TypeRef<'ty> {
 pub trait TType {
     /// Returns a vector of child type nodes that this type contains.
     fn get_child_nodes(&self) -> Vec<TypeRef<'_>> {
-        vec![]
+        let mut children = Vec::new();
+        self.append_child_nodes(&mut children);
+        children
     }
+
+    /// Appends direct children without allocating a separate vector.
+    fn append_child_nodes<'types>(&'types self, _children: &mut Vec<TypeRef<'types>>) {}
 
     /// Returns a vector of all child type nodes, including nested ones.
     fn get_all_child_nodes(&self) -> Vec<TypeRef<'_>> {
@@ -124,17 +132,35 @@ pub trait TType {
         let mut all_child_nodes = Vec::with_capacity(16);
 
         while let Some(child_node) = child_nodes.pop() {
-            let new_child_nodes = match child_node {
-                TypeRef::Union(union) => union.get_child_nodes(),
-                TypeRef::Atomic(atomic) => atomic.get_child_nodes(),
-            };
-
+            match child_node {
+                TypeRef::Union(union) => union.append_child_nodes(&mut child_nodes),
+                TypeRef::Atomic(atomic) => atomic.append_child_nodes(&mut child_nodes),
+            }
             all_child_nodes.push(child_node);
-
-            child_nodes.extend(new_child_nodes);
         }
 
         all_child_nodes
+    }
+
+    /// Checks child type nodes in depth-first order, stopping at the first match.
+    fn any_child_node(&self, mut predicate: impl FnMut(TypeRef<'_>) -> bool) -> bool
+    where
+        Self: Sized,
+    {
+        let mut child_nodes = self.get_child_nodes();
+
+        while let Some(child_node) = child_nodes.pop() {
+            if predicate(child_node) {
+                return true;
+            }
+
+            match child_node {
+                TypeRef::Union(union) => union.append_child_nodes(&mut child_nodes),
+                TypeRef::Atomic(atomic) => atomic.append_child_nodes(&mut child_nodes),
+            }
+        }
+
+        false
     }
 
     /// Checks if this type can have intersection types (`&B&S`).
@@ -201,6 +227,13 @@ impl<'ty> TType for TypeRef<'ty> {
         match self {
             TypeRef::Union(ttype) => ttype.get_child_nodes(),
             TypeRef::Atomic(ttype) => ttype.get_child_nodes(),
+        }
+    }
+
+    fn append_child_nodes<'types>(&'types self, children: &mut Vec<TypeRef<'types>>) {
+        match self {
+            TypeRef::Union(ttype) => ttype.append_child_nodes(children),
+            TypeRef::Atomic(ttype) => ttype.append_child_nodes(children),
         }
     }
 
@@ -846,9 +879,14 @@ pub fn add_optional_union_type_rc(
     codebase: &CodebaseMetadata,
 ) -> Rc<TUnion> {
     match maybe_type {
-        Some(type_2) => {
-            Rc::new(add_union_type((**base_type).clone(), type_2, codebase, combiner::CombinerOptions::default()))
-        }
+        Some(type_2) if base_type.as_ref() == type_2 => Rc::clone(base_type),
+        Some(type_2) => Rc::new(add_unequal_union_type_inner(
+            (**base_type).clone(),
+            type_2,
+            codebase,
+            combiner::CombinerOptions::default(),
+            false,
+        )),
         None => Rc::clone(base_type),
     }
 }
@@ -879,11 +917,32 @@ pub fn combine_union_types_rc(
     codebase: &CodebaseMetadata,
     options: combiner::CombinerOptions,
 ) -> Rc<TUnion> {
-    if Rc::ptr_eq(type_1, type_2) {
+    if type_1 == type_2 {
         return Rc::clone(type_1);
     }
 
-    Rc::new(combine_union_types(type_1, type_2, codebase, options))
+    Rc::new(combine_unequal_union_types_inner(type_1, type_2, codebase, options, false))
+}
+
+/// Combines types, moving the first union's atoms when it has one owner.
+#[inline]
+#[must_use]
+pub fn combine_owned_union_types_rc(
+    type_1: Rc<TUnion>,
+    type_2: &Rc<TUnion>,
+    codebase: &CodebaseMetadata,
+    options: combiner::CombinerOptions,
+) -> Rc<TUnion> {
+    if type_1 == *type_2 {
+        return type_1;
+    }
+
+    let combined = match Rc::try_unwrap(type_1) {
+        Ok(type_1) => combine_unequal_union_types_cow(Cow::Owned(type_1), type_2, codebase, options, false),
+        Err(type_1) => combine_unequal_union_types_inner(&type_1, type_2, codebase, options, false),
+    };
+
+    Rc::new(combined)
 }
 
 #[inline]
@@ -919,14 +978,39 @@ fn combine_union_types_inner(
         return type_1.clone();
     }
 
+    combine_unequal_union_types_inner(type_1, type_2, codebase, options, preserve_array_shapes)
+}
+
+fn combine_unequal_union_types_inner(
+    type_1: &TUnion,
+    type_2: &TUnion,
+    codebase: &CodebaseMetadata,
+    options: combiner::CombinerOptions,
+    preserve_array_shapes: bool,
+) -> TUnion {
+    combine_unequal_union_types_cow(Cow::Borrowed(type_1), type_2, codebase, options, preserve_array_shapes)
+}
+
+fn combine_unequal_union_types_cow(
+    type_1: Cow<'_, TUnion>,
+    type_2: &TUnion,
+    codebase: &CodebaseMetadata,
+    options: combiner::CombinerOptions,
+    preserve_array_shapes: bool,
+) -> TUnion {
+    let flags_1 = type_1.flags;
     let mut combined_type = if type_1.is_never() || type_1.is_never_template() {
         type_2.clone()
     } else if type_2.is_never() || type_2.is_never_template() {
-        type_1.clone()
+        type_1.into_owned()
     } else if type_1.is_vanilla_mixed() && type_2.is_vanilla_mixed() {
         get_mixed()
     } else {
-        let mut all_atomic_types = type_1.types.to_vec();
+        let mut all_atomic_types = match type_1 {
+            Cow::Borrowed(type_1) => type_1.types.to_vec(),
+            Cow::Owned(type_1) => type_1.types.into_owned(),
+        };
+
         all_atomic_types.extend(type_2.types.iter().cloned());
 
         let types = if preserve_array_shapes {
@@ -937,26 +1021,26 @@ fn combine_union_types_inner(
 
         let mut result = TUnion::from_vec(types);
 
-        if type_1.had_template() && type_2.had_template() {
+        if flags_1.contains(UnionFlags::HAD_TEMPLATE) && type_2.had_template() {
             result.set_had_template(true);
         }
 
-        if type_1.reference_free() && type_2.reference_free() {
+        if flags_1.contains(UnionFlags::REFERENCE_FREE) && type_2.reference_free() {
             result.set_reference_free(true);
         }
 
         result
     };
 
-    if type_1.possibly_undefined() || type_2.possibly_undefined() {
+    if flags_1.contains(UnionFlags::POSSIBLY_UNDEFINED) || type_2.possibly_undefined() {
         combined_type.set_possibly_undefined(true, None);
     }
 
-    if type_1.possibly_undefined_from_try() || type_2.possibly_undefined_from_try() {
+    if flags_1.contains(UnionFlags::POSSIBLY_UNDEFINED_FROM_TRY) || type_2.possibly_undefined_from_try() {
         combined_type.set_possibly_undefined_from_try(true);
     }
 
-    if type_1.ignore_falsable_issues() || type_2.ignore_falsable_issues() {
+    if flags_1.contains(UnionFlags::IGNORE_FALSABLE_ISSUES) || type_2.ignore_falsable_issues() {
         combined_type.set_ignore_falsable_issues(true);
     }
 
@@ -986,28 +1070,40 @@ pub fn add_union_type_preserving_array_shapes(
 }
 
 fn add_union_type_inner(
-    mut base_type: TUnion,
+    base_type: TUnion,
     other_type: &TUnion,
     codebase: &CodebaseMetadata,
     options: combiner::CombinerOptions,
     preserve_array_shapes: bool,
 ) -> TUnion {
-    if &base_type != other_type {
-        base_type.types = if base_type.is_vanilla_mixed() && other_type.is_vanilla_mixed() {
-            base_type.types
-        } else if preserve_array_shapes {
-            combine_union_types_preserving_array_shapes(&base_type, other_type, codebase, options).types
-        } else {
-            combine_union_types(&base_type, other_type, codebase, options).types
-        };
+    if &base_type == other_type {
+        return base_type;
+    }
 
-        if !other_type.had_template() {
-            base_type.set_had_template(false);
-        }
+    add_unequal_union_type_inner(base_type, other_type, codebase, options, preserve_array_shapes)
+}
 
-        if !other_type.reference_free() {
-            base_type.set_reference_free(false);
-        }
+fn add_unequal_union_type_inner(
+    base_type: TUnion,
+    other_type: &TUnion,
+    codebase: &CodebaseMetadata,
+    options: combiner::CombinerOptions,
+    preserve_array_shapes: bool,
+) -> TUnion {
+    let original_flags = base_type.flags;
+    let mut base_type = if base_type.is_vanilla_mixed() && other_type.is_vanilla_mixed() {
+        base_type
+    } else {
+        combine_unequal_union_types_cow(Cow::Owned(base_type), other_type, codebase, options, preserve_array_shapes)
+    };
+    base_type.flags = original_flags;
+
+    if !other_type.had_template() {
+        base_type.set_had_template(false);
+    }
+
+    if !other_type.reference_free() {
+        base_type.set_reference_free(false);
     }
 
     if other_type.possibly_undefined() {
@@ -1293,7 +1389,16 @@ fn intersect_atomic_types(
     None
 }
 
+#[must_use]
 pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) -> Option<(TUnion, TUnion)> {
+    get_iterable_parameters_impl(atomic, codebase, &[])
+}
+
+fn get_iterable_parameters_impl(
+    atomic: &TAtomic,
+    codebase: &CodebaseMetadata,
+    visited_aggregates: &[Word],
+) -> Option<(TUnion, TUnion)> {
     if let Some(generator_parameters) = atomic.get_generator_parameters() {
         let mut key_type = generator_parameters.0;
         let mut value_type = generator_parameters.1;
@@ -1304,82 +1409,124 @@ pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) ->
         return Some((key_type, value_type));
     }
 
-    let parameters = 'parameters: {
-        match atomic {
-            TAtomic::Iterable(iterable) => {
-                let mut key_type = iterable.get_key_type().clone();
-                let mut value_type = iterable.get_value_type().clone();
+    let parameters =
+        'parameters: {
+            match atomic {
+                TAtomic::Iterable(iterable) => {
+                    let mut key_type = iterable.get_key_type().clone();
+                    let mut value_type = iterable.get_value_type().clone();
 
-                expander::expand_union(codebase, &mut key_type, &TypeExpansionOptions::default());
-                expander::expand_union(codebase, &mut value_type, &TypeExpansionOptions::default());
+                    expander::expand_union(codebase, &mut key_type, &TypeExpansionOptions::default());
+                    expander::expand_union(codebase, &mut value_type, &TypeExpansionOptions::default());
 
-                Some((key_type, value_type))
-            }
-            TAtomic::Array(array_type) => {
-                let (mut key_type, mut value_type) = get_array_parameters(array_type, codebase);
-
-                expander::expand_union(codebase, &mut key_type, &TypeExpansionOptions::default());
-                expander::expand_union(codebase, &mut value_type, &TypeExpansionOptions::default());
-
-                Some((key_type, value_type))
-            }
-            TAtomic::Object(object) => {
-                let name = object.get_name()?;
-                let traversable = word("traversable");
-                let iterator = word("iterator");
-                let iterator_aggregate = word("iteratoraggregate");
-
-                let class_metadata = codebase.get_class_like(name.as_bytes())?;
-                if !codebase.is_instance_of(class_metadata.name.as_bytes(), traversable.as_bytes()) {
-                    break 'parameters None;
+                    Some((key_type, value_type))
                 }
+                TAtomic::Array(array_type) => {
+                    let (mut key_type, mut value_type) = get_array_parameters(array_type, codebase);
 
-                let is_iterator_interface = name == iterator || name == traversable || name == iterator_aggregate;
-                if !is_iterator_interface
-                    && codebase.is_instance_of(class_metadata.name.as_bytes(), iterator.as_bytes())
-                    && let (Some(key_type), Some(value_type)) = (
-                        get_iterator_method_return_type(codebase, name, b"key"),
-                        get_iterator_method_return_type(codebase, name, b"current"),
+                    expander::expand_union(codebase, &mut key_type, &TypeExpansionOptions::default());
+                    expander::expand_union(codebase, &mut value_type, &TypeExpansionOptions::default());
+
+                    Some((key_type, value_type))
+                }
+                TAtomic::Object(object) => {
+                    let name = object.get_name()?;
+                    let traversable = word("traversable");
+                    let iterator = word("iterator");
+                    let iterator_aggregate = word("iteratoraggregate");
+
+                    let class_metadata = codebase.get_class_like(name.as_bytes())?;
+                    let is_iterator_interface = class_metadata.name == iterator
+                        || class_metadata.name == traversable
+                        || class_metadata.name == iterator_aggregate;
+
+                    if !is_iterator_interface && !class_metadata.all_parent_interfaces.contains(&traversable) {
+                        break 'parameters None;
+                    }
+
+                    let traversable_metadata = codebase.get_class_like(traversable.as_bytes())?;
+                    let key_template = traversable_metadata.template_types.get_index(0).map(|(name, _)| *name)?;
+                    let value_template = traversable_metadata.template_types.get_index(1).map(|(name, _)| *name)?;
+
+                    let mut key_type = get_specialized_template_type(
+                        codebase,
+                        key_template,
+                        traversable,
+                        class_metadata,
+                        object.get_type_parameters(),
                     )
-                {
-                    let contains_generic_param = |t: &TUnion| t.types.iter().any(atomic::TAtomic::is_generic_parameter);
+                    .unwrap_or_else(get_mixed);
 
-                    if !key_type.is_mixed()
-                        && !value_type.is_mixed()
-                        && !contains_generic_param(&key_type)
-                        && !contains_generic_param(&value_type)
-                    {
+                    let mut value_type = get_specialized_template_type(
+                        codebase,
+                        value_template,
+                        traversable,
+                        class_metadata,
+                        object.get_type_parameters(),
+                    )
+                    .unwrap_or_else(get_mixed);
+
+                    resolve_unbound_generic_parameters(codebase, &mut key_type);
+                    resolve_unbound_generic_parameters(codebase, &mut value_type);
+
+                    if is_iterator_interface || (!key_type.is_mixed() && !value_type.is_mixed()) {
                         return Some((key_type, value_type));
                     }
+
+                    if class_metadata.all_parent_interfaces.contains(&iterator) {
+                        if key_type.is_mixed()
+                            && let Some(method_key) = get_iterator_method_return_type(
+                                codebase,
+                                class_metadata,
+                                object.get_type_parameters(),
+                                b"key",
+                            )
+                            && !method_key.is_mixed()
+                        {
+                            key_type = method_key;
+                        }
+
+                        if value_type.is_mixed()
+                            && let Some(method_val) = get_iterator_method_return_type(
+                                codebase,
+                                class_metadata,
+                                object.get_type_parameters(),
+                                b"current",
+                            )
+                            && !method_val.is_mixed()
+                        {
+                            value_type = method_val;
+                        }
+                    } else if class_metadata.all_parent_interfaces.contains(&iterator_aggregate)
+                        && !visited_aggregates.contains(&class_metadata.name)
+                        && let Some(inner_iter) = get_iterator_method_return_type(
+                            codebase,
+                            class_metadata,
+                            object.get_type_parameters(),
+                            b"getiterator",
+                        )
+                    {
+                        let mut next_visited = Vec::with_capacity(visited_aggregates.len() + 1);
+                        next_visited.extend_from_slice(visited_aggregates);
+                        next_visited.push(class_metadata.name);
+
+                        if let Some((inner_k, inner_v)) = inner_iter.types.iter().find_map(|atomic_inner| {
+                            get_iterable_parameters_impl(atomic_inner, codebase, &next_visited)
+                        }) {
+                            if key_type.is_mixed() && !inner_k.is_mixed() {
+                                key_type = inner_k;
+                            }
+                            if value_type.is_mixed() && !inner_v.is_mixed() {
+                                value_type = inner_v;
+                            }
+                        }
+                    }
+
+                    Some((key_type, value_type))
                 }
-
-                let traversable_metadata = codebase.get_class_like(traversable.as_bytes())?;
-                let key_template = traversable_metadata.template_types.get_index(0).map(|(name, _)| *name)?;
-                let value_template = traversable_metadata.template_types.get_index(1).map(|(name, _)| *name)?;
-
-                let key_type = get_specialized_template_type(
-                    codebase,
-                    key_template,
-                    traversable,
-                    class_metadata,
-                    object.get_type_parameters(),
-                )
-                .unwrap_or_else(get_mixed);
-
-                let value_type = get_specialized_template_type(
-                    codebase,
-                    value_template,
-                    traversable,
-                    class_metadata,
-                    object.get_type_parameters(),
-                )
-                .unwrap_or_else(get_mixed);
-
-                Some((key_type, value_type))
+                _ => None,
             }
-            _ => None,
-        }
-    };
+        };
 
     if let Some((key_type, value_type)) = parameters {
         return Some((key_type, value_type));
@@ -1387,7 +1534,9 @@ pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) ->
 
     if let Some(intersection_types) = atomic.get_intersection_types() {
         for intersection_type in intersection_types {
-            if let Some((key_type, value_type)) = get_iterable_parameters(intersection_type, codebase) {
+            if let Some((key_type, value_type)) =
+                get_iterable_parameters_impl(intersection_type, codebase, visited_aggregates)
+            {
                 return Some((key_type, value_type));
             }
         }
@@ -1412,7 +1561,7 @@ pub fn get_array_parameters(array_type: &TArray, codebase: &CodebaseMetadata) ->
             }
 
             if let Some(known_items) = &keyed_data.known_items {
-                for (key, (_, item_type)) in known_items {
+                for (key, (_, item_type)) in known_items.iter() {
                     key_types.push(key.to_atomic());
                     value_param =
                         add_union_type(value_param, item_type, codebase, combiner::CombinerOptions::default());
@@ -1433,7 +1582,7 @@ pub fn get_array_parameters(array_type: &TArray, codebase: &CodebaseMetadata) ->
             let mut value_type = (*list_data.element_type).clone();
 
             if let Some(known_elements) = &list_data.known_elements {
-                for (key_idx, (_, element_type)) in known_elements {
+                for (key_idx, (_, element_type)) in known_elements.iter() {
                     key_types.push(TAtomic::Scalar(TScalar::literal_int(*key_idx as i64)));
 
                     value_type =
@@ -1615,14 +1764,230 @@ pub fn get_specialized_template_type(
     Some(template_type)
 }
 
+fn resolve_unbound_generic_parameters(codebase: &CodebaseMetadata, union: &mut TUnion) {
+    if !union.has_template_types() {
+        return;
+    }
+
+    let mut template_result = TemplateResult::default();
+    for node in union.get_all_child_nodes() {
+        if let TypeRef::Atomic(TAtomic::GenericParameter(parameter)) = node {
+            template_result.add_lower_bound(
+                parameter.parameter_name,
+                parameter.defining_entity,
+                (*parameter.constraint).clone(),
+            );
+        }
+    }
+
+    if !template_result.lower_bounds.is_empty() {
+        *union = inferred_type_replacer::replace(union, &template_result, codebase);
+    }
+}
+
 fn get_iterator_method_return_type(
     codebase: &CodebaseMetadata,
-    class_name: Word,
+    class_metadata: &ClassLikeMetadata,
+    type_parameters: Option<&[TUnion]>,
     method_name: &[u8],
 ) -> Option<TUnion> {
-    let method = codebase.get_declaring_method(class_name.as_bytes(), method_name)?;
+    let method = codebase.get_declaring_method(class_metadata.name.as_bytes(), method_name)?;
     let return_type_meta = method.return_type_metadata.as_ref()?;
     let mut return_type = return_type_meta.type_union.clone();
-    expander::expand_union(codebase, &mut return_type, &TypeExpansionOptions::default());
+
+    if return_type.has_template_types() {
+        let mut template_result = TemplateResult::default();
+        for node in return_type.get_all_child_nodes() {
+            if let TypeRef::Atomic(TAtomic::GenericParameter(parameter)) = node
+                && let GenericParent::ClassLike(class_name) = parameter.defining_entity
+                && let Some(template_type) = get_specialized_template_type(
+                    codebase,
+                    parameter.parameter_name,
+                    class_name,
+                    class_metadata,
+                    type_parameters,
+                )
+            {
+                template_result.add_lower_bound(parameter.parameter_name, parameter.defining_entity, template_type);
+            }
+        }
+
+        if !template_result.lower_bounds.is_empty() {
+            return_type = inferred_type_replacer::replace(&return_type, &template_result, codebase);
+        }
+
+        resolve_unbound_generic_parameters(codebase, &mut return_type);
+    }
+
+    let expansion_options = TypeExpansionOptions {
+        self_class: Some(class_metadata.name),
+        static_class_type: StaticClassType::Name(class_metadata.name),
+        ..Default::default()
+    };
+    expander::expand_union(codebase, &mut return_type, &expansion_options);
     Some(return_type)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use crate::metadata::CodebaseMetadata;
+    use crate::ttype::combiner::CombinerOptions;
+    use crate::ttype::flags::UnionFlags;
+    use crate::ttype::union::TUnion;
+
+    use super::add_optional_union_type;
+    use super::add_optional_union_type_rc;
+    use super::combine_owned_union_types_rc;
+    use super::combine_union_types;
+    use super::combine_union_types_rc;
+    use super::get_empty_keyed_array;
+    use super::get_int;
+    use super::get_list;
+    use super::get_mixed;
+    use super::get_never;
+    use super::get_string;
+
+    fn assert_exact(actual: &TUnion, expected: &TUnion) {
+        assert_eq!(actual.types, expected.types);
+        assert_eq!(actual.flags, expected.flags);
+    }
+
+    #[test]
+    fn rc_merges_keep_the_first_equal_union_and_all_its_flags() {
+        let codebase = CodebaseMetadata::new();
+        let ignored_flags = [
+            UnionFlags::empty(),
+            UnionFlags::POPULATED,
+            UnionFlags::NULLSAFE_NULL,
+            UnionFlags::POPULATED.union(UnionFlags::NULLSAFE_NULL),
+        ];
+        for first_flags in ignored_flags {
+            for second_flags in ignored_flags {
+                let mut first = get_int();
+                let shared_flags = UnionFlags::HAD_TEMPLATE
+                    .union(UnionFlags::BY_REFERENCE)
+                    .union(UnionFlags::REFERENCE_FREE)
+                    .union(UnionFlags::POSSIBLY_UNDEFINED_FROM_TRY)
+                    .union(UnionFlags::POSSIBLY_UNDEFINED)
+                    .union(UnionFlags::IGNORE_NULLABLE_ISSUES)
+                    .union(UnionFlags::IGNORE_FALSABLE_ISSUES)
+                    .union(UnionFlags::FROM_TEMPLATE_DEFAULT)
+                    .union(UnionFlags::FROM_UNSPECIFIED_TEMPLATE);
+                first.flags = first_flags.union(shared_flags);
+                let mut second = first.clone();
+                second.flags = second_flags.union(shared_flags);
+                let first = Rc::new(first);
+                let second = Rc::new(second);
+                assert!(!Rc::ptr_eq(&first, &second));
+                assert_eq!(first, second);
+
+                let expected = combine_union_types(&first, &second, &codebase, CombinerOptions::default());
+                let actual = combine_union_types_rc(&first, &second, &codebase, CombinerOptions::default());
+                assert_exact(&actual, &expected);
+                assert!(Rc::ptr_eq(&actual, &first));
+
+                let expected = add_optional_union_type((*first).clone(), Some(&second), &codebase);
+                let actual = add_optional_union_type_rc(&first, Some(&second), &codebase);
+                assert_exact(&actual, &expected);
+                assert!(Rc::ptr_eq(&actual, &first));
+            }
+        }
+    }
+
+    #[test]
+    fn rc_merges_keep_identical_and_missing_optional_inputs() {
+        let codebase = CodebaseMetadata::new();
+        let first = Rc::new(get_int());
+        assert!(Rc::ptr_eq(&combine_union_types_rc(&first, &first, &codebase, CombinerOptions::default()), &first));
+        assert!(Rc::ptr_eq(&add_optional_union_type_rc(&first, Some(&first), &codebase), &first));
+        assert!(Rc::ptr_eq(&add_optional_union_type_rc(&first, None, &codebase), &first));
+    }
+
+    #[test]
+    fn rc_merges_match_owned_results_for_unequal_unions() {
+        let codebase = CodebaseMetadata::new();
+        let first = Rc::new(get_int());
+        for flag in [
+            UnionFlags::HAD_TEMPLATE,
+            UnionFlags::BY_REFERENCE,
+            UnionFlags::REFERENCE_FREE,
+            UnionFlags::POSSIBLY_UNDEFINED_FROM_TRY,
+            UnionFlags::POSSIBLY_UNDEFINED,
+            UnionFlags::IGNORE_NULLABLE_ISSUES,
+            UnionFlags::IGNORE_FALSABLE_ISSUES,
+            UnionFlags::FROM_TEMPLATE_DEFAULT,
+            UnionFlags::FROM_UNSPECIFIED_TEMPLATE,
+        ] {
+            for mut second in [get_int(), get_string()] {
+                second.flags = flag.union(UnionFlags::POPULATED);
+                let second = Rc::new(second);
+                assert_ne!(first, second);
+                assert_exact(
+                    &combine_union_types_rc(&first, &second, &codebase, CombinerOptions::default()),
+                    &combine_union_types(&first, &second, &codebase, CombinerOptions::default()),
+                );
+                assert_exact(
+                    &add_optional_union_type_rc(&first, Some(&second), &codebase),
+                    &add_optional_union_type((*first).clone(), Some(&second), &codebase),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn consuming_rc_merges_match_borrowed_types_flags_and_shared_snapshots() {
+        let codebase = CodebaseMetadata::new();
+        let types = [get_int(), get_string(), get_never(), get_mixed(), get_empty_keyed_array(), get_list(get_int())];
+        let flags = [
+            UnionFlags::empty(),
+            UnionFlags::HAD_TEMPLATE,
+            UnionFlags::BY_REFERENCE,
+            UnionFlags::REFERENCE_FREE,
+            UnionFlags::POSSIBLY_UNDEFINED_FROM_TRY,
+            UnionFlags::POSSIBLY_UNDEFINED,
+            UnionFlags::IGNORE_NULLABLE_ISSUES,
+            UnionFlags::IGNORE_FALSABLE_ISSUES,
+            UnionFlags::FROM_TEMPLATE_DEFAULT,
+            UnionFlags::FROM_UNSPECIFIED_TEMPLATE,
+            UnionFlags::POPULATED,
+            UnionFlags::NULLSAFE_NULL,
+        ];
+
+        for first_type in &types {
+            for second_type in &types {
+                for first_flags in flags {
+                    for second_flags in flags {
+                        let mut first = first_type.clone();
+                        first.flags = first_flags;
+                        let mut second = second_type.clone();
+                        second.flags = second_flags;
+                        let second = Rc::new(second);
+                        let expected = combine_union_types(&first, &second, &codebase, CombinerOptions::default());
+
+                        let shared = Rc::new(first.clone());
+                        let actual = combine_owned_union_types_rc(
+                            Rc::clone(&shared),
+                            &second,
+                            &codebase,
+                            CombinerOptions::default(),
+                        );
+                        assert_exact(&actual, &expected);
+                        assert_exact(&shared, &first);
+
+                        let unique = Rc::new(first);
+                        let original_pointer = Rc::as_ptr(&unique);
+                        let equal = unique == second;
+                        let actual =
+                            combine_owned_union_types_rc(unique, &second, &codebase, CombinerOptions::default());
+                        assert_exact(&actual, &expected);
+                        if equal {
+                            assert!(std::ptr::eq(Rc::as_ptr(&actual), original_pointer));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

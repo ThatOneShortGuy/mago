@@ -84,6 +84,11 @@ impl Comments {
         self.map.get(&span).map_or(&[], |v| v.as_slice())
     }
 
+    #[inline]
+    pub fn has_placed_comments(&self) -> bool {
+        !self.map.is_empty()
+    }
+
     pub fn by_placement(&self, span: Span, placement: Placement) -> impl Iterator<Item = &PlacedComment> {
         self.get(span).iter().filter(move |c| c.placement == placement)
     }
@@ -150,28 +155,9 @@ fn collect_node_comments<'ast, 'arena>(
         return;
     }
 
-    let children = node.children();
-
-    if children.is_empty() {
-        while *cursor < total {
-            let comment_start = all_comments[*cursor].span.start.offset;
-
-            if comment_start < node_span.start.offset || comment_start >= node_span.end.offset {
-                break;
-            }
-
-            let decorated = make_decorated(source_text, all_comments, *cursor, node);
-            place_and_insert(decorated, comments);
-            *cursor += 1;
-        }
-
-        return;
-    }
-
     let can_reattribute = !is_binary_like(node);
     let mut prev_child: Option<Node<'ast, 'arena>> = None;
-    for child in children.iter() {
-        let parenthesized_child = *child;
+    node.visit_children(|parenthesized_child| {
         let child = unwrap_parenthesized_node(parenthesized_child);
         let child_start = child.span().start.offset;
 
@@ -199,7 +185,7 @@ fn collect_node_comments<'ast, 'arena>(
 
         collect_node_comments(source_text, child, all_comments, comments, cursor);
         prev_child = Some(child);
-    }
+    });
 
     while *cursor < total {
         let comment_start = all_comments[*cursor].span.start.offset;
@@ -288,6 +274,7 @@ fn place_comment<'ast, 'arena>(comment: DecoratedComment<'ast, 'arena>) -> Comme
         Node::Expression(expr) => match unwrap_parenthesized(expr) {
             Expression::Binary(binary) => Node::Binary(binary),
             Expression::Conditional(cond) => Node::Conditional(cond),
+            Expression::ArrowFunction(arrow) => Node::ArrowFunction(arrow),
             _ => comment.enclosing,
         },
         other => other,
@@ -297,6 +284,15 @@ fn place_comment<'ast, 'arena>(comment: DecoratedComment<'ast, 'arena>) -> Comme
     match comment.enclosing {
         Node::Binary(_) => place_binary(comment),
         Node::Conditional(_) => place_conditional(comment),
+        Node::ArrowFunction(arrow)
+            if comment.trivia_start >= arrow.arrow.end.offset
+                && comment.trivia_start < unwrap_parenthesized(arrow.expression).span().start.offset =>
+        {
+            CommentPlacement::Leading {
+                node: Node::Expression(unwrap_parenthesized(arrow.expression)),
+                comment_index: comment.comment_index,
+            }
+        }
         _ => CommentPlacement::Default,
     }
 }

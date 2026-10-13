@@ -15,6 +15,19 @@ use mago_formatter::settings::SortOrder;
 use mago_formatter::settings::SortUses;
 use mago_php_version::PHPVersion;
 
+/// Compare the original bytes, but render formatting failures as readable source diffs.
+#[track_caller]
+fn assert_code_eq(expected: &[u8], actual: &[u8], message: &str) {
+    assert!(
+        expected == actual,
+        "{message}\n{}",
+        pretty_assertions::StrComparison::new(
+            &mago_bytes::BytesDisplay(expected).to_string(),
+            &mago_bytes::BytesDisplay(actual).to_string(),
+        ),
+    );
+}
+
 #[macro_export]
 macro_rules! test_case {
     ($name:ident) => {
@@ -32,13 +45,13 @@ macro_rules! test_case {
 
             let formatted_code = formatter.format_code(Cow::Borrowed(b"code.php"), Cow::Borrowed(code)).unwrap();
 
-            pretty_assertions::assert_eq!(expected, formatted_code, "Formatted code does not match expected",);
+            $crate::assert_code_eq(expected, formatted_code, "Formatted code does not match expected");
 
             let reformatted_code = formatter
                 .format_code(Cow::Borrowed(b"formatted_code.php"), Cow::Owned(formatted_code.to_vec()))
                 .unwrap();
 
-            pretty_assertions::assert_eq!(expected, reformatted_code, "Reformatted code does not match expected",);
+            $crate::assert_code_eq(expected, reformatted_code, "Reformatted code does not match expected");
         }
     };
 }
@@ -59,11 +72,17 @@ test_case!(php83_instantiation_with_member_access_parentheses, PHPVersion::PHP83
 test_case!(php84_instantiation_with_member_access_parentheses, PHPVersion::PHP84);
 test_case!(php83_instantiation_with_member_access_parentheses_disabled, PHPVersion::PHP83);
 test_case!(php84_instantiation_with_member_access_parentheses_disabled, PHPVersion::PHP84);
+test_case!(issue_2455, PHPVersion::PHP83);
+test_case!(issue_2455_php84, PHPVersion::PHP84);
+test_case!(issue_2455_php84_parentheses, PHPVersion::PHP84);
+test_case!(issue_2430, PHPVersion::PHP85);
+test_case!(issue_2430_preserve_new_parentheses, PHPVersion::PHP85);
 test_case!(expand_last_argument);
 test_case!(expand_first_argument);
 test_case!(hug_new_expression);
 test_case!(array_indent_multiline);
 test_case!(hug_new_expression_with_simple_args);
+test_case!(anonymous_class_inline_array_body_alignment);
 test_case!(hug_last_new_expression_with_named_args);
 test_case!(assignments);
 test_case!(assignments_chain);
@@ -82,6 +101,7 @@ test_case!(bitwise_precedence_parens_noise);
 test_case!(bitwise_precedence_parens_noise_disabled);
 test_case!(binary_ops_wrapping);
 test_case!(parens_around_constructs);
+test_case!(issue_2432);
 test_case!(interpolated_strings_vars);
 test_case!(closure_creation);
 test_case!(fluid_member_access_chain);
@@ -100,6 +120,9 @@ test_case!(member_access_chain_comment_method_call_base);
 test_case!(member_access_chain_comment_default_variable);
 test_case!(member_access_chain_comment_default_short);
 test_case!(member_access_chain_comment_default_paren_new);
+test_case!(member_access_chain_intermediate_trailing_comment_same_line);
+test_case!(member_access_chain_intermediate_trailing_comment_next_line);
+test_case!(member_access_chain_inline_block_comment);
 test_case!(use_sorting);
 test_case!(use_sorting_with_separation);
 test_case!(use_sorting_with_expansion);
@@ -128,6 +151,8 @@ test_case!(parameter_attribute_on_new_line_preserve);
 test_case!(parameter_attribute_on_new_line_disabled_preserve);
 test_case!(no_space_before_enum_backing_type_colon);
 test_case!(closing_echo_tag_preserved);
+test_case!(echo_single_multiline_value);
+test_case!(echo_single_expanding_value);
 test_case!(closing_tag_removed);
 test_case!(closing_tag_preserved);
 test_case!(inline_comment_before_closing_tag);
@@ -143,6 +168,7 @@ test_case!(php80_trailing_comma_respects_php_version, PHPVersion::PHP80);
 test_case!(inline_control_structures);
 test_case!(aligned_inline_control_structures);
 test_case!(following_clause_on_newline);
+test_case!(switch_case_comments);
 test_case!(try_catch_trailing_comment);
 test_case!(html_template);
 test_case!(complex_html_template);
@@ -327,11 +353,13 @@ test_case!(align_run_breaking);
 test_case!(align_modifier_breaking);
 test_case!(inline_block_comments_in_arguments);
 test_case!(idempotent_chain_with_array);
+test_case!(idempotent_nested_member_chain);
 test_case!(idempotent_chain_with_complex_arguments);
 test_case!(match_idempotency);
 test_case!(heredoc_indentation);
 test_case!(heredoc_indentation_disabled);
 test_case!(drupal_preset);
+test_case!(drupal_preset_logical_parentheses);
 test_case!(redundant_grouping_parens);
 test_case!(preserve_logical_grouping_parens);
 test_case!(preserve_logical_grouping_parens_disabled);
@@ -509,6 +537,18 @@ test_case!(idempotency_anon_class_with_leading_docblock);
 test_case!(idempotency_null_coalesce_chain_new_expr);
 test_case!(idempotency_comment_before_call_args);
 test_case!(idempotency_mixed_breaking_logical_chain);
+test_case!(idempotency_negated_logical_group, PHPVersion::PHP85);
+test_case!(idempotency_preserved_logical_groups);
+test_case!(idempotency_hugged_condition, PHPVersion::PHP85);
+test_case!(idempotency_cast_comparison, PHPVersion::PHP85);
+test_case!(idempotency_binary_continuation, PHPVersion::PHP85);
+test_case!(issue_2475_condition);
+test_case!(issue_2475_condition_controls);
+test_case!(issue_2475_member_chain);
+test_case!(issue_2491_concat_arrow);
+test_case!(issue_2491_concat_rhs);
+test_case!(issue_2491_arrow_comment);
+test_case!(issue_2491_logical_assignment);
 test_case!(idempotency_docblock_before_parameter);
 test_case!(idempotency_html_echo_ternary_break);
 test_case!(idempotency_inline_echo_mid_line_call);
@@ -527,6 +567,61 @@ test_case!(idempotency_corpus_phparkitect_arch_rule);
 test_case!(idempotency_corpus_apiplatform_schema_property);
 test_case!(idempotency_corpus_apiplatform_type_factory);
 test_case!(idempotency_corpus_symfony_json_streamer);
+
+#[test]
+fn issue_2475_and_2491_settings() {
+    let cases: &[(&str, &[u8])] = &[
+        ("condition", include_bytes!("cases/issue_2475_condition/before.php")),
+        ("condition_controls", include_bytes!("cases/issue_2475_condition_controls/before.php")),
+        ("member_chain", include_bytes!("cases/issue_2475_member_chain/before.php")),
+        ("concat_arrow", include_bytes!("cases/issue_2491_concat_arrow/before.php")),
+        ("concat_rhs", include_bytes!("cases/issue_2491_concat_rhs/before.php")),
+        ("arrow_comment", include_bytes!("cases/issue_2491_arrow_comment/before.php")),
+        ("logical_assignment", include_bytes!("cases/issue_2491_logical_assignment/before.php")),
+    ];
+
+    for print_width in [80, 120, 160] {
+        for (preserve_breaking_condition_expression, preserve_breaking_member_access_chain) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            for preserve_breaking_binary_expression in [false, true] {
+                for line_before_binary_operator in [false, true] {
+                    for preserve_redundant_logical_binary_expression_parentheses in [false, true] {
+                        for preserve_breaking_argument_list in [false, true] {
+                            for &(name, code) in cases {
+                                let settings = FormatSettings {
+                                    print_width,
+                                    preserve_breaking_condition_expression,
+                                    preserve_breaking_member_access_chain,
+                                    preserve_breaking_binary_expression,
+                                    line_before_binary_operator,
+                                    preserve_redundant_logical_binary_expression_parentheses,
+                                    preserve_breaking_argument_list,
+                                    ..FormatSettings::default()
+                                };
+
+                                let message = format!("{name} is not idempotent with {settings:?}");
+                                let arena = LocalArena::new();
+                                let formatter = Formatter::new(&arena, PHPVersion::PHP84, settings);
+                                let first =
+                                    formatter.format_code(Cow::Borrowed(b"code.php"), Cow::Borrowed(code)).unwrap();
+                                let second = formatter
+                                    .format_code(Cow::Borrowed(b"code.php"), Cow::Owned(first.to_vec()))
+                                    .unwrap();
+                                let third = formatter
+                                    .format_code(Cow::Borrowed(b"code.php"), Cow::Owned(second.to_vec()))
+                                    .unwrap();
+
+                                assert_code_eq(first, second, &message);
+                                assert_code_eq(second, third, &message);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// PHP identifiers are allowed to contain any byte ≥ 0x80, so a class name
 /// like `Café` is valid even when the source file is Latin-1 (or any other
@@ -583,7 +678,7 @@ fn preserves_non_utf8_identifiers() {
     else {
         panic!("second format pass must succeed");
     };
-    assert_eq!(formatted_pass1, reformatted, "formatter is not idempotent on non-UTF-8 identifiers");
+    assert_code_eq(formatted_pass1, reformatted, "formatter is not idempotent on non-UTF-8 identifiers");
 }
 
 #[test]
@@ -609,4 +704,28 @@ fn test_all_test_cases_are_ran() {
             "Directory '{file_name}' was not found as a test case"
         );
     }
+}
+
+#[test]
+fn formatting_diff_shows_source_text() {
+    let failure = std::panic::catch_unwind(|| {
+        assert_code_eq(b"<?php\nfoo();\n", b"<?php\nbar();\n", "Formatting mismatch");
+    })
+    .unwrap_err();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.contains("Formatting mismatch"));
+    assert!(message.contains("<?php\n"));
+    assert!(message.contains("foo"));
+    assert!(message.contains("bar"));
+}
+
+#[test]
+fn formatting_diff_preserves_non_utf8_byte_differences() {
+    let failure = std::panic::catch_unwind(|| {
+        assert_code_eq(b"<?php\n$\x80;\n", b"<?php\n$\xFF;\n", "Formatting mismatch");
+    })
+    .unwrap_err();
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.contains("80"));
+    assert!(message.contains("FF"));
 }

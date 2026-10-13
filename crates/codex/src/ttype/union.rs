@@ -1,7 +1,10 @@
 use std::borrow::Cow;
+use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
+
+use foldhash::fast::FixedState;
 
 use mago_word::Word;
 use mago_word::concat_word;
@@ -18,6 +21,7 @@ use crate::ttype::TypeRef;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::array::TArray;
 use crate::ttype::atomic::array::key::ArrayKey;
+use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::generic::TGenericParameter;
 use crate::ttype::atomic::mixed::truthiness::TMixedTruthiness;
 use crate::ttype::atomic::object::TObject;
@@ -32,6 +36,10 @@ use crate::ttype::atomic::scalar::string::TString;
 use crate::ttype::atomic::scalar::string::TStringCasing;
 use crate::ttype::flags::UnionFlags;
 use crate::ttype::get_mixed;
+use crate::ttype::shared::get_static_atomic;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -45,9 +53,21 @@ impl Hash for TUnion {
     where
         H: Hasher,
     {
-        for t in self.types.as_ref() {
-            t.hash(state);
+        self.types.len().hash(state);
+        if let [atomic] = self.types.as_ref() {
+            atomic.hash(state);
+            return;
         }
+
+        let hasher = FixedState::default();
+        let mut hash = 0u64;
+        for (index, atomic) in self.types.iter().enumerate() {
+            if !self.types[..index].contains(atomic) {
+                hash = hash.wrapping_add(hasher.hash_one(atomic));
+            }
+        }
+
+        hash.hash(state);
     }
 }
 
@@ -58,6 +78,19 @@ impl TUnion {
     /// zero-allocation static helpers and the `from_vec` constructor.
     #[must_use]
     pub fn new(types: Cow<'static, [TAtomic]>) -> TUnion {
+        let types = match types {
+            Cow::Owned(types) => {
+                if let [atomic] = types.as_slice()
+                    && let Some(shared) = get_static_atomic(atomic)
+                {
+                    Cow::Borrowed(std::slice::from_ref(shared))
+                } else {
+                    Cow::Owned(types)
+                }
+            }
+            borrowed => borrowed,
+        };
+
         TUnion { types, flags: UnionFlags::empty() }
     }
 
@@ -117,16 +150,19 @@ impl TUnion {
     pub fn from_single(atomic: Cow<'static, TAtomic>) -> TUnion {
         let types_cow = match atomic {
             Cow::Borrowed(borrowed_atomic) => Cow::Borrowed(std::slice::from_ref(borrowed_atomic)),
-            Cow::Owned(owned_atomic) => Cow::Owned(vec![owned_atomic]),
+            Cow::Owned(owned_atomic) => match get_static_atomic(&owned_atomic) {
+                Some(shared) => Cow::Borrowed(std::slice::from_ref(shared)),
+                None => Cow::Owned(vec![owned_atomic]),
+            },
         };
 
-        TUnion::new(types_cow)
+        TUnion { types: types_cow, flags: UnionFlags::empty() }
     }
 
     /// Creates a `TUnion` from a single owned atomic type.
     #[must_use]
     pub fn from_atomic(atomic: TAtomic) -> TUnion {
-        TUnion::new(Cow::Owned(vec![atomic]))
+        TUnion::from_single(Cow::Owned(atomic))
     }
 
     #[inline]
@@ -200,10 +236,7 @@ impl TUnion {
     #[must_use]
     pub fn contains_unspecified_template_arguments(&self) -> bool {
         self.from_unspecified_template()
-            || self
-                .get_all_child_nodes()
-                .into_iter()
-                .any(|node| matches!(node, TypeRef::Union(union) if union.from_unspecified_template()))
+            || self.any_child_node(|node| matches!(node, TypeRef::Union(union) if union.from_unspecified_template()))
     }
 
     #[inline]
@@ -384,6 +417,7 @@ impl TUnion {
         }
 
         if !types.iter().any(|atomic| atomic.is_null() || atomic.is_mixed()) {
+            types.reserve_exact(1);
             types.push(TAtomic::Null);
         }
 
@@ -688,19 +722,15 @@ impl TUnion {
 
     #[must_use]
     pub fn has_template_types(&self) -> bool {
-        let all_child_nodes = self.get_all_child_nodes();
-
-        for child_node in all_child_nodes {
-            if let TypeRef::Atomic(
-                TAtomic::GenericParameter(_)
-                | TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic { .. })),
-            ) = child_node
-            {
-                return true;
-            }
-        }
-
-        false
+        self.any_child_node(|node| {
+            matches!(
+                node,
+                TypeRef::Atomic(
+                    TAtomic::GenericParameter(_)
+                        | TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic { .. }))
+                )
+            )
+        })
     }
 
     #[must_use]
@@ -1004,7 +1034,10 @@ impl TUnion {
     #[inline]
     #[must_use]
     pub fn get_single_owned(self) -> TAtomic {
-        self.types[0].clone()
+        match self.types {
+            Cow::Borrowed(types) => types[0].clone(),
+            Cow::Owned(mut types) => types.swap_remove(0),
+        }
     }
 
     #[inline]
@@ -1175,8 +1208,15 @@ impl TUnion {
 }
 
 impl TType for TUnion {
-    fn get_child_nodes(&self) -> Vec<TypeRef<'_>> {
-        self.types.iter().map(TypeRef::Atomic).collect()
+    fn append_child_nodes<'types>(&'types self, children: &mut Vec<TypeRef<'types>>) {
+        children.extend(self.types.iter().map(TypeRef::Atomic));
+    }
+
+    fn any_child_node(&self, mut predicate: impl FnMut(TypeRef<'_>) -> bool) -> bool {
+        self.types
+            .iter()
+            .rev()
+            .any(|atomic| predicate(TypeRef::Atomic(atomic)) || atomic.any_child_node(&mut predicate))
     }
 
     fn needs_population(&self) -> bool {
@@ -1193,11 +1233,37 @@ impl TType for TUnion {
     }
 
     fn is_complex(&self) -> bool {
-        self.types.len() > 3 || self.types.iter().any(super::TType::is_complex)
+        let many_shapes = self.types.len() > 3 && {
+            let mut callable_shapes = [None; 3];
+            let mut count = 0;
+            self.types.iter().any(|atomic| {
+                if matches!(atomic, TAtomic::Callable(TCallable::Signature(_))) {
+                    let id = Some(atomic.get_id());
+                    if callable_shapes.contains(&id) {
+                        return false;
+                    }
+
+                    if let Some(slot) = callable_shapes.iter_mut().find(|slot| slot.is_none()) {
+                        *slot = id;
+                    }
+                }
+
+                count += 1;
+                count > 3
+            })
+        };
+        many_shapes || self.types.iter().any(super::TType::is_complex)
     }
 
     fn get_id(&self) -> Word {
         let len = self.types.len();
+
+        if len <= 1 {
+            return self.types.first().map_or_else(empty_word, |atomic| {
+                let id = atomic.get_id();
+                if atomic.is_generic_parameter() { concat_word!(b"(", id.as_bytes(), b")") } else { id }
+            });
+        }
 
         let mut atomic_ids: Vec<Word> = self
             .types
@@ -1205,7 +1271,7 @@ impl TType for TUnion {
             .iter()
             .map(|atomic| {
                 let id = atomic.get_id();
-                if atomic.is_generic_parameter() || atomic.has_intersection_types() && len > 1 {
+                if atomic.is_generic_parameter() || atomic.has_intersection_types() {
                     concat_word!(b"(", id.as_bytes(), b")")
                 } else {
                     id
@@ -1213,11 +1279,8 @@ impl TType for TUnion {
             })
             .collect();
 
-        if len <= 1 {
-            return atomic_ids.pop().unwrap_or_else(empty_word);
-        }
-
         atomic_ids.sort_unstable();
+        atomic_ids.dedup();
         join_words(&atomic_ids, b"|")
     }
 
@@ -1228,20 +1291,27 @@ impl TType for TUnion {
             return self.types.first().map_or_else(empty_word, |atomic| atomic.get_pretty_id_with_indent(indent));
         }
 
-        // Use multiline format for unions with more than 3 types
-        if len > 3 {
+        let render_ids = |multiline| {
             let mut atomic_ids: Vec<Word> = self
                 .types
                 .as_ref()
                 .iter()
                 .map(|atomic| {
-                    let id = atomic.get_pretty_id_with_indent(indent + 2);
+                    let id = atomic.get_pretty_id_with_indent(if multiline { indent + 2 } else { indent });
                     if atomic.has_intersection_types() { concat_word!(b"(", id.as_bytes(), b")") } else { id }
                 })
                 .collect();
-
             atomic_ids.sort_unstable();
+            atomic_ids.dedup();
+            atomic_ids
+        };
 
+        let mut atomic_ids = render_ids(len > 3);
+        if len > 3 && atomic_ids.len() <= 3 {
+            atomic_ids = render_ids(false);
+        }
+
+        if atomic_ids.len() > 3 {
             let mut result: Vec<u8> = Vec::new();
             result.extend_from_slice(atomic_ids[0].as_bytes());
             for id in &atomic_ids[1..] {
@@ -1253,33 +1323,13 @@ impl TType for TUnion {
 
             word(&result)
         } else {
-            // Use inline format for smaller unions
-            let mut atomic_ids: Vec<Word> = self
-                .types
-                .as_ref()
-                .iter()
-                .map(|atomic| {
-                    let id = atomic.get_pretty_id_with_indent(indent);
-                    if atomic.has_intersection_types() && len > 1 {
-                        concat_word!(b"(", id.as_bytes(), b")")
-                    } else {
-                        id
-                    }
-                })
-                .collect();
-
-            atomic_ids.sort_unstable();
-            let mut result = atomic_ids[0];
-            for id in &atomic_ids[1..] {
-                result = concat_word!(result.as_bytes(), b" | ", id.as_bytes());
-            }
-
-            result
+            join_words(&atomic_ids, b" | ")
         }
     }
 }
 
 impl PartialEq for TUnion {
+    #[inline]
     fn eq(&self, other: &TUnion) -> bool {
         if std::ptr::eq(self, other) {
             return true;
@@ -1304,6 +1354,11 @@ impl PartialEq for TUnion {
             return false;
         }
 
+        // Fast path: pointer equality on the underlying types slice (common for shared static types).
+        if std::ptr::eq(self.types.as_ptr(), other.types.as_ptr()) {
+            return true;
+        }
+
         // Fast path: unions are commonly constructed in stable type order.
         // When order already matches, this keeps comparison linear.
         if self.types == other.types {
@@ -1318,7 +1373,7 @@ impl PartialEq for TUnion {
 
         // Check other ⊆ self (needed when duplicates exist in either side)
 
-        is_subset(&self.types, &other.types) && is_subset(&other.types, &self.types)
+        len > 1 && is_subset(&self.types, &other.types) && is_subset(&other.types, &self.types)
     }
 }
 
@@ -1348,6 +1403,33 @@ pub fn populate_union_type(
     }
 
     unpopulated_union.flags.insert(UnionFlags::POPULATED);
+    // These atoms need neither mutation nor references, even during forced population.
+    if let Cow::Borrowed(atomics) = &unpopulated_union.types
+        && atomics.iter().all(|atomic| {
+            matches!(
+                atomic,
+                TAtomic::Scalar(
+                    TScalar::Generic
+                        | TScalar::Numeric
+                        | TScalar::ArrayKey
+                        | TScalar::Bool(_)
+                        | TScalar::Integer(_)
+                        | TScalar::Float(_)
+                        | TScalar::String(_)
+                        | TScalar::ClassLikeString(TClassLikeString::Any { .. } | TClassLikeString::Literal { .. })
+                ) | TAtomic::Mixed(_)
+                    | TAtomic::Resource(_)
+                    | TAtomic::Object(TObject::Any)
+                    | TAtomic::Never
+                    | TAtomic::Null
+                    | TAtomic::Void
+                    | TAtomic::Placeholder
+            )
+        })
+    {
+        return;
+    }
+
     let unpopulated_atomics = unpopulated_union.types.to_mut();
     for unpopulated_atomic in unpopulated_atomics {
         match unpopulated_atomic {
@@ -1395,7 +1477,7 @@ fn widen_atomic(atomic: &mut TAtomic, kind: WidenKind) {
         TAtomic::Array(array) => match array {
             TArray::List(list) => {
                 widen_arc_union(&mut list.element_type, kind);
-                if let Some(known) = list.known_elements.as_mut() {
+                if let Some(known) = list.known_elements.as_mut().map(Arc::make_mut) {
                     for (_, ty) in known.values_mut() {
                         ty.widen(kind);
                     }
@@ -1406,7 +1488,7 @@ fn widen_atomic(atomic: &mut TAtomic, kind: WidenKind) {
                     widen_arc_union(key, kind);
                     widen_arc_union(value, kind);
                 }
-                if let Some(known) = keyed.known_items.as_mut() {
+                if let Some(known) = keyed.known_items.as_mut().map(Arc::make_mut) {
                     for (_, ty) in known.values_mut() {
                         ty.widen(kind);
                     }
@@ -1508,11 +1590,11 @@ fn atomic_has_widenable(atomic: &TAtomic, kind: WidenKind) -> bool {
         TAtomic::Scalar(scalar) => widened_scalar(scalar, kind).is_some(),
         TAtomic::Array(TArray::List(list)) => {
             union_has_widenable(&list.element_type, kind)
-                || list.known_elements.as_ref().is_some_and(|m| m.values().any(|(_, t)| union_has_widenable(t, kind)))
+                || list.known_elements.as_deref().is_some_and(|m| m.values().any(|(_, t)| union_has_widenable(t, kind)))
         }
         TAtomic::Array(TArray::Keyed(keyed)) => {
             keyed.parameters.as_ref().is_some_and(|(k, v)| union_has_widenable(k, kind) || union_has_widenable(v, kind))
-                || keyed.known_items.as_ref().is_some_and(|m| m.values().any(|(_, t)| union_has_widenable(t, kind)))
+                || keyed.known_items.as_deref().is_some_and(|m| m.values().any(|(_, t)| union_has_widenable(t, kind)))
         }
         TAtomic::Iterable(iterable) => {
             union_has_widenable(&iterable.key_type, kind)

@@ -1,3 +1,6 @@
+use std::borrow::Borrow;
+use std::sync::Arc;
+
 use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 use mago_php_version::PHPVersion;
@@ -9,6 +12,7 @@ use mago_span::Span;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
+use mago_word::word;
 
 use crate::flags::attribute::AttributeFlags;
 use crate::identifier::method::MethodIdentifier;
@@ -17,7 +21,13 @@ use crate::metadata::attribute::AttributeMetadata;
 use crate::metadata::class_like_constant::ClassLikeConstantMetadata;
 use crate::metadata::enum_case::EnumCaseMetadata;
 use crate::metadata::flags::MetadataFlags;
+use crate::metadata::function_like::FunctionLikeKind;
+use crate::metadata::function_like::FunctionLikeMetadata;
+use crate::metadata::patch::PATCHABLE_CLASS_DOCBLOCK_FLAGS;
+use crate::metadata::patch::PATCHABLE_COMMON_DOCBLOCK_FLAGS;
+use crate::metadata::patch::merge_explicit_docblock_flags;
 use crate::metadata::property::PropertyMetadata;
+use crate::metadata::trait_adaptation::TraitMethodAdaptations;
 use crate::metadata::ttype::TypeMetadata;
 use crate::metadata::version_constraint::VersionConstraint;
 use crate::symbol::SymbolKind;
@@ -30,6 +40,16 @@ use crate::visibility::Visibility;
 /// Type alias for template types stored in metadata.
 /// Maps template parameter names to their defining entity and constraint type.
 pub type TemplateTypes = IndexMap<Word, GenericTemplate, RandomState>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+enum DeclaredAncestor {
+    ParentClass(Word),
+    ParentInterface(Word),
+    Trait(Word),
+    RequiredClass(Word),
+    RequiredInterface(Word),
+}
 
 /// Contains comprehensive metadata for a PHP class-like structure (class, interface, trait, enum).
 ///
@@ -51,9 +71,13 @@ pub struct ClassLikeMetadata {
     pub require_implements: WordSet,
     pub all_parent_classes: WordSet,
     pub used_traits: WordSet,
+    #[cfg_attr(feature = "serde", serde(default))]
+    declared_ancestry: Option<Box<[DeclaredAncestor]>>,
     pub trait_alias_map: WordMap<Word>,
     pub trait_visibility_map: WordMap<Visibility>,
     pub trait_final_map: WordSet,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) trait_method_adaptations: Option<Box<TraitMethodAdaptations>>,
     pub child_class_likes: Option<WordSet>,
     pub name_span: Option<Span>,
     pub kind: SymbolKind,
@@ -72,7 +96,7 @@ pub struct ClassLikeMetadata {
     pub declaring_method_ids: WordMap<MethodIdentifier>,
     pub appearing_method_ids: WordMap<MethodIdentifier>,
     pub inheritable_method_ids: WordMap<MethodIdentifier>,
-    pub overridden_method_ids: WordMap<IndexMap<Word, MethodIdentifier, RandomState>>,
+    pub overridden_method_ids: WordMap<Arc<IndexMap<Word, MethodIdentifier, RandomState>>>,
     pub properties: WordMap<PropertyMetadata>,
     /// Magic properties documented via `@property`/`@property-read`/`@property-write` in this
     /// class-like's own docblock.
@@ -93,6 +117,8 @@ pub struct ClassLikeMetadata {
     pub overridden_property_ids: WordMap<WordSet>,
     pub initialized_properties: WordSet,
     pub constants: WordMap<ClassLikeConstantMetadata>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    declared_constants: Option<Box<[Word]>>,
     pub trait_constant_ids: WordMap<Word>,
     pub enum_cases: WordMap<EnumCaseMetadata>,
     pub invalid_dependencies: WordSet,
@@ -104,12 +130,16 @@ pub struct ClassLikeMetadata {
     pub issues: Vec<Issue>,
     pub attribute_flags: Option<AttributeFlags>,
     pub flags: MetadataFlags,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) explicit_docblock_flags: MetadataFlags,
     pub type_aliases: WordMap<TypeMetadata>,
     /// Imported type aliases in the form of (`from_fqcn`, `type_name`, span)
     pub imported_type_aliases: WordMap<(Word, Word, Span)>,
     /// Mixin types from @mixin annotations - these types' methods/properties
     /// can be accessed via magic methods (__call, __get, __set, __callStatic)
     pub mixins: Vec<TypeMetadata>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    declared_mixin_count: Option<usize>,
     pub version_constraint: VersionConstraint,
 }
 
@@ -154,9 +184,11 @@ impl ClassLikeMetadata {
     ) -> ClassLikeMetadata {
         ClassLikeMetadata {
             constants: WordMap::default(),
+            declared_constants: None,
             trait_constant_ids: WordMap::default(),
             enum_cases: WordMap::default(),
             flags,
+            explicit_docblock_flags: MetadataFlags::empty(),
             kind: SymbolKind::Class,
             direct_parent_interfaces: WordSet::default(),
             all_parent_classes: WordSet::default(),
@@ -193,9 +225,11 @@ impl ClassLikeMetadata {
             template_type_uses_count: WordMap::default(),
             template_types: TemplateTypes::default(),
             used_traits: WordSet::default(),
+            declared_ancestry: None,
             trait_alias_map: WordMap::default(),
             trait_visibility_map: WordMap::default(),
             trait_final_map: WordSet::default(),
+            trait_method_adaptations: None,
             name,
             original_name,
             aliases: Vec::new(),
@@ -209,6 +243,7 @@ impl ClassLikeMetadata {
             type_aliases: WordMap::default(),
             imported_type_aliases: WordMap::default(),
             mixins: Vec::default(),
+            declared_mixin_count: None,
             version_constraint: VersionConstraint::unconstrained(),
         }
     }
@@ -313,10 +348,127 @@ impl ClassLikeMetadata {
         self.used_traits.extend(traits);
     }
 
+    pub(crate) fn add_implicit_constructor(&mut self) -> Option<FunctionLikeMetadata> {
+        let name = word("__construct");
+        if !self.methods.insert(name) {
+            return None;
+        }
+
+        let method = MethodIdentifier::new(self.name, name);
+        self.add_declaring_method_id(name, method);
+        self.inheritable_method_ids.insert(name, method);
+        let origin_flags = self.flags
+            & (MetadataFlags::USER_DEFINED | MetadataFlags::BUILTIN | MetadataFlags::PATCH | MetadataFlags::EXTERNAL);
+        Some(FunctionLikeMetadata::new(
+            FunctionLikeKind::Method,
+            name,
+            name,
+            self.span,
+            MetadataFlags::PURE | origin_flags,
+        ))
+    }
+
+    pub fn direct_trait_names(&self) -> impl Iterator<Item = Word> + '_ {
+        self.declared_ancestry
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .filter_map(|ancestor| match ancestor {
+                DeclaredAncestor::Trait(name) => Some(*name),
+                _ => None,
+            })
+            .chain(self.used_traits.iter().copied().filter(|_| self.declared_ancestry.is_none()))
+    }
+
+    pub(crate) fn declared_mixin_count(&self) -> usize {
+        self.declared_mixin_count.unwrap_or(self.mixins.len())
+    }
+
+    pub(crate) fn reset_inherited_members(&mut self) {
+        let declared_mixins = *self.declared_mixin_count.get_or_insert(self.mixins.len());
+        self.mixins.truncate(declared_mixins);
+        self.properties
+            .retain(|name, _| self.declaring_property_ids.get(name).is_none_or(|declaring| *declaring == self.name));
+        self.inheritable_method_ids.retain(|_, method| method.get_class_name() == self.name);
+        self.inheritable_property_ids.clear();
+        self.inheritable_property_ids.extend(
+            self.properties.iter().filter(|(_, property)| !property.is_final()).map(|(name, _)| (*name, self.name)),
+        );
+
+        self.magic_property_ids.retain(|_, declaring| *declaring == self.name);
+    }
+
+    pub(crate) fn reset_inherited_constants(&mut self) {
+        let declared = self.declared_constants.get_or_insert_with(|| {
+            let mut names: Box<[_]> = self.constants.keys().copied().collect();
+            names.sort_unstable();
+            names
+        });
+
+        self.constants.retain(|name, _| declared.binary_search(name).is_ok());
+        self.trait_constant_ids.clear();
+    }
+
+    pub(crate) fn reset_ancestry(&mut self) {
+        if self.flags.allows_dynamic_properties() {
+            self.flags.set(
+                MetadataFlags::ALLOWS_DYNAMIC_PROPERTIES,
+                self.attributes
+                    .iter()
+                    .any(|attribute| attribute.name.as_bytes().eq_ignore_ascii_case(b"AllowDynamicProperties")),
+            );
+        }
+
+        if self.declared_ancestry.is_none() {
+            self.declared_ancestry = Some(
+                self.direct_parent_class
+                    .into_iter()
+                    .map(DeclaredAncestor::ParentClass)
+                    .chain(self.direct_parent_interfaces.iter().copied().map(DeclaredAncestor::ParentInterface))
+                    .chain(self.used_traits.iter().copied().map(DeclaredAncestor::Trait))
+                    .chain(self.require_extends.iter().copied().map(DeclaredAncestor::RequiredClass))
+                    .chain(self.require_implements.iter().copied().map(DeclaredAncestor::RequiredInterface))
+                    .collect(),
+            );
+        }
+
+        self.direct_parent_class = None;
+        self.direct_parent_interfaces.clear();
+        self.all_parent_classes.clear();
+        self.all_parent_interfaces.clear();
+        self.used_traits.clear();
+        self.require_extends.clear();
+        self.require_implements.clear();
+        self.template_extended_parameters.clear();
+        self.template_extended_parameter_paths.clear();
+
+        for ancestor in self.declared_ancestry.as_deref().unwrap_or_default() {
+            match *ancestor {
+                DeclaredAncestor::ParentClass(name) => {
+                    self.direct_parent_class = Some(name);
+                    self.all_parent_classes.insert(name);
+                }
+                DeclaredAncestor::ParentInterface(name) => {
+                    self.direct_parent_interfaces.insert(name);
+                    self.all_parent_interfaces.insert(name);
+                }
+                DeclaredAncestor::Trait(name) => {
+                    self.used_traits.insert(name);
+                }
+                DeclaredAncestor::RequiredClass(name) => {
+                    self.require_extends.insert(name);
+                }
+                DeclaredAncestor::RequiredInterface(name) => {
+                    self.require_implements.insert(name);
+                }
+            }
+        }
+    }
+
     /// Adds or updates a single trait alias. Returns the previous original name if one existed for the alias.
     #[inline]
     pub fn add_trait_alias(&mut self, method: Word, alias: Word) -> Option<Word> {
-        self.trait_alias_map.insert(method, alias)
+        self.trait_alias_map.insert(alias, method)
     }
 
     /// Adds or updates a single trait visibility override. Returns the previous visibility if one existed.
@@ -405,9 +557,7 @@ impl ClassLikeMetadata {
         method: Word,
         parent_method_id: MethodIdentifier,
     ) -> Option<MethodIdentifier> {
-        self.overridden_method_ids
-            .entry(method)
-            .or_default()
+        Arc::make_mut(self.overridden_method_ids.entry(method).or_default())
             .insert(parent_method_id.get_class_name(), parent_method_id)
     }
 
@@ -512,14 +662,15 @@ impl ClassLikeMetadata {
         self.shrink_to_fit();
     }
 
-    /// Applies a patch to this class in place, refining member type information while leaving
-    /// structure (hierarchy, override chains, initialization state, enum cases) untouched.
+    /// Applies a patch to this class in place, refining member type information and supported
+    /// semantic docblock flags while leaving structure (hierarchy, override chains, initialization
+    /// state, enum cases) untouched.
     ///
     /// At most one patch targets a given symbol, so there is no accumulation to worry about.
     /// Diagnostics about the patch are appended to `patch.issues`, where scan-time diagnostics
     /// also live, so they flow out through `take_issues`. The full set of rules a patch must
     /// obey is documented in the `[source]` patching guide.
-    pub fn apply_patch(&mut self, patch: &mut ClassLikeMetadata, inherited_methods: &WordSet) {
+    pub fn apply_patch(&mut self, patch: &mut ClassLikeMetadata, inherited_methods: &WordSet) -> bool {
         // Patches redeclare the same class by name, so their member identifiers
         // already carry the correct class name and merge cleanly.
         debug_assert_eq!(self.name, patch.name, "patch class name must match the patched class");
@@ -527,13 +678,34 @@ impl ClassLikeMetadata {
         // A kind or hierarchy mismatch means the patch targets a different symbol; reject
         // it wholesale rather than refining members against the wrong class.
         if self.report_kind_mismatch(patch) || self.report_hierarchy_mismatch(patch) {
-            return;
+            return false;
         }
 
         self.report_readonly_mismatch(patch);
         self.report_trait_usage(patch);
 
+        merge_explicit_docblock_flags(
+            &mut self.flags,
+            patch.flags,
+            patch.explicit_docblock_flags,
+            PATCHABLE_CLASS_DOCBLOCK_FLAGS,
+        );
+
         self.patch_templates(patch);
+        self.template_extended_offsets.extend(
+            patch
+                .template_extended_offsets
+                .iter()
+                .filter(|(name, _)| {
+                    patch.template_type_extends_count.contains_key(*name)
+                        || patch.template_type_implements_count.contains_key(*name)
+                })
+                .map(|(name, types)| (*name, types.clone())),
+        );
+        self.template_type_extends_count
+            .extend(patch.template_type_extends_count.iter().map(|(name, count)| (*name, *count)));
+        self.template_type_implements_count
+            .extend(patch.template_type_implements_count.iter().map(|(name, count)| (*name, *count)));
         self.patch_methods(patch, inherited_methods);
         self.patch_properties(patch);
         self.patch_constants(patch);
@@ -541,6 +713,7 @@ impl ClassLikeMetadata {
 
         // Type aliases
         self.type_aliases.extend(patch.type_aliases.iter().map(|(k, v)| (*k, v.clone())));
+        true
     }
 
     /// Reports a `kind` mismatch between the patch and the original symbol.
@@ -633,7 +806,8 @@ impl ClassLikeMetadata {
 
     /// Reports `use` trait declarations on the patch, which are never valid.
     ///
-    /// Patches refine member type information only; trait usage declarations are ignored.
+    /// Patches refine member type information and supported semantic docblock flags; trait usage
+    /// declarations are ignored.
     fn report_trait_usage(&self, patch: &mut ClassLikeMetadata) {
         if patch.used_traits.is_empty() {
             return;
@@ -641,14 +815,15 @@ impl ClassLikeMetadata {
 
         patch.issues.push(
             Issue::warning(format!(
-                "Patch for `{}` declares `use` traits; patches refine member type information only and trait usage declarations are ignored.",
+                "Patch for `{}` declares `use` traits; patches refine member metadata only and trait usage declarations are ignored.",
                 patch.original_name,
             ))
             .with_code(ScanningIssueKind::PatchDeclaresTrait)
             .with_annotation(Annotation::primary(patch.span))
             .with_help(
-                "Remove the `use` trait statement from the patch. To refine the type information \
-                 of members the trait contributes, patch those members on the class directly.",
+                "Remove the `use` trait statement from the patch. To refine the types and supported \
+                 semantic docblock flags of members the trait contributes, patch those members on \
+                 the class directly.",
             ),
         );
     }
@@ -767,8 +942,8 @@ impl ClassLikeMetadata {
         let patch_name = patch.original_name;
         for (name, prop_metadata) in &patch.properties {
             if let Some(slot) = self.properties.get_mut(name) {
-                // Patches can only refine type annotations. Structural attributes
-                // (visibility, modifiers, hooks) must match the original exactly;
+                // Patches can refine type annotations and supported docblock flags. Structural
+                // attributes (visibility, modifiers, hooks) must match the original exactly;
                 // if they differ the patch is wrong and we should say so rather than
                 // silently discarding the mismatch.
                 let visibility_mismatch = prop_metadata.read_visibility != slot.read_visibility
@@ -788,7 +963,8 @@ impl ClassLikeMetadata {
                     patch.issues.push(
                         Issue::error(format!(
                             "Patch for `{}::{}` declares structural attributes (visibility, modifiers, \
-                             or hooks) that differ from the original; only type annotations are applied.",
+                             or hooks) that differ from the original; only type annotations and supported \
+                             docblock flags are applied.",
                             patch_name, name,
                         ))
                         .with_code(ScanningIssueKind::PatchPropertyStructuralMismatch)
@@ -796,7 +972,7 @@ impl ClassLikeMetadata {
                         .with_help(format!(
                             "Declare `{patch_name}::{name}` with the same visibility and modifiers as \
                              the original and drop any property hooks; a patch may only refine the \
-                             property's type.",
+                             property's type and supported docblock flags.",
                         )),
                     );
                 }
@@ -804,6 +980,12 @@ impl ClassLikeMetadata {
                 slot.type_declaration_metadata.clone_from(&prop_metadata.type_declaration_metadata);
                 slot.type_metadata.clone_from(&prop_metadata.type_metadata);
                 slot.write_type_metadata.clone_from(&prop_metadata.write_type_metadata);
+                merge_explicit_docblock_flags(
+                    &mut slot.flags,
+                    prop_metadata.flags,
+                    prop_metadata.explicit_docblock_flags,
+                    PATCHABLE_COMMON_DOCBLOCK_FLAGS,
+                );
             } else {
                 patch.issues.push(
                     Issue::error(format!(
@@ -864,6 +1046,12 @@ impl ClassLikeMetadata {
 
                 slot.type_declaration.clone_from(&const_metadata.type_declaration);
                 slot.type_metadata.clone_from(&const_metadata.type_metadata);
+                merge_explicit_docblock_flags(
+                    &mut slot.flags,
+                    const_metadata.flags,
+                    const_metadata.explicit_docblock_flags,
+                    PATCHABLE_COMMON_DOCBLOCK_FLAGS,
+                );
             } else {
                 patch.issues.push(
                     Issue::error(format!(
@@ -934,36 +1122,41 @@ impl ClassLikeMetadata {
 ///
 /// Does not include methods defined directly on `class_meta` itself.
 #[must_use]
-pub fn collect_ancestor_methods(class_meta: &ClassLikeMetadata, class_likes: &WordMap<ClassLikeMetadata>) -> WordSet {
+pub fn collect_ancestor_methods<T>(class_meta: &ClassLikeMetadata, class_likes: &WordMap<T>) -> WordSet
+where
+    T: Borrow<ClassLikeMetadata>,
+{
     let mut visited = WordSet::default();
     let mut methods = WordSet::default();
     collect_ancestor_methods_inner(class_meta, class_likes, &mut visited, &mut methods);
     methods
 }
 
-fn collect_ancestor_methods_inner(
+fn collect_ancestor_methods_inner<T>(
     class_meta: &ClassLikeMetadata,
-    class_likes: &WordMap<ClassLikeMetadata>,
+    class_likes: &WordMap<T>,
     visited: &mut WordSet,
     methods: &mut WordSet,
-) {
+) where
+    T: Borrow<ClassLikeMetadata>,
+{
     if !visited.insert(class_meta.name) {
         return;
     }
     if let Some(parent_name) = class_meta.direct_parent_class
-        && let Some(parent_meta) = class_likes.get(&parent_name)
+        && let Some(parent_meta) = class_likes.get(&parent_name).map(Borrow::borrow)
     {
         methods.extend(parent_meta.methods.iter().copied());
         collect_ancestor_methods_inner(parent_meta, class_likes, visited, methods);
     }
     for interface_name in &class_meta.direct_parent_interfaces {
-        if let Some(interface_meta) = class_likes.get(interface_name) {
+        if let Some(interface_meta) = class_likes.get(interface_name).map(Borrow::borrow) {
             methods.extend(interface_meta.methods.iter().copied());
             collect_ancestor_methods_inner(interface_meta, class_likes, visited, methods);
         }
     }
     for trait_name in &class_meta.used_traits {
-        if let Some(trait_meta) = class_likes.get(trait_name) {
+        if let Some(trait_meta) = class_likes.get(trait_name).map(Borrow::borrow) {
             methods.extend(trait_meta.methods.iter().copied());
             collect_ancestor_methods_inner(trait_meta, class_likes, visited, methods);
         }
@@ -1208,6 +1401,85 @@ mod tests {
         assert!(vendored.template_readonly.contains(&t), "T should remain readonly after patch");
         assert!(!vendored.template_readonly.contains(&u), "U was not declared readonly by the patch");
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn apply_patch_refines_parent_template_bindings() {
+        let parent = word("Parent");
+        let interface = word("Contract");
+        let untouched = word("OtherContract");
+        let mut vendored = make("VendorClass");
+        vendored.direct_parent_class = Some(parent);
+        vendored.direct_parent_interfaces.extend([interface, untouched]);
+        vendored.template_extended_offsets.insert(parent, vec![ttype::get_int()]);
+        vendored.template_extended_offsets.insert(interface, vec![ttype::get_int()]);
+        vendored.template_extended_offsets.insert(untouched, vec![ttype::get_bool()]);
+        vendored.template_type_extends_count.insert(parent, 1);
+        vendored.template_type_implements_count.extend([(interface, 1), (untouched, 1)]);
+
+        let mut patch = make("VendorClass");
+        patch.direct_parent_class = Some(parent);
+        patch.direct_parent_interfaces.extend([interface, untouched]);
+        patch.template_extended_offsets.insert(parent, vec![ttype::get_string(), ttype::get_int()]);
+        patch.template_extended_offsets.insert(interface, vec![ttype::get_float()]);
+        patch.template_type_extends_count.insert(parent, 2);
+        patch.template_type_implements_count.insert(interface, 1);
+
+        vendored.apply_patch(&mut patch, &WordSet::default());
+
+        assert_eq!(vendored.template_extended_offsets[&parent], [ttype::get_string(), ttype::get_int()]);
+        assert_eq!(vendored.template_extended_offsets[&interface], [ttype::get_float()]);
+        assert_eq!(vendored.template_extended_offsets[&untouched], [ttype::get_bool()]);
+        assert_eq!(vendored.template_type_extends_count[&parent], 2);
+        assert_eq!(vendored.template_type_implements_count[&interface], 1);
+        assert_eq!(vendored.template_type_implements_count[&untouched], 1);
+        assert!(vendored.template_types.is_empty());
+        assert!(patch.issues.is_empty());
+    }
+
+    #[test]
+    fn apply_patch_rejects_parent_template_bindings_on_hierarchy_mismatch() {
+        let parent = word("Parent");
+        let interface = word("Contract");
+        for change_parent in [true, false] {
+            let mut vendored = make("VendorClass");
+            vendored.direct_parent_class = Some(parent);
+            vendored.direct_parent_interfaces.insert(interface);
+            vendored.template_extended_offsets.insert(parent, vec![ttype::get_int()]);
+            vendored.template_extended_offsets.insert(interface, vec![ttype::get_int()]);
+
+            let mut patch = make("VendorClass");
+            patch.direct_parent_class = Some(if change_parent { word("WrongParent") } else { parent });
+            patch.direct_parent_interfaces.insert(if change_parent { interface } else { word("WrongContract") });
+            patch.template_extended_offsets.insert(parent, vec![ttype::get_string()]);
+            patch.template_extended_offsets.insert(interface, vec![ttype::get_string()]);
+            patch.template_type_extends_count.insert(parent, 1);
+            patch.template_type_implements_count.insert(interface, 1);
+
+            vendored.apply_patch(&mut patch, &WordSet::default());
+
+            assert_eq!(vendored.template_extended_offsets[&parent], [ttype::get_int()]);
+            assert_eq!(vendored.template_extended_offsets[&interface], [ttype::get_int()]);
+            assert!(has_code(&patch.issues, ScanningIssueKind::PatchHierarchyMismatch));
+        }
+    }
+
+    #[test]
+    fn apply_patch_does_not_refine_trait_template_bindings() {
+        let trait_name = word("GenericTrait");
+        let mut vendored = make("VendorClass");
+        vendored.used_traits.insert(trait_name);
+        vendored.template_extended_offsets.insert(trait_name, vec![ttype::get_int()]);
+
+        let mut patch = make("VendorClass");
+        patch.used_traits.insert(trait_name);
+        patch.template_extended_offsets.insert(trait_name, vec![ttype::get_string()]);
+        patch.template_type_uses_count.insert(trait_name, 1);
+
+        vendored.apply_patch(&mut patch, &WordSet::default());
+
+        assert_eq!(vendored.template_extended_offsets[&trait_name], [ttype::get_int()]);
+        assert!(has_code(&patch.issues, ScanningIssueKind::PatchDeclaresTrait));
     }
 
     #[test]

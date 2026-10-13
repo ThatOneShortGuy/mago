@@ -75,6 +75,7 @@ where
     pub additional_symbol_references: Option<&'ctx SymbolReferences>,
     variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
     defer_pragmas: bool,
+    editor_artifacts: bool,
 }
 
 impl<'ctx, 'ast, 'arena, A> Analyzer<'ctx, 'ast, 'arena, A>
@@ -100,6 +101,7 @@ where
             additional_symbol_references: None,
             variable_definedness_targets: None,
             defer_pragmas: false,
+            editor_artifacts: false,
         }
     }
 
@@ -129,6 +131,13 @@ where
         self
     }
 
+    /// Captures compact method targets and named expression types for editor queries.
+    #[must_use]
+    pub fn with_editor_artifacts(mut self) -> Self {
+        self.editor_artifacts = true;
+        self
+    }
+
     /// Runs the analyzer over `program` and accumulates findings into `analysis_result`.
     ///
     /// # Errors
@@ -139,7 +148,7 @@ where
         program: &'ast Program<'arena>,
         analysis_result: &mut AnalysisResult,
     ) -> Result<(), AnalysisError> {
-        self.analyze_with_artifacts(program, analysis_result).map(|_| ())
+        self.analyze_inner(program, analysis_result, false).map(|_| ())
     }
 
     /// Same as [`Self::analyze`], but returns the [`AnalysisArtifacts`]
@@ -155,8 +164,22 @@ where
         program: &'ast Program<'arena>,
         analysis_result: &mut AnalysisResult,
     ) -> Result<AnalysisArtifacts, AnalysisError> {
+        self.analyze_inner(program, analysis_result, true)
+    }
+
+    fn analyze_inner(
+        &self,
+        program: &'ast Program<'arena>,
+        analysis_result: &mut AnalysisResult,
+        retain_completed_expression_types: bool,
+    ) -> Result<AnalysisArtifacts, AnalysisError> {
         #[cfg(not(target_arch = "wasm32"))]
         let start_time = std::time::Instant::now();
+
+        let retain_completed_expression_types = retain_completed_expression_types
+            || self.editor_artifacts
+            || self.external_analysis_session.is_some()
+            || self.plugin_registry.has_custom_plugins();
 
         if !program.has_script() {
             #[cfg(not(target_arch = "wasm32"))]
@@ -164,9 +187,10 @@ where
                 analysis_result.time_in_analysis = start_time.elapsed();
             }
 
-            return Ok(
-                AnalysisArtifacts::new().with_variable_definedness_targets(self.variable_definedness_targets.clone())
-            );
+            return Ok(AnalysisArtifacts::new()
+                .with_retained_expression_types(retain_completed_expression_types)
+                .with_variable_definedness_targets(self.variable_definedness_targets.clone())
+                .with_editor_artifacts(self.editor_artifacts));
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -199,8 +223,10 @@ where
             ScopeContext::new(ReferenceOrigin::File(word(context.source_file.name.as_ref()))),
             context.settings.register_super_globals,
         );
-        let mut artifacts =
-            AnalysisArtifacts::new().with_variable_definedness_targets(self.variable_definedness_targets.clone());
+        let mut artifacts = AnalysisArtifacts::new()
+            .with_retained_expression_types(retain_completed_expression_types)
+            .with_variable_definedness_targets(self.variable_definedness_targets.clone())
+            .with_editor_artifacts(self.editor_artifacts);
         artifacts.record_variable_definedness(Node::Program(program), &block_context);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(start) = setup_start {

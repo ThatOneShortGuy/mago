@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::combine_union_types_rc;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
@@ -26,6 +27,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraint;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::closure::widen_by_reference_type;
 use crate::statement::analyze_statements;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
@@ -124,7 +126,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Static<'arena> {
                     .static_local_types
                     .as_ref()
                     .and_then(|types| types.get(&variable_name_atom))
-                    .map(|ty| Rc::new(ty.clone()))
+                    .cloned()
                     .or(inferred_type)
                     .unwrap_or_else(|| Rc::new(get_mixed())),
             };
@@ -143,7 +145,7 @@ pub(super) fn infer_static_local_types<'ctx, 'arena, A>(
     block_context: &BlockContext<'ctx>,
     artifacts: &AnalysisArtifacts,
     statements: &[Statement<'arena>],
-) -> Result<Option<WordMap<TUnion>>, AnalysisError>
+) -> Result<Option<WordMap<Rc<TUnion>>>, AnalysisError>
 where
     A: Arena,
 {
@@ -152,7 +154,7 @@ where
         finder.walk_statement(statement, &mut ());
     }
 
-    if !finder.0 {
+    if !finder.0 && block_context.static_locals.is_empty() {
         return Ok(None);
     }
 
@@ -161,6 +163,7 @@ where
     let mut previous_types = WordMap::default();
     for _ in 0..8 {
         let mut inferred_context = block_context.clone();
+        add_inferred_captured_types(context, &mut inferred_context, &static_local_types);
         let mut inferred_artifacts = artifacts.clone();
         inferred_artifacts.static_local_types = Some(static_local_types.clone());
 
@@ -178,7 +181,7 @@ where
             if let Some(previous) = static_local_types.get(variable)
                 && previous != inferred_type
             {
-                widen_static_local_type(inferred_type, previous);
+                widen_static_local_type(Rc::make_mut(inferred_type), previous);
             }
         }
 
@@ -191,11 +194,62 @@ where
 
     for (variable, variable_type) in &mut static_local_types {
         if previous_types.get(variable) != Some(variable_type) {
-            *variable_type = get_mixed();
+            *variable_type = Rc::new(get_mixed());
         }
     }
 
     Ok(Some(static_local_types))
+}
+
+/// Sets the types of the variables a closure captures by reference before its
+/// body is analyzed.
+///
+/// These are the inferred types, widened because the enclosing scope can also
+/// write to the variables between two calls.
+pub(super) fn add_captured_types<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &mut BlockContext<'_>,
+    inferred_types: &WordMap<Rc<TUnion>>,
+) where
+    A: Arena,
+{
+    add_inferred_captured_types(context, block_context, inferred_types);
+
+    for variable in &block_context.static_locals {
+        if let Some(variable_type) = block_context.locals.get_mut(variable) {
+            widen_by_reference_type(Rc::make_mut(variable_type));
+        }
+    }
+}
+
+/// Adds the inferred types to the static locals that are already in scope when
+/// the body starts, which are the variables a closure captures by reference.
+///
+/// The first call sees the type from the enclosing scope, and every later call
+/// also sees what the previous calls wrote.
+fn add_inferred_captured_types<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &mut BlockContext<'_>,
+    inferred_types: &WordMap<Rc<TUnion>>,
+) where
+    A: Arena,
+{
+    for variable in &block_context.static_locals {
+        let (Some(inferred_type), Some(variable_type)) =
+            (inferred_types.get(variable), block_context.locals.get_mut(variable))
+        else {
+            continue;
+        };
+
+        let by_reference = variable_type.by_reference();
+        let mut combined_type =
+            combine_union_types_rc(variable_type, inferred_type, context.codebase, context.settings.combiner_options());
+        if by_reference && !combined_type.by_reference() {
+            Rc::make_mut(&mut combined_type).set_by_reference(true);
+        }
+
+        *variable_type = combined_type;
+    }
 }
 
 fn widen_static_local_type(inferred: &mut TUnion, previous: &TUnion) {
@@ -206,7 +260,7 @@ fn widen_static_local_type(inferred: &mut TUnion, previous: &TUnion) {
     match (inferred.types.to_mut().as_mut_slice(), previous.get_single_array()) {
         ([TAtomic::Array(TArray::Keyed(inferred))], Some(TArray::Keyed(previous))) => {
             if let (Some(items), Some(previous_items)) = (&mut inferred.known_items, &previous.known_items) {
-                for (key, (_, item_type)) in items {
+                for (key, (_, item_type)) in Arc::make_mut(items) {
                     if let Some((_, previous_type)) = previous_items.get(key) {
                         widen_static_local_type(item_type, previous_type);
                     }
@@ -221,7 +275,9 @@ fn widen_static_local_type(inferred: &mut TUnion, previous: &TUnion) {
             }
         }
         ([TAtomic::Array(TArray::List(inferred))], Some(TArray::List(previous))) => {
-            if let (Some(items), Some(previous_items)) = (&mut inferred.known_elements, &previous.known_elements) {
+            if let (Some(items), Some(previous_items)) =
+                (inferred.known_elements.as_mut().map(Arc::make_mut), &previous.known_elements)
+            {
                 for (key, (_, item_type)) in items {
                     if let Some((_, previous_type)) = previous_items.get(key) {
                         widen_static_local_type(item_type, previous_type);

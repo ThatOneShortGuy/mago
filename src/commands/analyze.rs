@@ -133,6 +133,12 @@ pub struct AnalyzeCommand {
     #[arg(long, default_value_t = false)]
     pub skip_ignores: bool,
 
+    /// Override the per-file slow analysis warning threshold in milliseconds.
+    ///
+    /// This takes precedence over `slow-file-warning-threshold-ms` in `mago.toml`.
+    #[arg(long, value_name = "MILLISECONDS")]
+    pub slow_file_warning_threshold_ms: Option<u16>,
+
     /// Enable watch mode for continuous analysis (experimental).
     ///
     /// When enabled, the analyzer watches the workspace for file changes and
@@ -152,7 +158,7 @@ pub struct AnalyzeCommand {
     ///
     /// Outputs a JSON array of all issue code strings that the analyzer
     /// can report. Useful for tooling integration and documentation.
-    #[arg(long, conflicts_with_all = ["path", "no_stubs", "skip_ignores", "watch", "reporting_target", "reporting_format"])]
+    #[arg(long, conflicts_with_all = ["path", "no_stubs", "skip_ignores", "slow_file_warning_threshold_ms", "watch", "reporting_target", "reporting_format"])]
     pub list_codes: bool,
 
     /// Only analyze files that are staged in git.
@@ -217,7 +223,7 @@ impl AnalyzeCommand {
     ///
     /// Only host files are analyzed for issues; external files only contribute to
     /// the symbol table and type graph.
-    pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
+    pub fn execute(self, mut configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
         if !self.only.is_empty() {
             eprintln!("error: the `--only` flag is not available for the analyzer.");
             eprintln!();
@@ -249,6 +255,10 @@ impl AnalyzeCommand {
 
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
         let command_start = trace_enabled.then(Instant::now);
+
+        if let Some(threshold) = self.slow_file_warning_threshold_ms {
+            configuration.analyzer.performance.slow_file_warning_threshold_ms = threshold;
+        }
 
         let orchestrator_init_start = trace_enabled.then(Instant::now);
         let substitutions = self.substitution.resolve()?;
@@ -332,10 +342,9 @@ impl AnalyzeCommand {
 
         let service_run_start = trace_enabled.then(Instant::now);
         let service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
-        let analysis_result = service.run()?;
+        let mut issues = service.run_issues()?;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
-        let mut issues = analysis_result.issues;
         let ignore_set = self.compile_ignore_set(&configuration);
 
         issues.filter_out_ignored(&ignore_set, |file_id| {
@@ -399,6 +408,10 @@ impl AnalyzeCommand {
     /// the watch session restarts with the reloaded configuration.
     fn run_watch_loop(&self, mut configuration: Configuration, color_choice: ColorChoice) -> Result<ExitCode, Error> {
         loop {
+            if let Some(threshold) = self.slow_file_warning_threshold_ms {
+                configuration.analyzer.performance.slow_file_warning_threshold_ms = threshold;
+            }
+
             let Prelude { database, metadata, symbol_references } = if self.no_stubs {
                 Prelude::default()
             } else {

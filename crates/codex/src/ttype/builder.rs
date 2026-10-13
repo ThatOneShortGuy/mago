@@ -64,6 +64,42 @@ fn get_nullable_union_from_type(
     })
 }
 
+/// Rejects a bare variable used as a docblock tag type when it cannot be resolved.
+///
+/// Psalm-style parameter links (`@param $prototype $value`, `@return $value`) lower a
+/// variable to [`TAtomic::Variable`] and resolve it downstream by parameter name. A
+/// variable that names nothing in scope (`@return $mixed`, `@var $label Label`) is
+/// instead a typo: the tag is silently dropped or, worse, poisons the symbol with a
+/// nonsense type. (`$this` travels as [`Type::ThisVariable`] and is unaffected.)
+///
+/// Callers must apply this to the top-level type of a tag only, passing a predicate
+/// that reports whether the variable names a declared parameter of the enclosing
+/// function-like (scopes without parameters pass a predicate that rejects everything).
+/// Nested positions (conditional subjects, callable signatures) legitimately lower
+/// variables and must not be checked.
+///
+/// # Errors
+///
+/// Returns a [`TypeError`] if the top-level tag type is an unresolvable variable.
+#[inline]
+pub fn reject_unresolvable_tag_variable(
+    ttype: &Type<'_>,
+    is_resolvable: impl Fn(&[u8]) -> bool,
+) -> Result<(), TypeError> {
+    if let Type::Variable(variable) = ttype
+        && variable.value != b"$this"
+        && !is_resolvable(variable.value)
+    {
+        return Err(TypeError::InvalidType(
+            ttype.to_string(),
+            "A variable name is not a valid type here.".to_string(),
+            variable.span,
+        ));
+    }
+
+    Ok(())
+}
+
 /// Converts a parsed `PHPDoc` type node into a semantic `TUnion` type representation,
 /// resolving names, templates, and keywords into their semantic counterparts.
 ///
@@ -693,7 +729,7 @@ fn get_shape_from_type(
                 tree.insert(offset, (field_is_optional, field_value_type));
             }
 
-            tree
+            tree.into()
         });
 
         list.non_empty = shape.has_non_optional_fields() || shape.kind.is_non_empty();
@@ -754,7 +790,7 @@ fn get_shape_from_type(
                 tree.insert(array_key, (field_is_optional, field_value_type));
             }
 
-            tree
+            tree.into()
         });
 
         keyed_array.non_empty = shape.has_non_optional_fields() || shape.kind.is_non_empty();
@@ -945,8 +981,8 @@ fn get_reference_from_kind(
     if is_named_object {
         Ok(TAtomic::Object(TObject::Named(TNamedObject {
             name: fq_reference_name_id,
-            type_parameters,
-            variances: type_parameter_variances,
+            type_parameters: type_parameters.map(Vec::into_boxed_slice),
+            variances: type_parameter_variances.map(Box::new),
             intersection_types: None,
             is_static,
             is_this,
@@ -956,7 +992,7 @@ fn get_reference_from_kind(
         Ok(TAtomic::Reference(TReference::Symbol {
             name: fq_reference_name_id,
             parameters: type_parameters,
-            variances: type_parameter_variances,
+            variances: type_parameter_variances.map(Box::new),
             intersection_types: None,
         }))
     }

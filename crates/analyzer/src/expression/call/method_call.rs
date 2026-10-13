@@ -12,6 +12,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::get_null;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
@@ -51,8 +52,9 @@ use crate::resolver::method::UnresolvedMethod;
 use crate::resolver::method::report_non_documented_method;
 use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::resolve_method_targets;
+use crate::utils::availability;
 use crate::utils::expression::get_block_expression_id;
-use crate::visibility::check_method_visibility;
+use crate::visibility::check_method_visibility_by_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
     fn analyze<'ctx, A>(
@@ -205,11 +207,10 @@ pub fn analyze_implicit_method_call<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    if !check_method_visibility(
+    if !check_method_visibility_by_id(
         context,
         block_context.scope.get_class_like_name(),
-        method_identifier.get_class_name().as_bytes(),
-        method_identifier.get_method_name().as_bytes(),
+        &method_identifier,
         span,
         None,
     ) {
@@ -293,6 +294,15 @@ where
     let mut method_resolution =
         resolve_method_targets(context, block_context, artifacts, object, selector, is_null_safe, span)?;
 
+    if artifacts.get_expression_type(object).is_some_and(|ty| ty.is_null() && (is_null_safe || ty.has_nullsafe_null()))
+    {
+        let mut return_type = get_null();
+        return_type.set_nullsafe_null(true);
+        artifacts.set_expression_type(&span, return_type);
+
+        return Ok(());
+    }
+
     let undocumented_template_result =
         (!method_resolution.undocumented_methods.is_empty()).then(|| method_resolution.template_result.clone());
 
@@ -300,7 +310,7 @@ where
     for resolved_method in method_resolution.resolved_methods {
         let metadata = context
             .codebase
-            .get_class_like(resolved_method.classname.as_bytes())
+            .get_class_like_by_name(resolved_method.classname)
             .expect("class-like metadata should exist for resolved method");
 
         let method_metadata = context
@@ -308,12 +318,16 @@ where
             .get_method_by_id(&resolved_method.method_identifier)
             .expect("method metadata should exist for resolved method");
 
-        let method_display = format!(
-            "{}::{}",
-            resolved_method.method_identifier.get_class_name(),
-            resolved_method.method_identifier.get_method_name(),
+        availability::check_method_availability(
+            context,
+            method_metadata,
+            &format_args!(
+                "{}::{}",
+                resolved_method.method_identifier.get_class_name(),
+                resolved_method.method_identifier.get_method_name(),
+            ),
+            span,
         );
-        crate::utils::availability::check_method_availability(context, method_metadata, &method_display, span);
 
         let method_target_context = MethodTargetContext {
             invocation_kind: MethodInvocationKind::Instance,
@@ -381,7 +395,6 @@ where
             InvocationArgumentsSource::ArgumentList(argument_list),
             span,
             this_variable,
-            method_resolution.has_invalid_target,
             method_resolution.encountered_mixed,
             is_null_safe && method_resolution.encountered_null,
             artifacts.get_expression_type(object).is_some_and(|t| t.has_nullsafe_null()),
@@ -422,7 +435,7 @@ where
     targets.reserve(unresolved_methods.len());
     let mut has_invalid_target = false;
     for unresolved in unresolved_methods {
-        let Some(class_like_metadata) = context.codebase.get_class_like(unresolved.classname.as_bytes()) else {
+        let Some(class_like_metadata) = context.codebase.get_class_like_by_name(unresolved.classname) else {
             report_non_existent_method(
                 context,
                 unresolved.target_span,
@@ -435,7 +448,10 @@ where
             continue;
         };
 
-        let identifier = FunctionLikeIdentifier::Method(class_like_metadata.original_name, unresolved.method_name);
+        let identifier = FunctionLikeIdentifier::Method(
+            class_like_metadata.original_name,
+            unresolved.method_name.to_ascii_lowercase(),
+        );
         let target = InvocationTarget::ExternalMethod {
             identifier,
             effective_signature: None,
@@ -491,7 +507,7 @@ where
         let magic_call_method = undocumented_method.magic_method;
         let class_like_metadata = context
             .codebase
-            .get_class_like(magic_call_method.classname.as_bytes())
+            .get_class_like_by_name(magic_call_method.classname)
             .expect("class-like metadata should exist for resolved magic call method");
 
         let method_metadata = context
@@ -499,8 +515,10 @@ where
             .get_method_by_id(&magic_call_method.method_identifier)
             .expect("method metadata should exist for resolved magic call method");
 
-        let requested_identifier =
-            FunctionLikeIdentifier::Method(undocumented_method.classname, undocumented_method.method_name);
+        let requested_identifier = FunctionLikeIdentifier::Method(
+            undocumented_method.classname,
+            undocumented_method.method_name.to_ascii_lowercase(),
+        );
         let target = InvocationTarget::FunctionLike {
             identifier: FunctionLikeIdentifier::Method(
                 magic_call_method.method_identifier.get_class_name(),

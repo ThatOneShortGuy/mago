@@ -67,7 +67,7 @@ pub fn replace_with_polarity(
         .map_or_else(|| union.clone(), |replacement| union.clone_with_types(replacement.types.into_owned()));
     }
 
-    let mut new_types = Vec::new();
+    let mut new_types = Vec::with_capacity(union.types.len());
 
     for atomic_type in union.types.as_ref() {
         let mut atomic_type = atomic_type.clone();
@@ -269,7 +269,7 @@ fn replace_atomic(
                 *Arc::make_mut(&mut list_data.element_type) =
                     replace_with_polarity(&list_data.element_type, template_result, codebase, polarity);
 
-                if let Some(known_elements) = &mut list_data.known_elements {
+                if let Some(known_elements) = list_data.known_elements.as_mut().map(Arc::make_mut) {
                     for (_, element_type) in known_elements.values_mut() {
                         *element_type = replace_with_polarity(element_type, template_result, codebase, polarity);
                     }
@@ -283,7 +283,7 @@ fn replace_atomic(
                         replace_with_polarity(value_parameter, template_result, codebase, polarity);
                 }
 
-                if let Some(known_items) = &mut keyed_data.known_items {
+                if let Some(known_items) = keyed_data.known_items.as_mut().map(Arc::make_mut) {
                     for (_, item_type) in known_items.values_mut() {
                         *item_type = replace_with_polarity(item_type, template_result, codebase, polarity);
                     }
@@ -327,13 +327,19 @@ fn replace_atomic(
                 if let Some(t) = parameter.get_type_signature_mut() {
                     *t = replace_with_polarity(t, template_result, codebase, polarity.flip());
                 }
+                if let Some(t) = parameter.get_out_type_mut() {
+                    *t = replace_with_polarity(t, template_result, codebase, polarity);
+                }
+                if let Some(t) = parameter.get_closure_this_type_mut() {
+                    *t = replace_with_polarity(t, template_result, codebase, polarity.flip());
+                }
             }
 
             if let Some(return_type) = signature.get_return_type_mut() {
                 *return_type = replace_with_polarity(return_type, template_result, codebase, polarity);
             }
 
-            for constraint in &mut signature.constraints {
+            for constraint in Arc::make_mut(&mut signature.constraints).iter_mut() {
                 constraint.input_type =
                     Arc::new(replace_with_polarity(&constraint.input_type, template_result, codebase, polarity));
                 constraint.parameter_type = Arc::new(replace_with_polarity(

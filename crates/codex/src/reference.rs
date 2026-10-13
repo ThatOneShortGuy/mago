@@ -1,6 +1,8 @@
+use std::collections::hash_map::Entry;
+use std::hash::Hash;
+
 use foldhash::HashMap;
 use foldhash::HashSet;
-use mago_word::ascii_lowercase_word;
 use mago_word::empty_word;
 
 use mago_word::Word;
@@ -189,6 +191,13 @@ impl SymbolReferences {
             + files.values().filter(|referenced_set| referenced_set.contains(symbol)).count()
     }
 
+    /// Returns whether a symbol or file references the target in a body or signature.
+    #[inline]
+    #[must_use]
+    pub fn has_reference_to_symbol(&self, target_symbol: SymbolIdentifier) -> bool {
+        self.referencing_symbols(target_symbol).next().is_some() || self.has_file_reference_to_symbol(target_symbol)
+    }
+
     /// Counts how many symbols have a *read* reference to the given property.
     ///
     /// # Arguments
@@ -205,6 +214,14 @@ impl SymbolReferences {
             + self.file_property_read_references.values().filter(|read_set| read_set.contains(property)).count()
     }
 
+    /// Returns whether any symbol or file reads the property.
+    #[inline]
+    #[must_use]
+    pub fn has_property_read(&self, property: &SymbolIdentifier) -> bool {
+        self.property_read_references.values().any(|references| references.contains(property))
+            || self.file_property_read_references.values().any(|references| references.contains(property))
+    }
+
     /// Counts how many symbols have a *write* reference to the given property.
     ///
     /// # Arguments
@@ -219,6 +236,14 @@ impl SymbolReferences {
     pub fn count_property_writes(&self, property: &SymbolIdentifier) -> usize {
         self.property_write_references.values().filter(|write_set| write_set.contains(property)).count()
             + self.file_property_write_references.values().filter(|write_set| write_set.contains(property)).count()
+    }
+
+    /// Returns whether any symbol or file writes the property.
+    #[inline]
+    #[must_use]
+    pub fn has_property_write(&self, property: &SymbolIdentifier) -> bool {
+        self.property_write_references.values().any(|references| references.contains(property))
+            || self.file_property_write_references.values().any(|references| references.contains(property))
     }
 
     /// Records that a top-level symbol (e.g., a function) references a class member.
@@ -242,11 +267,13 @@ impl SymbolReferences {
 
         // Use empty member for the referencing symbol key
         let key = (referencing_symbol, empty_word());
-        if in_signature {
-            self.symbol_references_to_symbols_in_signature.entry(key).or_default().insert(class_member);
-        } else {
-            self.symbol_references_to_symbols.entry(key).or_default().insert(class_member);
-        }
+        insert_dependency(
+            &mut self.symbol_references_to_symbols,
+            &mut self.symbol_references_to_symbols_in_signature,
+            key,
+            class_member,
+            in_signature,
+        );
     }
 
     /// Records that a top-level symbol references another top-level symbol.
@@ -267,17 +294,13 @@ impl SymbolReferences {
         let referencing_key = (referencing_symbol, empty_word());
         let referenced_key = (symbol, empty_word());
 
-        if in_signature {
-            self.symbol_references_to_symbols_in_signature.entry(referencing_key).or_default().insert(referenced_key);
-        } else {
-            // If it's already referenced in the signature, don't add as a body reference
-            if let Some(sig_refs) = self.symbol_references_to_symbols_in_signature.get(&referencing_key)
-                && sig_refs.contains(&referenced_key)
-            {
-                return;
-            }
-            self.symbol_references_to_symbols.entry(referencing_key).or_default().insert(referenced_key);
-        }
+        insert_dependency(
+            &mut self.symbol_references_to_symbols,
+            &mut self.symbol_references_to_symbols_in_signature,
+            referencing_key,
+            referenced_key,
+            in_signature,
+        );
     }
 
     /// Records a reference between arbitrary top-level symbols or class-like members.
@@ -315,10 +338,10 @@ impl SymbolReferences {
         self.add_reference(referencing, property, false);
         match referencing {
             ReferenceOrigin::Symbol(symbol) => {
-                self.property_read_references.entry(symbol).or_default().insert(property);
+                insert_reference(&mut self.property_read_references, symbol, property);
             }
             ReferenceOrigin::File(file) => {
-                self.file_property_read_references.entry(file).or_default().insert(property);
+                insert_reference(&mut self.file_property_read_references, file, property);
             }
         }
     }
@@ -329,10 +352,10 @@ impl SymbolReferences {
         self.add_reference(referencing, property, false);
         match referencing {
             ReferenceOrigin::Symbol(symbol) => {
-                self.property_write_references.entry(symbol).or_default().insert(property);
+                insert_reference(&mut self.property_write_references, symbol, property);
             }
             ReferenceOrigin::File(file) => {
-                self.file_property_write_references.entry(file).or_default().insert(property);
+                insert_reference(&mut self.file_property_write_references, file, property);
             }
         }
     }
@@ -340,7 +363,7 @@ impl SymbolReferences {
     /// Records an explicit reference to an overridden class-like member.
     #[inline]
     pub fn add_overridden_member_reference(&mut self, referencing: SymbolIdentifier, overridden: SymbolIdentifier) {
-        self.symbol_references_to_overridden_members.entry(referencing).or_default().insert(overridden);
+        insert_reference(&mut self.symbol_references_to_overridden_members, referencing, overridden);
     }
 
     /// Records an explicit use of another function-like's return value.
@@ -385,16 +408,13 @@ impl SymbolReferences {
         self.add_class_member_reference_to_symbol(referencing_class_member, class_member.0, false);
 
         // Add the direct member-to-member reference
-        if in_signature {
-            self.symbol_references_to_symbols_in_signature
-                .entry(referencing_class_member)
-                .or_default()
-                .insert(class_member);
-        } else {
-            // Check signature refs first? (Consistency with add_symbol_reference_to_symbol might be needed)
-            // Current logic adds to body refs regardless of signature refs for member->member.
-            self.symbol_references_to_symbols.entry(referencing_class_member).or_default().insert(class_member);
-        }
+        insert_dependency(
+            &mut self.symbol_references_to_symbols,
+            &mut self.symbol_references_to_symbols_in_signature,
+            referencing_class_member,
+            class_member,
+            in_signature,
+        );
     }
 
     /// Records that a class member references a top-level symbol.
@@ -423,20 +443,13 @@ impl SymbolReferences {
         // Represent the referenced symbol with an empty member identifier
         let referenced_key = (symbol, empty_word());
 
-        if in_signature {
-            self.symbol_references_to_symbols_in_signature
-                .entry(referencing_class_member)
-                .or_default()
-                .insert(referenced_key);
-        } else {
-            // If already referenced in signature, don't add as body reference
-            if let Some(sig_refs) = self.symbol_references_to_symbols_in_signature.get(&referencing_class_member)
-                && sig_refs.contains(&referenced_key)
-            {
-                return;
-            }
-            self.symbol_references_to_symbols.entry(referencing_class_member).or_default().insert(referenced_key);
-        }
+        insert_dependency(
+            &mut self.symbol_references_to_symbols,
+            &mut self.symbol_references_to_symbols_in_signature,
+            referencing_class_member,
+            referenced_key,
+            in_signature,
+        );
     }
 
     /// Adds a file-level reference to a symbol or class-like member.
@@ -453,17 +466,13 @@ impl SymbolReferences {
             self.add_file_reference_to_class_member(file_name, (class_member.0, empty_word()), false);
         }
 
-        if in_signature {
-            self.file_references_to_symbols_in_signature.entry(file_name).or_default().insert(class_member);
-        } else {
-            // Check if already in signature to avoid duplicate tracking
-            if let Some(sig_refs) = self.file_references_to_symbols_in_signature.get(&file_name)
-                && sig_refs.contains(&class_member)
-            {
-                return;
-            }
-            self.file_references_to_symbols.entry(file_name).or_default().insert(class_member);
-        }
+        insert_dependency(
+            &mut self.file_references_to_symbols,
+            &mut self.file_references_to_symbols_in_signature,
+            file_name,
+            class_member,
+            in_signature,
+        );
     }
 
     /// Convenience method to add a reference *from* the current function context *to* a class member.
@@ -482,7 +491,7 @@ impl SymbolReferences {
     pub fn add_reference_for_method_call(&mut self, scope: &ScopeContext<'_>, method: &MethodIdentifier) {
         self.add_reference_to_class_member(
             scope,
-            (ascii_lowercase_word(method.get_class_name().as_bytes()), method.get_method_name()),
+            (method.get_class_name().to_ascii_lowercase(), method.get_method_name()),
             false,
         );
     }
@@ -490,7 +499,7 @@ impl SymbolReferences {
     /// Records a read reference to a property (e.g., `$this->prop` used as a value).
     #[inline]
     pub fn add_reference_for_property_read(&mut self, scope: &ScopeContext<'_>, class_name: Word, property_name: Word) {
-        let normalized_class_name = ascii_lowercase_word(class_name.as_bytes());
+        let normalized_class_name = class_name.to_ascii_lowercase();
         let class_member = (normalized_class_name, property_name);
 
         self.add_property_read_reference(scope.get_reference_origin(), class_member);
@@ -505,7 +514,7 @@ impl SymbolReferences {
         class_name: Word,
         property_name: Word,
     ) {
-        let normalized_class_name = ascii_lowercase_word(class_name.as_bytes());
+        let normalized_class_name = class_name.to_ascii_lowercase();
         let class_member = (normalized_class_name, property_name);
 
         self.add_property_write_reference(scope.get_reference_origin(), class_member);
@@ -519,7 +528,7 @@ impl SymbolReferences {
             return;
         };
 
-        self.symbol_references_to_overridden_members.entry(referencing).or_default().insert(class_member);
+        self.add_overridden_member_reference(referencing, class_member);
     }
 
     /// Convenience method to add a reference *from* the current function context *to* a top-level symbol.
@@ -540,52 +549,41 @@ impl SymbolReferences {
             return;
         }
 
-        self.functionlike_references_to_functionlike_returns
-            .entry(referencing_functionlike)
-            .or_default()
-            .insert(referenced_functionlike);
+        insert_reference(
+            &mut self.functionlike_references_to_functionlike_returns,
+            referencing_functionlike,
+            referenced_functionlike,
+        );
     }
 
     /// Merges references from another `SymbolReferences` instance into this one.
-    /// Existing references are extended, not replaced.
+    /// Signature edges suppress matching body edges; other reference roles stay distinct.
     #[inline]
     pub fn extend(&mut self, other: Self) {
-        for (k, v) in other.symbol_references_to_symbols {
-            self.symbol_references_to_symbols.entry(k).or_default().extend(v);
-        }
-        for (k, v) in other.symbol_references_to_symbols_in_signature {
-            self.symbol_references_to_symbols_in_signature.entry(k).or_default().extend(v);
-        }
-        for (k, v) in other.symbol_references_to_overridden_members {
-            self.symbol_references_to_overridden_members.entry(k).or_default().extend(v);
-        }
-        for (k, v) in other.functionlike_references_to_functionlike_returns {
-            self.functionlike_references_to_functionlike_returns.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.file_references_to_symbols {
-            self.file_references_to_symbols.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.file_references_to_symbols_in_signature {
-            self.file_references_to_symbols_in_signature.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.property_write_references {
-            self.property_write_references.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.property_read_references {
-            self.property_read_references.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.file_property_write_references {
-            self.file_property_write_references.entry(k).or_default().extend(v);
-        }
-
-        for (k, v) in other.file_property_read_references {
-            self.file_property_read_references.entry(k).or_default().extend(v);
-        }
+        extend_dependencies(
+            &mut self.symbol_references_to_symbols,
+            &mut self.symbol_references_to_symbols_in_signature,
+            other.symbol_references_to_symbols,
+            other.symbol_references_to_symbols_in_signature,
+        );
+        extend_reference_map(
+            &mut self.symbol_references_to_overridden_members,
+            other.symbol_references_to_overridden_members,
+        );
+        extend_reference_map(
+            &mut self.functionlike_references_to_functionlike_returns,
+            other.functionlike_references_to_functionlike_returns,
+        );
+        extend_dependencies(
+            &mut self.file_references_to_symbols,
+            &mut self.file_references_to_symbols_in_signature,
+            other.file_references_to_symbols,
+            other.file_references_to_symbols_in_signature,
+        );
+        extend_reference_map(&mut self.property_write_references, other.property_write_references);
+        extend_reference_map(&mut self.property_read_references, other.property_read_references);
+        extend_reference_map(&mut self.file_property_write_references, other.file_property_write_references);
+        extend_reference_map(&mut self.file_property_read_references, other.file_property_read_references);
     }
 
     /// Visits every recorded reference without materializing a copy of the graph.
@@ -661,18 +659,17 @@ impl SymbolReferences {
     #[inline]
     #[must_use]
     pub fn get_references_to_symbol(&self, target_symbol: SymbolIdentifier) -> HashSet<&SymbolIdentifier> {
-        let mut referencing_items = HashSet::default();
-        for (referencing_item, referenced_items) in &self.symbol_references_to_symbols {
-            if referenced_items.contains(&target_symbol) {
-                referencing_items.insert(referencing_item);
-            }
-        }
-        for (referencing_item, referenced_items) in &self.symbol_references_to_symbols_in_signature {
-            if referenced_items.contains(&target_symbol) {
-                referencing_items.insert(referencing_item);
-            }
-        }
-        referencing_items
+        self.referencing_symbols(target_symbol).collect()
+    }
+
+    /// Iterates over symbols that reference a target in a body or signature without allocating a set.
+    /// A source appears twice if both roles reference the target.
+    #[inline]
+    pub fn referencing_symbols(&self, target_symbol: SymbolIdentifier) -> impl Iterator<Item = &SymbolIdentifier> {
+        self.symbol_references_to_symbols
+            .iter()
+            .chain(&self.symbol_references_to_symbols_in_signature)
+            .filter_map(move |(source, targets)| targets.contains(&target_symbol).then_some(source))
     }
 
     /// Returns whether a body or signature reference to a symbol originates from top-level file code.
@@ -830,7 +827,13 @@ impl SymbolReferences {
         // Restore body references for safe symbols
         for (key, refs) in &previous.symbol_references_to_symbols {
             if is_safe(key) && !self.symbol_references_to_symbols.contains_key(key) {
-                self.symbol_references_to_symbols.insert(*key, refs.clone());
+                let mut refs = refs.clone();
+                if let Some(signature) = self.symbol_references_to_symbols_in_signature.get(key) {
+                    refs.retain(|target| !signature.contains(target));
+                }
+                if !refs.is_empty() {
+                    self.symbol_references_to_symbols.insert(*key, refs);
+                }
             }
         }
 
@@ -1014,6 +1017,105 @@ impl SymbolReferences {
     }
 }
 
+#[inline]
+fn insert_dependency<K>(
+    body: &mut HashMap<K, HashSet<SymbolIdentifier>>,
+    signature: &mut HashMap<K, HashSet<SymbolIdentifier>>,
+    origin: K,
+    target: SymbolIdentifier,
+    in_signature: bool,
+) where
+    K: Copy + Eq + Hash,
+{
+    if in_signature {
+        insert_reference(signature, origin, target);
+        if let Some(targets) = body.get_mut(&origin) {
+            targets.remove(&target);
+            if targets.is_empty() {
+                body.remove(&origin);
+            }
+        }
+    } else if signature.get(&origin).is_none_or(|targets| !targets.contains(&target)) {
+        insert_reference(body, origin, target);
+    }
+}
+
+fn extend_dependencies<K>(
+    body: &mut HashMap<K, HashSet<SymbolIdentifier>>,
+    signature: &mut HashMap<K, HashSet<SymbolIdentifier>>,
+    mut incoming_body: HashMap<K, HashSet<SymbolIdentifier>>,
+    incoming_signature: HashMap<K, HashSet<SymbolIdentifier>>,
+) where
+    K: Copy + Eq + Hash,
+{
+    for (origin, targets) in &incoming_signature {
+        if let Some(existing) = body.get_mut(origin) {
+            for target in targets {
+                existing.remove(target);
+            }
+
+            if existing.is_empty() {
+                body.remove(origin);
+            }
+        }
+    }
+
+    extend_reference_map(signature, incoming_signature);
+    incoming_body.retain(|origin, targets| {
+        if let Some(signature) = signature.get(origin) {
+            targets.retain(|target| !signature.contains(target));
+        }
+
+        !targets.is_empty()
+    });
+
+    extend_reference_map(body, incoming_body);
+}
+
+#[inline]
+fn insert_reference<K, V>(references: &mut HashMap<K, HashSet<V>>, origin: K, target: V)
+where
+    K: Eq + Hash,
+    V: Eq + Hash,
+{
+    let targets = references.entry(origin).or_default();
+    if targets.len() < targets.capacity() || !targets.contains(&target) {
+        targets.insert(target);
+    }
+}
+
+#[allow(clippy::set_contains_or_insert, reason = "A duplicate insert can grow a full set.")]
+fn extend_reference_map<K, V>(target: &mut HashMap<K, HashSet<V>>, source: HashMap<K, HashSet<V>>)
+where
+    K: Eq + Hash,
+    V: Eq + Hash,
+{
+    if source.is_empty() {
+        return;
+    }
+
+    if target.is_empty() {
+        *target = source;
+        return;
+    }
+
+    for (key, references) in source {
+        match target.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                for reference in references {
+                    if existing.len() < existing.capacity() || !existing.contains(&reference) {
+                        existing.insert(reference);
+                    }
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(references);
+            }
+        }
+    }
+}
+
 fn function_like_symbol_identifier(identifier: &FunctionLikeIdentifier) -> Option<SymbolIdentifier> {
     match identifier {
         FunctionLikeIdentifier::Function(name) => Some((*name, empty_word())),
@@ -1036,6 +1138,227 @@ mod tests {
             refs.symbol_references_to_symbols.insert(key, set);
         }
         refs
+    }
+
+    fn add_every_reference_kind(references: &mut SymbolReferences, source: Word, target: Word) {
+        let symbol = (source, empty_word());
+        let target = (target, empty_word());
+        references.add_symbol_reference(symbol, target, false);
+        references.add_symbol_reference(symbol, target, true);
+        references.add_overridden_member_reference(symbol, target);
+        references.add_functionlike_return_reference(symbol, target);
+        references.add_property_read_reference(ReferenceOrigin::Symbol(symbol), target);
+        references.add_property_write_reference(ReferenceOrigin::Symbol(symbol), target);
+        references.add_reference(ReferenceOrigin::File(source), target, false);
+        references.add_reference(ReferenceOrigin::File(source), target, true);
+        references.add_property_read_reference(ReferenceOrigin::File(source), target);
+        references.add_property_write_reference(ReferenceOrigin::File(source), target);
+    }
+
+    #[test]
+    fn test_extend_preserves_all_reference_kinds_for_vacant_keys() {
+        let mut incoming = SymbolReferences::new();
+        add_every_reference_kind(&mut incoming, word("source"), word("target"));
+        let expected = incoming.clone();
+        let mut references = SymbolReferences::new();
+
+        references.extend(incoming);
+
+        assert_eq!(references, expected);
+    }
+
+    #[test]
+    fn test_extend_unions_overlapping_keys_and_preserves_other_keys() {
+        let mut references = SymbolReferences::new();
+        add_every_reference_kind(&mut references, word("shared"), word("old_target"));
+        add_every_reference_kind(&mut references, word("existing"), word("old_target"));
+
+        let mut incoming = SymbolReferences::new();
+        add_every_reference_kind(&mut incoming, word("shared"), word("old_target"));
+        add_every_reference_kind(&mut incoming, word("shared"), word("new_target"));
+        add_every_reference_kind(&mut incoming, word("new"), word("new_target"));
+
+        let mut expected = references.clone();
+        add_every_reference_kind(&mut expected, word("shared"), word("new_target"));
+        add_every_reference_kind(&mut expected, word("new"), word("new_target"));
+        references.extend(incoming);
+
+        assert_eq!(references, expected);
+    }
+
+    #[test]
+    fn merging_duplicate_references_keeps_set_capacity() {
+        let mut targets = HashSet::default();
+        targets.reserve(3);
+        let capacity = targets.capacity();
+        targets.extend(0..capacity);
+        let mut references = HashMap::default();
+        references.insert(0, targets);
+
+        for _ in 0..3 {
+            let mut incoming = HashMap::default();
+            incoming.insert(0, (0..capacity).collect());
+            extend_reference_map(&mut references, incoming);
+            assert_eq!(references[&0].len(), capacity);
+            assert_eq!(references[&0].capacity(), capacity);
+            assert!((0..capacity).all(|target| references[&0].contains(&target)));
+        }
+
+        let mut incoming = HashMap::default();
+        incoming.insert(0, (capacity..capacity + 2).collect());
+        extend_reference_map(&mut references, incoming);
+        assert_eq!(references[&0].len(), capacity + 2);
+        assert!((0..capacity + 2).all(|target| references[&0].contains(&target)));
+    }
+
+    #[test]
+    fn adding_duplicate_references_keeps_set_capacity() {
+        fn check<T>(add: impl Fn(&mut SymbolReferences, Word), targets: impl Fn(&SymbolReferences) -> &HashSet<T>)
+        where
+            T: Eq + Hash,
+        {
+            let mut references = SymbolReferences::new();
+            add(&mut references, word("target0"));
+            let capacity = targets(&references).capacity();
+            for index in 1..capacity {
+                add(&mut references, word(format!("target{index}")));
+            }
+
+            assert_eq!(targets(&references).len(), capacity);
+            let expected = references.clone();
+
+            for _ in 0..3 {
+                for index in 0..capacity {
+                    add(&mut references, word(format!("target{index}")));
+                }
+                assert_eq!(references, expected);
+                assert_eq!(targets(&references).capacity(), capacity);
+            }
+
+            add(&mut references, word("new_target"));
+            assert_eq!(targets(&references).len(), capacity + 1);
+        }
+
+        let symbol = (word("source"), empty_word());
+        let file = word("file.php");
+        for origin in [
+            ReferenceOrigin::Symbol(symbol),
+            ReferenceOrigin::Symbol((symbol.0, word("method"))),
+            ReferenceOrigin::File(file),
+        ] {
+            for in_signature in [false, true] {
+                check(
+                    |references, target| references.add_reference(origin, (target, empty_word()), in_signature),
+                    |references| match origin {
+                        ReferenceOrigin::Symbol(symbol) if in_signature => {
+                            &references.symbol_references_to_symbols_in_signature[&symbol]
+                        }
+                        ReferenceOrigin::Symbol(symbol) => &references.symbol_references_to_symbols[&symbol],
+                        ReferenceOrigin::File(file) if in_signature => {
+                            &references.file_references_to_symbols_in_signature[&file]
+                        }
+                        ReferenceOrigin::File(file) => &references.file_references_to_symbols[&file],
+                    },
+                );
+            }
+
+            for read in [false, true] {
+                check(
+                    |references, target| {
+                        let property = (target, word("property"));
+                        if read {
+                            references.add_property_read_reference(origin, property);
+                        } else {
+                            references.add_property_write_reference(origin, property);
+                        }
+                    },
+                    |references| match origin {
+                        ReferenceOrigin::Symbol(symbol) if read => &references.property_read_references[&symbol],
+                        ReferenceOrigin::Symbol(symbol) => &references.property_write_references[&symbol],
+                        ReferenceOrigin::File(file) if read => &references.file_property_read_references[&file],
+                        ReferenceOrigin::File(file) => &references.file_property_write_references[&file],
+                    },
+                );
+            }
+        }
+
+        check(
+            |references, target| references.add_overridden_member_reference(symbol, (target, word("method"))),
+            |references| &references.symbol_references_to_overridden_members[&symbol],
+        );
+
+        check(
+            |references, target| references.add_functionlike_return_reference(symbol, (target, empty_word())),
+            |references| {
+                &references.functionlike_references_to_functionlike_returns[&FunctionLikeIdentifier::Function(symbol.0)]
+            },
+        );
+    }
+
+    #[test]
+    fn signatures_dominate_bodies_in_any_insertion_or_merge_order() {
+        let origins = [
+            ReferenceOrigin::Symbol((word("function"), empty_word())),
+            ReferenceOrigin::Symbol((word("class"), word("method"))),
+            ReferenceOrigin::File(word("file.php")),
+        ];
+
+        for origin in origins {
+            for target in [(word("target"), empty_word()), (word("target"), word("member"))] {
+                let mut expected = SymbolReferences::new();
+                expected.add_reference(origin, target, true);
+
+                for first_is_signature in [false, true] {
+                    let mut direct = SymbolReferences::new();
+                    direct.add_reference(origin, target, first_is_signature);
+                    direct.add_reference(origin, target, !first_is_signature);
+                    assert_eq!(direct, expected);
+
+                    let mut merged = SymbolReferences::new();
+                    merged.add_reference(origin, target, first_is_signature);
+                    let mut incoming = SymbolReferences::new();
+                    incoming.add_reference(origin, target, !first_is_signature);
+                    merged.extend(incoming);
+                    assert_eq!(merged, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signature_precedence_preserves_reference_roles_and_body_restoration() {
+        let source = word("source");
+        let target = word("target");
+        let mut references = SymbolReferences::new();
+        add_every_reference_kind(&mut references, source, target);
+        let symbol = (source, empty_word());
+        let target = (target, empty_word());
+        let mut kinds = HashSet::default();
+        references.for_each_reference(|origin, referenced, kind| {
+            if origin == ReferenceOrigin::Symbol(symbol) && referenced == target {
+                kinds.insert(kind);
+            }
+        });
+        assert_eq!(
+            kinds,
+            HashSet::from_iter([
+                SymbolReferenceKind::Signature,
+                SymbolReferenceKind::OverriddenMember,
+                SymbolReferenceKind::FunctionLikeReturn,
+                SymbolReferenceKind::PropertyRead,
+                SymbolReferenceKind::PropertyWrite,
+            ])
+        );
+
+        let mut previous = SymbolReferences::new();
+        previous.add_symbol_reference(symbol, target, false);
+        references.restore_references_for_safe_symbols(&previous, &WordSet::from_iter([source]), &HashSet::default());
+        assert!(!references.symbol_references_to_symbols.contains_key(&symbol));
+
+        references.remove_dirty_symbol_references(&HashSet::from_iter([symbol]));
+        references.add_symbol_reference(symbol, target, false);
+        assert_eq!(references.symbol_references_to_symbols[&symbol], HashSet::from_iter([target]));
+        assert!(!references.symbol_references_to_symbols_in_signature.contains_key(&symbol));
     }
 
     #[test]

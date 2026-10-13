@@ -28,7 +28,6 @@ use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
-use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -41,8 +40,8 @@ use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
-use crate::visibility::check_method_visibility;
-use crate::visibility::is_method_visible;
+use crate::visibility::check_method_visibility_by_id;
+use crate::visibility::is_method_visible_by_id;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedMethod {
@@ -188,7 +187,7 @@ where
         }
 
         if let Some(name) = resolved_selector.name() {
-            method_names.push(ascii_lowercase_word(name.as_bytes()));
+            method_names.push(name);
         } else {
             result.has_invalid_target = true;
         }
@@ -210,7 +209,9 @@ where
             if object_atomic.is_null() {
                 result.encountered_null = true;
                 if !object_type.ignore_nullable_issues() && !is_null_safe && !object_type.has_nullsafe_null() {
-                    result.has_invalid_target = true;
+                    if object_type.is_null() {
+                        result.has_invalid_target = true;
+                    }
 
                     context.collector.report_with_code(
                         if object_type.is_null() {
@@ -267,7 +268,7 @@ where
                     object,
                     selector,
                     obj_type,
-                    method_name,
+                    method_name.to_ascii_lowercase(),
                     access_span,
                     !resolved_magic_call_method.is_empty(),
                     &mut result,
@@ -291,7 +292,7 @@ where
                         if !has_method_assertion {
                             let has_incomplete_hierarchy = context
                                 .codebase
-                                .get_class_like(classname.as_bytes())
+                                .get_class_like_by_name(classname)
                                 .is_some_and(ClassLikeMetadata::has_incomplete_hierarchy);
 
                             if resolved_magic_call_method.is_empty() {
@@ -378,6 +379,18 @@ where
         artifacts.symbol_references.add_reference_for_method_call(&block_context.scope, &method_id);
     }
 
+    if let Some(editor) = &mut artifacts.editor {
+        editor.record_methods(
+            context.codebase,
+            block_context.scope.get_reference_origin(),
+            object.span(),
+            selector,
+            access_span,
+            false,
+            &result,
+        );
+    }
+
     Ok(result)
 }
 
@@ -401,7 +414,7 @@ fn collect_asserted_descendant_method_references<'ctx, A>(
 
     for descendant in context.codebase.get_all_descendants(class_name.as_bytes()) {
         if !context.codebase.method_exists(descendant.as_bytes(), method_name.as_bytes())
-            || !is_method_visible(context, block_context, descendant.as_bytes(), method_name.as_bytes())
+            || !is_method_visible_by_id(context, block_context, &MethodIdentifier::new(descendant, method_name))
         {
             continue;
         }
@@ -453,7 +466,7 @@ where
             receiver_object,
         } = candidate;
         let declaring_class_metadata =
-            context.codebase.get_class_like(declaring_method_id.get_class_name().as_bytes()).unwrap_or(metadata);
+            context.codebase.get_class_like_by_name(declaring_method_id.get_class_name()).unwrap_or(metadata);
 
         // Collect class-template bounds from the object the method was found on:
         // for `@mixin`-resolved methods that is the mixin object, whose parameters
@@ -542,23 +555,23 @@ where
         return candidates;
     };
 
-    let Some(class_metadata) = context.codebase.get_class_like(name.as_bytes()) else {
+    let Some(class_metadata) = context.codebase.get_class_like_by_name(name) else {
         result.has_invalid_target = true;
         report_non_existent_class_like(context, object.span(), name);
         return candidates;
     };
 
     let mut method_id = MethodIdentifier::new(class_metadata.original_name, method_name);
-    if !context.codebase.method_identifier_exists(&method_id) {
+    let function_like_metadata = context.codebase.get_method_by_id(&method_id).or_else(|| {
         method_id = context.codebase.get_declaring_method_identifier(&method_id);
-    }
+        context.codebase.get_method_by_id(&method_id)
+    });
 
-    if let Some(function_like_metadata) = context.codebase.get_method_by_id(&method_id) {
-        if !check_method_visibility(
+    if let Some(function_like_metadata) = function_like_metadata {
+        if !check_method_visibility_by_id(
             context,
             block_context.scope.get_class_like_name(),
-            class_metadata.original_name.as_bytes(),
-            method_name.as_bytes(),
+            &MethodIdentifier::new(class_metadata.original_name, method_name),
             access_span,
             Some(selector.span()),
         ) {
@@ -578,12 +591,12 @@ where
         }
 
         if function_like_metadata.flags.is_magic_method() {
-            let lowercase_method = ascii_lowercase_word(method_name.as_bytes());
+            let lowercase_method = method_name.to_ascii_lowercase();
             let is_pseudo = class_metadata.pseudo_methods.contains(&lowercase_method)
                 || class_metadata.all_parent_classes.iter().any(|parent_name| {
                     context
                         .codebase
-                        .get_class_like(parent_name.as_bytes())
+                        .get_class_like_by_name(*parent_name)
                         .is_some_and(|parent| parent.pseudo_methods.contains(&lowercase_method))
                 });
 
@@ -591,7 +604,7 @@ where
 
             if is_pseudo {
                 for parent_class_name in &class_metadata.all_parent_classes {
-                    if let Some(parent_metadata) = context.codebase.get_class_like(parent_class_name.as_bytes())
+                    if let Some(parent_metadata) = context.codebase.get_class_like_by_name(*parent_class_name)
                         && parent_metadata.methods.contains(&lowercase_method)
                         && !parent_metadata.pseudo_methods.contains(&lowercase_method)
                     {
@@ -645,16 +658,17 @@ where
         });
     } else if !class_metadata.require_extends.is_empty() || !class_metadata.require_implements.is_empty() {
         for required_class in class_metadata.require_extends.iter().chain(class_metadata.require_implements.iter()) {
-            let Some(required_metadata) = context.codebase.get_class_like(required_class.as_bytes()) else {
+            let Some(required_metadata) = context.codebase.get_class_like_by_name(*required_class) else {
                 continue;
             };
 
             let mut required_method_id = MethodIdentifier::new(required_metadata.original_name, method_name);
-            if !context.codebase.method_identifier_exists(&required_method_id) {
+            let method_metadata = context.codebase.get_method_by_id(&required_method_id).or_else(|| {
                 required_method_id = context.codebase.get_declaring_method_identifier(&required_method_id);
-            }
+                context.codebase.get_method_by_id(&required_method_id)
+            });
 
-            if context.codebase.get_method_by_id(&required_method_id).is_some() {
+            if method_metadata.is_some() {
                 candidates.push(MethodCandidate {
                     metadata: required_metadata,
                     method_identifier: required_method_id,
@@ -672,21 +686,21 @@ where
         let mixin_types = collect_mixin_types(context.codebase, class_metadata, outer_object, &class_metadata.mixins);
 
         for (mixin_class_name, mixin_object) in mixin_types {
-            let Some(mixin_metadata) = context.codebase.get_class_like(mixin_class_name.as_bytes()) else {
+            let Some(mixin_metadata) = context.codebase.get_class_like_by_name(mixin_class_name) else {
                 continue;
             };
 
             let mut mixin_method_id = MethodIdentifier::new(mixin_metadata.original_name, method_name);
-            if !context.codebase.method_identifier_exists(&mixin_method_id) {
+            let function_like_metadata = context.codebase.get_method_by_id(&mixin_method_id).or_else(|| {
                 mixin_method_id = context.codebase.get_declaring_method_identifier(&mixin_method_id);
-            }
+                context.codebase.get_method_by_id(&mixin_method_id)
+            });
 
-            if let Some(function_like_metadata) = context.codebase.get_method_by_id(&mixin_method_id) {
-                if !check_method_visibility(
+            if let Some(function_like_metadata) = function_like_metadata {
+                if !check_method_visibility_by_id(
                     context,
                     block_context.scope.get_class_like_name(),
-                    mixin_metadata.original_name.as_bytes(),
-                    method_name.as_bytes(),
+                    &MethodIdentifier::new(mixin_metadata.original_name, method_name),
                     access_span,
                     Some(selector.span()),
                 ) {
@@ -767,8 +781,10 @@ where
         }
     }
 
-    let mut seen = HashSet::default();
-    candidates.retain(|candidate| seen.insert(candidate.method_identifier));
+    if candidates.len() > 1 {
+        let mut seen = HashSet::default();
+        candidates.retain(|candidate| seen.insert(candidate.method_identifier));
+    }
 
     candidates
 }
@@ -1194,10 +1210,10 @@ fn collect_mixin_types_into(
         for mixin_atomic in mixin_type.type_union.types.as_ref() {
             match mixin_atomic {
                 TAtomic::Object(obj @ TObject::Named(named)) => {
-                    direct.push((ascii_lowercase_word(named.name.as_bytes()), obj));
+                    direct.push((named.name.to_ascii_lowercase(), obj));
                 }
                 TAtomic::Object(obj @ TObject::Enum(enum_type)) => {
-                    direct.push((ascii_lowercase_word(enum_type.name.as_bytes()), obj));
+                    direct.push((enum_type.name.to_ascii_lowercase(), obj));
                 }
                 TAtomic::GenericParameter(TGenericParameter {
                     parameter_name, constraint, defining_entity, ..
@@ -1214,11 +1230,11 @@ fn collect_mixin_types_into(
                         for atomic in concrete_type.types.as_ref() {
                             match atomic {
                                 TAtomic::Object(obj @ TObject::Named(named)) => {
-                                    direct.push((ascii_lowercase_word(named.name.as_bytes()), obj));
+                                    direct.push((named.name.to_ascii_lowercase(), obj));
                                     resolved = true;
                                 }
                                 TAtomic::Object(obj @ TObject::Enum(enum_type)) => {
-                                    direct.push((ascii_lowercase_word(enum_type.name.as_bytes()), obj));
+                                    direct.push((enum_type.name.to_ascii_lowercase(), obj));
                                     resolved = true;
                                 }
                                 _ => {}
@@ -1230,10 +1246,10 @@ fn collect_mixin_types_into(
                         for constraint_atomic in constraint.types.as_ref() {
                             match constraint_atomic {
                                 TAtomic::Object(obj @ TObject::Named(named)) => {
-                                    direct.push((ascii_lowercase_word(named.name.as_bytes()), obj));
+                                    direct.push((named.name.to_ascii_lowercase(), obj));
                                 }
                                 TAtomic::Object(obj @ TObject::Enum(enum_type)) => {
-                                    direct.push((ascii_lowercase_word(enum_type.name.as_bytes()), obj));
+                                    direct.push((enum_type.name.to_ascii_lowercase(), obj));
                                 }
                                 _ => {}
                             }
@@ -1255,7 +1271,7 @@ fn collect_mixin_types_into(
 
         results.push((name, obj.clone()));
 
-        if let Some(mixin_metadata) = codebase.get_class_like(name.as_bytes())
+        if let Some(mixin_metadata) = codebase.get_class_like_by_name(name)
             && !mixin_metadata.mixins.is_empty()
         {
             collect_mixin_types_into(codebase, mixin_metadata, obj, &mixin_metadata.mixins, results, visited);

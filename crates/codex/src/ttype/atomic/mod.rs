@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use mago_word::Word;
-use mago_word::ascii_lowercase_word;
 use mago_word::concat_word;
 use mago_word::word;
 
+use crate::consts::POSSIBLY_FALSY_CLASS_NAMES;
 use crate::metadata::CodebaseMetadata;
 use crate::reference::ReferenceSource;
 use crate::reference::SymbolReferences;
@@ -24,6 +24,7 @@ use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::r#enum::TEnum;
 use crate::ttype::atomic::object::named::TNamedObject;
+use crate::ttype::atomic::reference::TGlobalReferenceSelector;
 use crate::ttype::atomic::reference::TReference;
 use crate::ttype::atomic::reference::TReferenceMemberSelector;
 use crate::ttype::atomic::resource::TResource;
@@ -562,6 +563,24 @@ impl TAtomic {
             TAtomic::Array(array) => array.is_truthy(),
             TAtomic::Mixed(mixed) => mixed.is_truthy(),
             TAtomic::Resource(resource) => resource.closed.is_none_or(|closed| !closed),
+            // Instances of some classes (e.g. an empty `SimpleXMLElement`) can cast to `false`,
+            // so they are neither always truthy nor always falsy.
+            TAtomic::Object(TObject::Named(named_object)) => {
+                let name = named_object.name.as_bytes().strip_prefix(b"\\").unwrap_or(named_object.name.as_bytes());
+                if POSSIBLY_FALSY_CLASS_NAMES.iter().any(|class_name| name.eq_ignore_ascii_case(class_name)) {
+                    return false;
+                }
+
+                if let Some(intersection_types) = named_object.get_intersection_types() {
+                    for intersection_type in intersection_types {
+                        if !intersection_type.is_truthy() {
+                            return false;
+                        }
+                    }
+                }
+
+                true
+            }
             TAtomic::Object(_) | TAtomic::Callable(_) => true,
             _ => false,
         }
@@ -718,8 +737,8 @@ macro_rules! with_inner_ttype {
 }
 
 impl TType for TAtomic {
-    fn get_child_nodes(&self) -> Vec<TypeRef<'_>> {
-        with_inner_ttype!(self, ttype => ttype.get_child_nodes(), vec![])
+    fn append_child_nodes<'types>(&'types self, children: &mut Vec<TypeRef<'types>>) {
+        with_inner_ttype!(self, ttype => ttype.append_child_nodes(children), ())
     }
 
     fn can_be_intersected(&self) -> bool {
@@ -812,6 +831,7 @@ pub(crate) fn append_intersection_ids(mut base: Word, intersection_types: &[TAto
 }
 
 fn add_symbol_reference(reference_source: &ReferenceSource, symbol_references: &mut SymbolReferences, name: Word) {
+    let name = name.to_ascii_lowercase();
     match reference_source {
         ReferenceSource::Symbol(in_signature, a) => {
             symbol_references.add_symbol_reference_to_symbol(*a, name, *in_signature);
@@ -846,14 +866,14 @@ pub fn populate_atomic_type(
             TArray::List(list) => {
                 populate!(union Arc::make_mut(&mut list.element_type));
 
-                if let Some(known_elements) = list.known_elements.as_mut() {
+                if let Some(known_elements) = list.known_elements.as_mut().map(Arc::make_mut) {
                     for (_, element_type) in known_elements.values_mut() {
                         populate!(union element_type);
                     }
                 }
             }
             TArray::Keyed(keyed_array) => {
-                if let Some(known_items) = keyed_array.known_items.as_mut() {
+                if let Some(known_items) = keyed_array.known_items.as_mut().map(Arc::make_mut) {
                     for (_, item_type) in known_items.values_mut() {
                         populate!(union item_type);
                     }
@@ -875,9 +895,15 @@ pub fn populate_atomic_type(
                 if let Some(param_type) = param.get_type_signature_mut() {
                     populate!(union param_type);
                 }
+                if let Some(out_type) = param.get_out_type_mut() {
+                    populate!(union out_type);
+                }
+                if let Some(closure_this_type) = param.get_closure_this_type_mut() {
+                    populate!(union closure_this_type);
+                }
             }
 
-            for constraint in &mut signature.constraints {
+            for constraint in Arc::make_mut(&mut signature.constraints).iter_mut() {
                 populate!(union Arc::make_mut(&mut constraint.input_type));
                 populate!(union Arc::make_mut(&mut constraint.parameter_type));
             }
@@ -936,7 +962,7 @@ pub fn populate_atomic_type(
                     add_symbol_reference(reference_source, symbol_references, *name);
                 }
 
-                if let Some(symbol_kind) = codebase_symbols.get_kind(ascii_lowercase_word(name.as_bytes())) {
+                if let Some(symbol_kind) = codebase_symbols.get_kind(name.to_ascii_lowercase()) {
                     if symbol_kind == SymbolKind::Enum {
                         *unpopulated_atomic = TAtomic::Object(TObject::new_enum(*name));
                     } else {
@@ -952,8 +978,8 @@ pub fn populate_atomic_type(
                         });
 
                         let mut named_object = TNamedObject::new(*name)
-                            .with_type_parameters(parameters.clone())
-                            .with_variances(variances.clone());
+                            .with_type_parameters(parameters.take())
+                            .with_variances(variances.take().map(|variances| *variances));
                         if let Some(intersection_types) = intersection_types {
                             for intersection_type in intersection_types {
                                 named_object.add_intersection_type(intersection_type);
@@ -982,8 +1008,12 @@ pub fn populate_atomic_type(
                     }
                 }
             }
-            TReference::Global { .. } => {
-                // Global-constant wildcards are resolved at expansion time; nothing to populate.
+            TReference::Global { selector } => {
+                if let TGlobalReferenceSelector::Identifier(name) = selector
+                    && let Some(reference_source) = reference_source
+                {
+                    add_symbol_reference(reference_source, symbol_references, *name);
+                }
             }
         },
         TAtomic::GenericParameter(TGenericParameter { constraint, intersection_types, .. }) => {

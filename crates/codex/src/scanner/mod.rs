@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use mago_allocator::Arena;
 
 use mago_database::file::File;
@@ -24,6 +26,7 @@ use mago_syntax::cst::Interface;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::Program;
+use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::Return;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::Trivia;
@@ -46,8 +49,6 @@ use mago_word::word;
 use crate::identifier::method::MethodIdentifier;
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::flags::MetadataFlags;
-use crate::metadata::function_like::FunctionLikeKind;
-use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::scanner::class_alias::scan_class_like_alias;
 use crate::scanner::class_like::register_anonymous_class;
 use crate::scanner::class_like::register_class;
@@ -91,7 +92,11 @@ mod version_claim;
 /// so the resulting metadata is already version-correct and downstream
 /// consumers don't need a separate filter pass.
 #[inline]
-pub(super) fn typing_error_issue(message: &str, kind: ScanningIssueKind, typing_error: &TypeError) -> Issue {
+pub(super) fn typing_error_issue(
+    message: impl Into<Cow<'static, str>>,
+    kind: ScanningIssueKind,
+    typing_error: &TypeError,
+) -> Issue {
     Issue::error(message)
         .with_code(kind)
         .with_annotation(Annotation::primary(typing_error.span()).with_message(typing_error.to_string()))
@@ -176,6 +181,7 @@ struct Scanner {
     file_imported_aliases: WordMap<(Word, Word)>,
     polyfill_depth: u32,
     return_docblock_starts: Vec<Option<u32>>,
+    function_like_stack: Vec<Option<(Word, Word)>>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -352,12 +358,13 @@ where
             function,
             self.stack.last().copied(),
             context,
-            &mut self.scope,
+            &self.scope,
             type_context,
             Some(&self.codebase.constants),
         ) else {
             // Push an empty frame so the matching `walk_out_function` pop balances.
             self.template_constraints.push(vec![]);
+            self.function_like_stack.push(None);
             return;
         };
 
@@ -368,11 +375,13 @@ where
             metadata.flags |= MetadataFlags::POLYFILL;
         }
 
-        self.codebase.function_likes.entry(identifier).or_insert(metadata);
+        self.function_like_stack.push(Some(identifier));
+        self.codebase.function_likes.entry(identifier).or_insert_with(|| Box::new(metadata));
     }
 
     #[inline]
     fn walk_out_function(&mut self, _function: &'arena Function<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
+        self.function_like_stack.pop();
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
     }
 
@@ -393,18 +402,20 @@ where
             closure,
             self.stack.last().copied(),
             context,
-            &mut self.scope,
+            &self.scope,
             type_resolution_context,
         );
 
         self.template_constraints
             .push(metadata.template_types.iter().map(|(name, constraints)| (*name, constraints.clone())).collect());
 
-        self.codebase.function_likes.entry(identifier).or_insert(metadata);
+        self.function_like_stack.push(Some(identifier));
+        self.codebase.function_likes.entry(identifier).or_insert_with(|| Box::new(metadata));
     }
 
     #[inline]
     fn walk_out_closure(&mut self, _closure: &'arena Closure<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
+        self.function_like_stack.pop();
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
     }
 
@@ -430,13 +441,14 @@ where
             arrow_function,
             self.stack.last().copied(),
             context,
-            &mut self.scope,
+            &self.scope,
             type_resolution_context,
         );
 
         self.template_constraints
             .push(metadata.template_types.iter().map(|(name, constraints)| (*name, constraints.clone())).collect());
-        self.codebase.function_likes.entry(identifier).or_insert(metadata);
+        self.function_like_stack.push(Some(identifier));
+        self.codebase.function_likes.entry(identifier).or_insert_with(|| Box::new(metadata));
     }
 
     #[inline]
@@ -445,6 +457,7 @@ where
         _arrow_function: &'arena ArrowFunction<'arena>,
         _context: &mut Context<'ctx, 'arena, A>,
     ) {
+        self.function_like_stack.pop();
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
     }
 
@@ -472,6 +485,22 @@ where
         };
 
         let function_name = identifier.value();
+        let bare_name = function_name.strip_prefix(b"\\").unwrap_or(function_name);
+        if matches!(bare_name.len(), 12 | 13)
+            && (bare_name.eq_ignore_ascii_case(b"func_get_args")
+                || bare_name.eq_ignore_ascii_case(b"func_get_arg")
+                || bare_name.eq_ignore_ascii_case(b"func_num_args"))
+        {
+            // Innermost function-like only: a nested closure has its own arguments.
+            if let Some(Some(enclosing)) = self.function_like_stack.last()
+                && let Some(metadata) = self.codebase.function_likes.get_mut(enclosing)
+            {
+                metadata.flags |= MetadataFlags::USES_FUNC_GET_ARGS;
+            }
+
+            return;
+        }
+
         let is_class_alias = matches!(function_name.len(), 11 | 12)
             && (function_name.eq_ignore_ascii_case(b"class_alias")
                 || function_name.eq_ignore_ascii_case(b"\\class_alias"));
@@ -527,7 +556,7 @@ where
             .unwrap_or_else(|| anonymous_class.span().start.offset);
 
         if let Some((id, template_definition, type_aliases, imported_aliases)) =
-            register_anonymous_class(&mut self.codebase, anonymous_class, docblock_start, context, &mut self.scope)
+            register_anonymous_class(&mut self.codebase, anonymous_class, docblock_start, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
             self.file_type_aliases.extend(type_aliases);
@@ -552,7 +581,7 @@ where
     #[inline]
     fn walk_class(&mut self, class: &'arena Class<'arena>, context: &mut Context<'ctx, 'arena, A>) {
         if let Some((id, templates, type_aliases, imported_aliases)) =
-            register_class(&mut self.codebase, class, context, &mut self.scope)
+            register_class(&mut self.codebase, class, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
             self.file_type_aliases.extend(type_aliases);
@@ -567,7 +596,7 @@ where
     #[inline]
     fn walk_trait(&mut self, r#trait: &'arena Trait<'arena>, context: &mut Context<'ctx, 'arena, A>) {
         if let Some((id, templates, type_aliases, imported_aliases)) =
-            register_trait(&mut self.codebase, r#trait, context, &mut self.scope)
+            register_trait(&mut self.codebase, r#trait, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
             self.file_type_aliases.extend(type_aliases);
@@ -582,7 +611,7 @@ where
     #[inline]
     fn walk_enum(&mut self, r#enum: &'arena Enum<'arena>, context: &mut Context<'ctx, 'arena, A>) {
         if let Some((id, templates, type_aliases, imported_aliases)) =
-            register_enum(&mut self.codebase, r#enum, context, &mut self.scope)
+            register_enum(&mut self.codebase, r#enum, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
             self.file_type_aliases.extend(type_aliases);
@@ -597,7 +626,7 @@ where
     #[inline]
     fn walk_interface(&mut self, interface: &'arena Interface<'arena>, context: &mut Context<'ctx, 'arena, A>) {
         if let Some((id, templates, type_aliases, imported_aliases)) =
-            register_interface(&mut self.codebase, interface, context, &mut self.scope)
+            register_interface(&mut self.codebase, interface, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
             self.file_type_aliases.extend(type_aliases);
@@ -627,6 +656,7 @@ where
 
             self.codebase.class_likes.insert(current_class, class_like_metadata);
             self.template_constraints.push(vec![]);
+            self.function_like_stack.push(None);
 
             return;
         }
@@ -646,19 +676,15 @@ where
             context
         };
 
-        let Some(mut function_like_metadata) = scan_method(
-            method_id,
-            method,
-            &class_like_metadata,
-            context,
-            &mut self.scope,
-            Some(type_resolution_context),
-        ) else {
+        let Some(mut function_like_metadata) =
+            scan_method(method_id, method, &class_like_metadata, context, &self.scope, Some(type_resolution_context))
+        else {
             // Restore the class-like metadata we removed above so the next method on
             // this class can still find it, and push an empty template-constraints
             // frame so the matching `walk_out_method` pop balances.
             self.codebase.class_likes.insert(current_class, class_like_metadata);
             self.template_constraints.push(vec![]);
+            self.function_like_stack.push(None);
             return;
         };
 
@@ -720,12 +746,32 @@ where
         );
 
         self.codebase.class_likes.entry(current_class).or_insert(class_like_metadata);
-        self.codebase.function_likes.entry(method_id).or_insert(function_like_metadata);
+        self.function_like_stack.push(Some(method_id));
+        self.codebase.function_likes.entry(method_id).or_insert_with(|| Box::new(function_like_metadata));
     }
 
     #[inline]
     fn walk_out_method(&mut self, _method: &'arena Method<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
+        self.function_like_stack.pop();
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
+    }
+
+    #[inline]
+    fn walk_in_property_hook_concrete_body(
+        &mut self,
+        _: &'arena PropertyHookConcreteBody<'arena>,
+        _: &mut Context<'ctx, 'arena, A>,
+    ) {
+        self.function_like_stack.push(None);
+    }
+
+    #[inline]
+    fn walk_out_property_hook_concrete_body(
+        &mut self,
+        _: &'arena PropertyHookConcreteBody<'arena>,
+        _: &mut Context<'ctx, 'arena, A>,
+    ) {
+        self.function_like_stack.pop();
     }
 
     #[inline]
@@ -778,27 +824,11 @@ where
         return;
     };
 
-    if class_like_metadata.flags.has_consistent_constructor() {
-        let constructor_name = word("__construct");
-
-        class_like_metadata.methods.insert(constructor_name);
-        let constructor_method_id = MethodIdentifier::new(class_like_metadata.name, constructor_name);
-        class_like_metadata.add_declaring_method_id(constructor_name, constructor_method_id);
-        class_like_metadata.inheritable_method_ids.insert(constructor_name, constructor_method_id);
-
-        let mut flags = MetadataFlags::PURE;
-        flags |= MetadataFlags::origin_flags(context.file.file_type);
-
-        scanner.codebase.function_likes.insert(
-            (class_like_metadata.name, constructor_name),
-            FunctionLikeMetadata::new(
-                FunctionLikeKind::Method,
-                constructor_name,
-                constructor_name,
-                class_like_metadata.span,
-                flags,
-            ),
-        );
+    if class_like_metadata.flags.has_consistent_constructor()
+        && !context.file.file_type.is_patch()
+        && let Some(constructor) = class_like_metadata.add_implicit_constructor()
+    {
+        scanner.codebase.function_likes.insert((class_like_metadata.name, constructor.name), Box::new(constructor));
     }
 
     scanner.codebase.class_likes.insert(class_like_id, class_like_metadata);
