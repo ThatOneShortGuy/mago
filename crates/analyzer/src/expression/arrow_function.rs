@@ -1,4 +1,5 @@
 use foldhash::HashSet;
+use std::rc::Rc;
 
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
@@ -12,11 +13,14 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::statement::attributes::AttributeTarget;
+use crate::statement::attributes::analyze_attributes;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
 use crate::statement::function_like::resolve_closure_like_type;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::expression::variable::get_variables_referenced_in_expression;
+use crate::utils::expression::variable::is_readonly_property_chain;
 use crate::utils::missing_type_hints;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
@@ -29,6 +33,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
     where
         A: Arena,
     {
+        analyze_attributes(
+            context,
+            block_context,
+            artifacts,
+            self.attribute_lists.as_slice(),
+            AttributeTarget::Function,
+        )?;
+
         let s = self.span();
 
         let Some(function_metadata) = context.codebase.get_closure_at(context.source_file, s) else {
@@ -58,6 +70,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
         }
 
         let mut inner_block_context = BlockContext::new(scope, context.settings.register_super_globals);
+        inner_block_context.known_functions.clone_from(&block_context.known_functions);
+        inner_block_context.known_constants.clone_from(&block_context.known_constants);
 
         let variables = get_variables_referenced_in_expression(self.expression, true);
         let params = self.parameter_list.parameters.iter().map(|param| param.variable.name).collect::<HashSet<_>>();
@@ -77,9 +91,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
 
             if let Some(existing_type) = block_context.locals.get(&variable_atom).cloned() {
                 inner_block_context.locals.insert(variable_atom, existing_type);
+
+                if block_context.possibly_undefined_variable_ids.contains(&variable_atom) {
+                    inner_block_context.possibly_undefined_variable_ids.insert(variable_atom);
+                }
             }
 
             inner_block_context.variables_possibly_in_scope.insert(variable_atom);
+        }
+
+        for (variable_id, variable_type) in &block_context.locals {
+            if variable_id.as_bytes().windows(2).any(|window| window == b"->")
+                && is_readonly_property_chain(context.codebase, &block_context.locals, variable_id.as_bytes())
+            {
+                inner_block_context.locals.insert(*variable_id, Rc::clone(variable_type));
+            }
         }
 
         if !context.settings.allow_implicit_pipe_callable_types || !block_context.flags.inside_pipe_callable() {
@@ -115,6 +141,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
         );
 
         let inferred_parameter_types = artifacts.inferred_parameter_types.take();
+        let inferred_return_type = artifacts.inferred_return_type.take();
         let inner_artifacts = analyze_function_like(
             context,
             artifacts,
@@ -123,6 +150,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
             &self.parameter_list,
             FunctionLikeBody::Expression(self.expression),
             inferred_parameter_types,
+            inferred_return_type,
         )?;
 
         let resulting_closure = resolve_closure_like_type(

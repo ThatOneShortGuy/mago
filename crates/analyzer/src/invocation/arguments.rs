@@ -20,6 +20,7 @@ use mago_codex::ttype::expander::get_signature_of_function_like_identifier;
 use mago_codex::ttype::get_iterable_value_parameter;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::get_null;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -39,6 +40,7 @@ use crate::utils::get_type_diff;
 /// Checks if an argument can be passed by reference.
 pub(super) fn is_argument_referenceable(argument_expression: &Expression, argument_type: &TUnion) -> bool {
     argument_expression.is_referenceable(false)
+        || matches!(argument_expression, Expression::ArrayAppend(append) if append.array.is_referenceable(false))
         || (argument_expression.is_referenceable(true) && argument_type.by_reference())
 }
 
@@ -103,58 +105,58 @@ where
         return Ok(());
     }
 
-    let inferred_parameter_types = closure_parameter_type.map(|closure_parameter_type| {
-        let mut inferred_parameters = HashMap::default();
+    // An unpacked argument that is not a variable is a temporary array: PHP binds its elements by reference.
+    let referenced_parameter =
+        referenced_parameter && (argument_offset != usize::MAX || argument_expression.is_referenceable(false));
 
-        closure_parameter_type
-            .types
-            .as_ref()
-            .iter()
-            .filter_map(|atomic| match atomic {
-                TAtomic::Callable(TCallable::Signature(callable)) => Some(callable),
-                _ => None,
-            })
-            .flat_map(|callable| callable.parameters.iter().enumerate())
-            .filter_map(|(parameter_index, parameter)| {
-                parameter.get_type_signature().map(|param_type| (parameter_index, param_type.clone()))
-            })
-            .for_each(|(parameter_index, parameter_type)| match inferred_parameters.entry(parameter_index) {
-                Entry::Occupied(occupied_entry) => {
-                    let existing_type: TUnion = occupied_entry.remove();
-                    let updated_type =
-                        add_union_type(existing_type, &parameter_type, context.codebase, CombinerOptions::default());
-
-                    inferred_parameters.insert(parameter_index, updated_type);
-                }
-                Entry::Vacant(vacant_entry) => {
-                    vacant_entry.insert(parameter_type);
-                }
-            });
-
-        inferred_parameters
-    });
+    let (inferred_parameter_types, inferred_return_type) =
+        match closure_parameter_type.map(|closure_type| closure_signature_hints(context, closure_type)) {
+            Some((parameter_types, return_type)) => (Some(parameter_types), return_type),
+            None => (None, None),
+        };
 
     let inferred_parameter_types = std::mem::replace(&mut artifacts.inferred_parameter_types, inferred_parameter_types);
+    let inferred_return_type = std::mem::replace(&mut artifacts.inferred_return_type, inferred_return_type);
 
     let was_inside_general_use = block_context.flags.inside_general_use();
     let was_inside_call = block_context.flags.inside_call();
     let was_inside_variable_reference = block_context.flags.inside_variable_reference();
+    let was_inside_isset = block_context.flags.inside_isset();
+    let was_inside_unset = block_context.flags.inside_unset();
 
     block_context.flags.set_inside_general_use(true);
     block_context.flags.set_inside_call(true);
     block_context.flags.set_inside_variable_reference(referenced_parameter);
+    block_context.flags.set_inside_isset(false);
+    block_context.flags.set_inside_unset(false);
 
-    argument_expression.analyze(context, block_context, artifacts)?;
+    match argument_expression {
+        Expression::ArrayAppend(append) if referenced_parameter => {
+            append.array.analyze(context, block_context, artifacts)?;
+            artifacts.set_expression_type(argument_expression, get_null());
+        }
+        Expression::ArrayAccess(_) if referenced_parameter => {
+            let was_inside_reference = block_context.flags.inside_reference();
+            block_context.flags.set_inside_reference(true);
+            argument_expression.analyze(context, block_context, artifacts)?;
+            block_context.flags.set_inside_reference(was_inside_reference);
+        }
+        _ => argument_expression.analyze(context, block_context, artifacts)?,
+    }
 
     block_context.flags.set_inside_general_use(was_inside_general_use);
     block_context.flags.set_inside_call(was_inside_call);
     block_context.flags.set_inside_variable_reference(was_inside_variable_reference);
+    block_context.flags.set_inside_isset(was_inside_isset);
+    block_context.flags.set_inside_unset(was_inside_unset);
     artifacts.inferred_parameter_types = inferred_parameter_types;
+    artifacts.inferred_return_type = inferred_return_type;
 
     let argument_type =
         artifacts.get_rc_expression_type(argument_expression).cloned().unwrap_or_else(|| Rc::new(get_mixed()));
 
-    if requires_referenceable_argument(invocation_target, referenced_parameter)
+    if argument_offset != usize::MAX
+        && requires_referenceable_argument(invocation_target, referenced_parameter)
         && !is_argument_referenceable(argument_expression, &argument_type)
     {
         let target_kind_str = invocation_target.guess_kind();
@@ -424,9 +426,23 @@ pub fn verify_argument_type<'arena, A>(
                     false
                 } else if let Some(callable) = cast_atomic_to_callable(atomic, context.codebase, None) {
                     match callable.as_ref() {
-                        TCallable::Alias(id) => {
-                            get_signature_of_function_like_identifier(id, context.codebase).is_some()
-                        }
+                        TCallable::Alias(id) => get_signature_of_function_like_identifier(id, context.codebase)
+                            .is_some_and(|signature| {
+                                let required = signature
+                                    .get_parameters()
+                                    .iter()
+                                    .filter(|parameter| !parameter.has_default() && !parameter.is_variadic())
+                                    .count();
+
+                                parameter_type.types.iter().all(|container| match container {
+                                    TAtomic::Callable(TCallable::Signature(container_signature)) => {
+                                        let parameters = container_signature.get_parameters();
+                                        parameters.last().is_some_and(|parameter| parameter.is_variadic())
+                                            || required <= parameters.len()
+                                    }
+                                    _ => true,
+                                })
+                            }),
                         TCallable::Signature(_) => false,
                     }
                 } else {
@@ -502,6 +518,12 @@ where
             continue;
         }
 
+        if let TAtomic::GenericParameter(parameter) = atomic_type {
+            potential_element_types.push(get_unpacked_argument_type(context, &parameter.constraint, span));
+
+            continue;
+        }
+
         match atomic_type {
             TAtomic::Never => {
                 potential_element_types.push(get_never());
@@ -549,4 +571,48 @@ where
         .into_iter()
         .reduce(|acc, element_type| add_union_type(acc, &element_type, context.codebase, CombinerOptions::default()))
         .unwrap_or_else(get_never)
+}
+
+pub(crate) fn closure_signature_hints<A>(
+    context: &Context<'_, '_, A>,
+    closure_type: &TUnion,
+) -> (HashMap<usize, TUnion>, Option<TUnion>)
+where
+    A: Arena,
+{
+    let mut parameter_types: HashMap<usize, TUnion> = HashMap::default();
+    let mut return_type: Option<TUnion> = None;
+
+    for callable in closure_type.types.iter().filter_map(|atomic| match atomic {
+        TAtomic::Callable(TCallable::Signature(callable)) => Some(callable),
+        _ => None,
+    }) {
+        for (parameter_index, parameter) in callable.parameters.iter().enumerate() {
+            let Some(parameter_type) = parameter.get_type_signature() else {
+                continue;
+            };
+
+            match parameter_types.entry(parameter_index) {
+                Entry::Occupied(mut occupied_entry) => {
+                    let existing_type = std::mem::replace(occupied_entry.get_mut(), get_never());
+                    *occupied_entry.get_mut() =
+                        add_union_type(existing_type, parameter_type, context.codebase, CombinerOptions::default());
+                }
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(parameter_type.clone());
+                }
+            }
+        }
+
+        if let Some(callable_return_type) = callable.get_return_type() {
+            return_type = Some(match return_type {
+                Some(existing_type) => {
+                    add_union_type(existing_type, callable_return_type, context.codebase, CombinerOptions::default())
+                }
+                None => callable_return_type.clone(),
+            });
+        }
+    }
+
+    (parameter_types, return_type)
 }

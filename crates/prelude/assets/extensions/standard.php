@@ -563,6 +563,10 @@ const IMAGETYPE_COUNT = 20;
 
 const IMAGETYPE_AVIF = 19;
 
+const IMAGETYPE_HEIF = 20;
+
+const IMAGETYPE_SVG = 21;
+
 const DNS_A = 1;
 
 const DNS_CAA = 8192;
@@ -1094,17 +1098,27 @@ function get_html_translation_table(
 ): array {}
 
 /**
+ * @return non-empty-string
+ *
  * @pure
  */
 function sha1(string $string, bool $binary = false): string {}
 
+/**
+ * @return non-empty-string|false
+ */
 function sha1_file(string $filename, bool $binary = false): string|false {}
 
 /**
+ * @return non-empty-string
+ *
  * @pure
  */
 function md5(string $string, bool $binary = false): string {}
 
+/**
+ * @return non-empty-string|false
+ */
 function md5_file(string $filename, bool $binary = false): string|false {}
 
 /**
@@ -1543,7 +1557,7 @@ function explode(string $separator, string $string, int $limit = PHP_INT_MAX): a
  *
  * @pure
  */
-function implode(array|string $separator = '', ?array $array = null): string {}
+function implode(array|string $separator, ?array $array = null): string {}
 
 /**
  * @param array<string>|string $separator
@@ -1847,7 +1861,12 @@ function link(string $target, string $link): bool {}
 function unlink(string $filename, mixed $context = null): bool {}
 
 /**
- * @param-out list<string> $output
+ * @template K of array-key
+ * @template V
+ *
+ * @param array<K, V>|null $output
+ *
+ * @param-out ($output is null|array{} ? list<string> : non-empty-array<K|int, V|string>) $output
  * @param-out int $result_code
  */
 function exec(string $command, ?array &$output = null, int|int &$result_code = null): string|false {}
@@ -1977,6 +1996,8 @@ function getlastmod(): int|false {}
 
 /**
  * @pure
+ *
+ * @return ($strict is false ? string : string|false)
  */
 function base64_decode(string $string, bool $strict = false): string|false {}
 
@@ -2585,21 +2606,34 @@ function ftruncate($stream, int $size): bool {}
 /**
  * @param resource $stream
  *
- * @return false|array{
- *   'dev': int<0, max>,
- *   'ino': int<0, max>,
- *   'mode': int<0, max>,
- *   'nlink': int<0, max>,
- *   'uid': int<0, max>,
- *   'gid': int<0, max>,
- *   'rdev': int<0, max>,
- *   'size': int<0, max>,
- *   'atime': int<1750171087, max>,
- *   'mtime': int<1750171087, max>,
- *   'ctime': int<1750171087, max>,
- *   'blksize': int<0, max>,
- *   'blocks': int<0, max>,
- * }
+ * @return array{
+ *   0: int,
+ *   1: int,
+ *   2: int,
+ *   3: int,
+ *   4: int,
+ *   5: int,
+ *   6: int,
+ *   7: int,
+ *   8: int,
+ *   9: int,
+ *   10: int,
+ *   11: int,
+ *   12: int,
+ *   'dev': int,
+ *   'ino': int,
+ *   'mode': int,
+ *   'nlink': int,
+ *   'uid': int,
+ *   'gid': int,
+ *   'rdev': int,
+ *   'size': int,
+ *   'atime': int,
+ *   'mtime': int,
+ *   'ctime': int,
+ *   'blksize': int,
+ *   'blocks': int,
+ * }|false
  */
 function fstat($stream): array|false {}
 
@@ -2700,44 +2734,36 @@ function file_put_contents(string $filename, mixed $data, int $flags = 0, $conte
 function error_get_last(): ?array {}
 
 /**
- * @template I
  * @template R
  *
- * @param callable(I...): R|callable-string|string $callback
- * @param I ...$args
+ * @param callable(mixed...): R|callable-string|string $callback
  *
  * @return R
  */
 function call_user_func(callable|string $callback, mixed ...$args): mixed {}
 
 /**
- * @template I
  * @template R
  *
- * @param callable(I...): R|callable-string|string $callback
- * @param array<I> $args
+ * @param callable(mixed...): R|callable-string|string $callback
  *
  * @return R
  */
 function call_user_func_array(callable|string $callback, array $args): mixed {}
 
 /**
- * @template I
  * @template R
  *
- * @param callable(I...): R|callable-string|string $callback
- * @param I ...$args
+ * @param callable(mixed...): R|callable-string|string $callback
  *
  * @return R
  */
 function forward_static_call(callable|string $callback, mixed ...$args): mixed {}
 
 /**
- * @template I
  * @template R
  *
- * @param callable(I...): R|callable-string|string $callback
- * @param array<I> $args
+ * @param callable(mixed...): R|callable-string|string $callback
  *
  * @return R
  */
@@ -2772,20 +2798,12 @@ function memory_get_peak_usage(bool $real_usage = false): int {}
 function memory_reset_peak_usage(): void {}
 
 /**
- * @template I
- *
- * @param (callable(I...)) $callback
- * @param I ...$args
- *
- * @return bool|null
+ * @param (callable(mixed...)) $callback
  */
 function register_shutdown_function(callable $callback, mixed ...$args): void {}
 
 /**
- * @template I
- *
- * @param (callable(I...)) $callback
- * @param I ...$args
+ * @param (callable(mixed...)) $callback
  */
 function register_tick_function(callable $callback, mixed ...$args): bool {}
 
@@ -3495,6 +3513,19 @@ function is_link(string $filename): bool {}
 
 /**
  * @return array{
+ *   0: int,
+ *   1: int,
+ *   2: int,
+ *   3: int,
+ *   4: int,
+ *   5: int,
+ *   6: int,
+ *   7: int,
+ *   8: int,
+ *   9: int,
+ *   10: int,
+ *   11: int,
+ *   12: int,
  *   'dev': int,
  *   'ino': int,
  *   'mode': int,
@@ -3514,6 +3545,19 @@ function stat(string $filename): array|false {}
 
 /**
  * @return array{
+ *   0: int,
+ *   1: int,
+ *   2: int,
+ *   3: int,
+ *   4: int,
+ *   5: int,
+ *   6: int,
+ *   7: int,
+ *   8: int,
+ *   9: int,
+ *   10: int,
+ *   11: int,
+ *   12: int,
  *   'dev': int,
  *   'ino': int,
  *   'mode': int,
@@ -3617,7 +3661,7 @@ function array_replace_recursive(array $array, array ...$replacements): array {}
  * @param V $filter_value
  * @param bool $strict
  *
- * @return ($array is non-empty-array|non-empty-list ? non-empty-list<K> : list<K>)
+ * @return ($filter_value is null ? ($array is non-empty-array|non-empty-list ? non-empty-list<K> : list<K>) : list<K>)
  *
  * @pure
  */
@@ -3877,7 +3921,7 @@ function array_map(?callable $callback, array $array, array ...$arrays): array {
  * @param array<K, V> $array
  * @param int<1, max> $length
  *
- * @return ($preserve_keys is true ? list<array<K, V>> : list<list<V>>)
+ * @return ($preserve_keys is true ? list<non-empty-array<K, V>> : list<non-empty-list<V>>)
  *
  * @pure
  */
@@ -4062,51 +4106,121 @@ function get_debug_type(mixed $value): string {}
 function get_resource_id($resource): int {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_diff_ukey(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_udiff(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_udiff_assoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_diff_uassoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_udiff_uassoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_uintersect_assoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_intersect_uassoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_uintersect_uassoc(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_intersect_ukey(array $array, ...$rest): array {}
 
 /**
+ * @template K as array-key
+ * @template V
+ *
+ * @param array<K, V> $array
+ *
+ * @return array<K, V>
+ *
  * @no-named-arguments
  */
 function array_uintersect(array $array, ...$rest): array {}
@@ -4401,7 +4515,7 @@ function array_fill_keys(array $keys, mixed $value): array {}
  * @param array<K, V> $array
  * @param V ...$values
  *
- * @param-out ($array is list<V> ? non-empty-list<V> : non-empty-array<K, V>) $array
+ * @param-out ($array is list<V> ? non-empty-list<V> : non-empty-array<K|non-negative-int, V>) $array
  *
  * @return int<1, max>
  *
@@ -4540,22 +4654,35 @@ function metaphone(string $string, int $max_phonemes = 0): string {}
  * @template K
  * @template V
  * @template T
- * @template O
  *
  * @param object|array<K, V> $array
- * @param (callable(V, K, T): O) $callback
+ * @param (callable(V, K, T): mixed) $callback
  * @param T|null $arg
  *
  * @param-out ($array is object ? object : (
  *    $array is list<V> ? (
- *      $array is non-empty-list<V> ? non-empty-list<O> : list<O>
+ *      $array is non-empty-list<V> ? non-empty-list<V> : list<V>
  *    ) : (
- *      $array is non-empty-array<K, V> ? non-empty-array<K, O> : array<K, O>
+ *      $array is non-empty-array<K, V> ? non-empty-array<K, V> : array<K, V>
  *    )
  * )) $array
  */
 function array_walk(object|array &$array, callable $callback, mixed $arg = null): true {}
 
+/**
+ * @template K
+ * @template V
+ *
+ * @param object|array<K, V> $array
+ *
+ * @param-out ($array is object ? object : (
+ *    $array is list<V> ? (
+ *      $array is non-empty-list<V> ? non-empty-list<V> : list<V>
+ *    ) : (
+ *      $array is non-empty-array<K, V> ? non-empty-array<K, V> : array<K, V>
+ *    )
+ * )) $array
+ */
 function array_walk_recursive(object|array &$array, callable $callback, mixed $arg = null): true {}
 
 /**
@@ -4563,7 +4690,7 @@ function array_walk_recursive(object|array &$array, callable $callback, mixed $a
  *
  * @return int<0, max>
  */
-function extract(array &$array, int $flags = EXTR_OVERWRITE, string $prefix = ''): int {}
+function extract(array $array, int $flags = EXTR_OVERWRITE, string $prefix = ''): int {}
 
 /**
  * @param string|array<string> $var_name
@@ -4608,7 +4735,7 @@ function array_multisort(array &$array, array|int &...$rest): bool {}
  * @param array<K, V> $array
  * @param V ...$values
  *
- * @param-out ($array is list<V> ? non-empty-list<V> : non-empty-array<K, V>) $array
+ * @param-out ($array is list<V> ? non-empty-list<V> : non-empty-array<K|non-negative-int, V>) $array
  *
  * @return int<1, max>
  *
@@ -4630,7 +4757,7 @@ function array_unshift(array &$array, mixed ...$values): int {}
  *
  * @param-out (
  *   $replacement is array<ReplacementKey, ReplacementValue> ? (
- *     $array is list<InputValue> ? (
+ *     $array is array<int, InputValue> ? (
  *       $replacement is list<ReplacementValue> ? (
  *         $replacement is non-empty-list<ReplacementValue> ? non-empty-list<InputValue|ReplacementValue> : list<InputValue|ReplacementValue>
  *       ) : (
@@ -4649,14 +4776,14 @@ function array_unshift(array &$array, mixed ...$values): int {}
  *     )
  *   ) : (
  *     $replacement is list<never>|array{} ? (
- *       $array is list<InputValue> ? list<InputValue> : array<InputKey, InputValue>
+ *       $array is array<int, InputValue> ? list<InputValue> : array<InputKey, InputValue>
  *     ) : (
- *       $array is list<InputValue> ? non-empty-list<InputValue|ReplacementScalar> : non-empty-array<InputKey|int, InputValue|ReplacementScalar>
+ *       $array is array<int, InputValue> ? non-empty-list<InputValue|ReplacementScalar> : non-empty-array<InputKey|int, InputValue|ReplacementScalar>
  *     )
  *   )
  * ) $array
  *
- * @return ($array is list<InputValue> ? list<InputValue> : array<InputKey, InputValue>)
+ * @return ($array is array<int, InputValue> ? list<InputValue> : array<InputKey, InputValue>)
  *
  * @pure
  */

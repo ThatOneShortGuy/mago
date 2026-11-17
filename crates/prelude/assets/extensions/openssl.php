@@ -231,6 +231,7 @@ function openssl_sign(
     &$signature,
     OpenSSLAsymmetricKey|OpenSSLCertificate|array|string $private_key,
     string|int $algorithm = OPENSSL_ALGO_SHA1,
+    #[Mago\AvailableSince(80500)] int $padding = 0,
 ): bool {}
 
 function openssl_verify(
@@ -238,6 +239,7 @@ function openssl_verify(
     string $signature,
     OpenSSLAsymmetricKey|OpenSSLCertificate|array|string $public_key,
     string|int $algorithm = OPENSSL_ALGO_SHA1,
+    #[Mago\AvailableSince(80500)] int $padding = 0,
 ): int|false {}
 
 /**
@@ -331,6 +333,7 @@ function openssl_private_decrypt(
     &$decrypted_data,
     OpenSSLAsymmetricKey|OpenSSLCertificate|array|string $private_key,
     int $padding = OPENSSL_PKCS1_PADDING,
+    #[Mago\AvailableSince(80500)] ?string $digest_algo = null,
 ): bool {}
 
 /**
@@ -341,6 +344,7 @@ function openssl_public_encrypt(
     &$encrypted_data,
     OpenSSLAsymmetricKey|OpenSSLCertificate|array|string $public_key,
     int $padding = OPENSSL_PKCS1_PADDING,
+    #[Mago\AvailableSince(80500)] ?string $digest_algo = null,
 ): bool {}
 
 /**
@@ -493,6 +497,14 @@ const OPENSSL_ALGO_RMD160 = 10;
 
 const PKCS7_DETACHED = 64;
 
+const PKCS7_NOSMIMECAP = 512;
+
+const PKCS7_CRLFEOL = 2048;
+
+const PKCS7_NOCRL = 8192;
+
+const PKCS7_NO_DUAL_CONTENT = 65536;
+
 const PKCS7_TEXT = 1;
 
 const PKCS7_NOINTERN = 16;
@@ -512,6 +524,8 @@ const PKCS7_NOOLDMIMETYPE = 1024;
 const PKCS7_NOSIGS = 4;
 
 const OPENSSL_PKCS1_PADDING = 1;
+
+const OPENSSL_PKCS1_PSS_PADDING = 6;
 
 const OPENSSL_SSLV23_PADDING = 2;
 

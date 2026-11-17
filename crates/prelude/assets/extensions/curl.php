@@ -117,11 +117,13 @@ function curl_multi_exec(CurlMultiHandle $multi_handle, &$still_running = 0): in
 function curl_multi_getcontent(CurlHandle $handle): ?string {}
 
 /**
+ * @param-out int $queued_messages
+ *
  * @return array{
  *   msg: int,
  *   result: int,
- *   handle: resource
- * }
+ *   handle: CurlHandle
+ * }|false
  */
 function curl_multi_info_read(CurlMultiHandle $multi_handle, &$queued_messages = null): array|false {}
 
@@ -149,6 +151,14 @@ final class CurlMultiHandle
 
 final class CurlShareHandle
 {
+    private function __construct() {}
+}
+
+#[Mago\AvailableSince(80500)]
+final class CurlSharePersistentHandle
+{
+    public readonly array $options;
+
     private function __construct() {}
 }
 
@@ -1417,6 +1427,29 @@ const CURLINFO_PROXY_ERROR = 2097211;
 
 #[Mago\AvailableSince(80100)]
 const CURLOPT_SSL_EC_CURVES = 10298;
+
+const CURLOPT_SSL_SIGNATURE_ALGORITHMS = 10328;
+
+const CURLOPT_INFILESIZE_LARGE = 30115;
+
+const CURLINFO_HTTPAUTH_USED = 2097221;
+
+const CURLINFO_PROXYAUTH_USED = 2097222;
+
+const CURLINFO_QUEUE_TIME_T = 6291521;
+
+const CURLINFO_USED_PROXY = 2097218;
+
+const CURLINFO_CONN_ID = 6291520;
+
+#[Mago\AvailableSince(80500)]
+const CURLFOLLOW_ALL = 1;
+
+#[Mago\AvailableSince(80500)]
+const CURLFOLLOW_OBEYCODE = 2;
+
+#[Mago\AvailableSince(80500)]
+const CURLFOLLOW_FIRSTONLY = 3;
 
 const CURLPX_BAD_ADDRESS_TYPE = 1;
 

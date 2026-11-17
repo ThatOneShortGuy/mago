@@ -43,9 +43,22 @@ where
             } else {
                 None
             };
+            let trailing_equals = if variable.is_some() && equals.is_none() && self.stream.is_at(TokenKind::Equals) {
+                Some(self.stream.consume_span()?)
+            } else {
+                None
+            };
             let comma = if self.stream.is_at(TokenKind::Comma) { Some(self.stream.consume_span()?) } else { None };
             let has_comma = comma.is_some();
-            entries.push(CallableTypeParameter { parameter_type, ampersand, equals, ellipsis, variable, comma });
+            entries.push(CallableTypeParameter {
+                parameter_type,
+                ampersand,
+                equals,
+                ellipsis,
+                variable,
+                trailing_equals,
+                comma,
+            });
 
             if !has_comma {
                 break;
@@ -58,7 +71,7 @@ where
 
         let return_type = if self.stream.is_at(TokenKind::Colon) {
             let colon = self.stream.consume_span()?;
-            let return_type = self.parse_type_with_precedence(TypePrecedence::Callable)?;
+            let return_type = self.parse_type_with_precedence(TypePrecedence::Postfix)?;
 
             Some(CallableTypeReturnType { colon, return_type: self.alloc(return_type) })
         } else {

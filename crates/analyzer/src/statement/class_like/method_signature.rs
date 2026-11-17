@@ -1,13 +1,21 @@
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
+use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::combine_union_types;
+use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
+use mago_codex::ttype::get_never;
+use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
 use mago_word::Word;
+use mago_word::word;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureCompatibilityIssue {
@@ -16,9 +24,124 @@ pub enum SignatureCompatibilityIssue {
     VisibilityNarrowed { child_visibility: Visibility, parent_visibility: Visibility },
     ParameterCountMismatch { child_required_count: usize, parent_required_count: usize },
     IncompatibleParameterType { parameter_index: usize, child_type: Word, parent_type: Word },
+    ParameterByReferenceMismatch { parameter_index: usize, child_is_by_reference: bool },
     IncompatibleReturnType { child_type: Word, parent_type: Word },
+    IncompatibleThrowType { child_type: Word, parent_type: Word, child_is_implicit: bool },
     MissingReturnTypeDeclaration { parent_type: Word },
     ParameterNameMismatch { parameter_index: usize, child_name: Word, parent_name: Word },
+}
+
+/// Validates that a child method's throw contract is covariant with its parent method.
+///
+/// Without an effective `@throws` declaration, the contract is `Throwable`. An
+/// explicit `@throws void` is represented as an empty throw set. Lexical `self`
+/// is already bound to the declaring class by the scanner.
+/// Relative `parent` types are expanded in the method's lexical class context. Late-static parent
+/// annotations are expanded in their declaring class context, while late-static child annotations
+/// are expanded in the implementation context.
+pub fn validate_method_throw_type_covariance(
+    codebase: &CodebaseMetadata,
+    child_self_class_name: Word,
+    child_static_class_name: Word,
+    parent_class_name: Word,
+    child_method: &FunctionLikeMetadata,
+    parent_method: &FunctionLikeMetadata,
+) -> Option<SignatureCompatibilityIssue> {
+    if !child_method.flags.is_user_defined() {
+        return None;
+    }
+
+    let (child_throw_type, child_throw_type_id, child_is_implicit) =
+        get_method_throw_contract(codebase, child_self_class_name, child_static_class_name, child_method);
+    let (parent_throw_type, parent_throw_type_id, _) =
+        get_method_throw_contract(codebase, parent_class_name, parent_class_name, parent_method);
+
+    if union_comparator::is_contained_by(
+        codebase,
+        &child_throw_type,
+        &parent_throw_type,
+        false,
+        false,
+        false,
+        &mut ComparisonResult::new(),
+    ) {
+        return None;
+    }
+
+    Some(SignatureCompatibilityIssue::IncompatibleThrowType {
+        child_type: child_throw_type_id,
+        parent_type: parent_throw_type_id,
+        child_is_implicit,
+    })
+}
+
+fn get_method_throw_contract(
+    codebase: &CodebaseMetadata,
+    self_class_name: Word,
+    static_class_name: Word,
+    method: &FunctionLikeMetadata,
+) -> (TUnion, Word, bool) {
+    // Inherited @throws metadata is useful for checking throws in the method body, but it does not
+    // narrow the overriding contract unless the method explicitly uses @inheritDoc.
+    let inherits_docs = method.flags.inherits_docs();
+    let declared_throw_types: Vec<_> =
+        method.thrown_types.iter().filter(|thrown_type| !thrown_type.inferred || inherits_docs).collect();
+
+    if declared_throw_types.is_empty() {
+        let throwable = TUnion::from_atomic(TAtomic::Object(TObject::new_named(word("Throwable"))));
+        return (throwable.clone(), throwable.get_id(), true);
+    }
+
+    let mut throw_type = get_never();
+    let expansion_options = TypeExpansionOptions {
+        self_class: Some(self_class_name),
+        static_class_type: StaticClassType::Name(static_class_name),
+        function_is_final: method.method_metadata.as_ref().is_some_and(|metadata| metadata.is_final),
+        ..Default::default()
+    };
+
+    for thrown_type in declared_throw_types {
+        let mut thrown_type_union = thrown_type.type_union.clone();
+        if thrown_type_union.is_expandable() {
+            expand_union(codebase, &mut thrown_type_union, &expansion_options);
+        }
+
+        if thrown_type_union.is_void() {
+            continue;
+        }
+
+        thrown_type_union.types.to_mut().retain(|atomic| !atomic.is_void());
+        if thrown_type_union.is_never() {
+            continue;
+        }
+
+        throw_type = combine_union_types(&throw_type, &thrown_type_union, codebase, CombinerOptions::default());
+    }
+
+    let display_type = if throw_type.is_never() { word("void") } else { throw_type.get_id() };
+
+    (throw_type, display_type, false)
+}
+
+/// A trait is not a type: `self` in a trait method stands for the class that uses the trait.
+fn replace_used_trait_with_class(codebase: &CodebaseMetadata, type_union: &mut TUnion, class_name: Word) {
+    let names_used_trait = |atomic: &TAtomic| {
+        matches!(atomic, TAtomic::Object(TObject::Named(named_object))
+            if codebase.get_class_like(named_object.name.as_bytes()).is_some_and(|metadata| metadata.kind.is_trait())
+                && codebase.class_uses_trait(class_name.as_bytes(), named_object.name.as_bytes()))
+    };
+
+    if !type_union.types.iter().any(names_used_trait) {
+        return;
+    }
+
+    for atomic in type_union.types.to_mut() {
+        if names_used_trait(atomic)
+            && let TAtomic::Object(TObject::Named(named_object)) = atomic
+        {
+            named_object.name = class_name;
+        }
+    }
 }
 
 /// Validates that a child method signature is compatible with a parent method signature.
@@ -48,6 +171,7 @@ pub enum SignatureCompatibilityIssue {
 pub fn validate_method_signature_compatibility(
     codebase: &CodebaseMetadata,
     child_class_name: Word,
+    parent_class_name: Word,
     child_method: &FunctionLikeMetadata,
     parent_method: &FunctionLikeMetadata,
     parent_is_final: bool,
@@ -82,7 +206,9 @@ pub fn validate_method_signature_compatibility(
         return issues;
     }
 
-    if is_visibility_narrowed(child_method_meta.visibility, parent_method_meta.visibility) {
+    if !parent_method.flags.is_magic_method()
+        && is_visibility_narrowed(child_method_meta.visibility, parent_method_meta.visibility)
+    {
         issues.push(SignatureCompatibilityIssue::VisibilityNarrowed {
             child_visibility: child_method_meta.visibility,
             parent_visibility: parent_method_meta.visibility,
@@ -91,55 +217,63 @@ pub fn validate_method_signature_compatibility(
         return issues;
     }
 
-    let parent_param_count = parent_method.parameters.len();
-    let child_param_count = child_method.parameters.len();
+    let is_optional =
+        |parameter: &FunctionLikeParameterMetadata| parameter.flags.has_default() || parameter.flags.is_variadic();
+    let required_count = |parameters: &[FunctionLikeParameterMetadata]| {
+        parameters.iter().filter(|parameter| !is_optional(parameter)).count()
+    };
+    let child_variadic = child_method.parameters.last().filter(|parameter| parameter.flags.is_variadic());
+    let child_param_for = |index: usize| child_method.parameters.get(index).or(child_variadic);
 
-    if child_param_count < parent_param_count {
-        let child_required_count = child_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
-        let parent_required_count = parent_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
+    let count_mismatch = || SignatureCompatibilityIssue::ParameterCountMismatch {
+        child_required_count: required_count(&child_method.parameters),
+        parent_required_count: required_count(&parent_method.parameters),
+    };
 
-        issues
-            .push(SignatureCompatibilityIssue::ParameterCountMismatch { child_required_count, parent_required_count });
+    for (index, parent_param) in parent_method.parameters.iter().enumerate() {
+        let Some(child_param) = child_param_for(index) else {
+            issues.push(count_mismatch());
+
+            return issues;
+        };
+
+        if is_optional(parent_param) && !is_optional(child_param) {
+            issues.push(count_mismatch());
+
+            return issues;
+        }
+    }
+
+    if child_method.parameters.iter().skip(parent_method.parameters.len()).any(|parameter| !is_optional(parameter)) {
+        issues.push(count_mismatch());
 
         return issues;
     }
 
     for (index, parent_param) in parent_method.parameters.iter().enumerate() {
-        let child_param = &child_method.parameters[index];
-
-        let parent_is_optional = parent_param.flags.has_default();
-        let child_is_optional = child_param.flags.has_default();
-
-        if parent_is_optional && !child_is_optional {
-            let child_required_count = child_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
-            let parent_required_count = parent_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
-
-            issues.push(SignatureCompatibilityIssue::ParameterCountMismatch {
-                child_required_count,
-                parent_required_count,
+        if let Some(child_param) = child_param_for(index)
+            && child_param.flags.is_by_reference() != parent_param.flags.is_by_reference()
+        {
+            issues.push(SignatureCompatibilityIssue::ParameterByReferenceMismatch {
+                parameter_index: index,
+                child_is_by_reference: child_param.flags.is_by_reference(),
             });
 
             return issues;
         }
     }
 
-    for index in parent_param_count..child_param_count {
-        let child_param = &child_method.parameters[index];
-        if !child_param.flags.has_default() {
-            let child_required_count = child_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
-            let parent_required_count = parent_method.parameters.iter().filter(|p| !p.flags.has_default()).count();
-
-            issues.push(SignatureCompatibilityIssue::ParameterCountMismatch {
-                child_required_count,
-                parent_required_count,
-            });
-
-            return issues;
-        }
-    }
+    let child_expansion_options = TypeExpansionOptions {
+        self_class: Some(child_class_name),
+        static_class_type: StaticClassType::Name(child_class_name),
+        function_is_final: child_method_meta.is_final,
+        ..Default::default()
+    };
+    let parent_expansion_options =
+        TypeExpansionOptions { self_class: Some(parent_class_name), ..child_expansion_options.clone() };
 
     for (index, parent_param) in parent_method.parameters.iter().enumerate() {
-        let Some(child_param) = child_method.parameters.get(index) else {
+        let Some(child_param) = child_param_for(index) else {
             continue;
         };
 
@@ -156,18 +290,12 @@ pub fn validate_method_signature_compatibility(
         let mut expanded_parent_param_type = parent_param_type.clone();
         let mut expanded_child_param_type = child_param_type.clone();
 
-        let expansion_options = TypeExpansionOptions {
-            self_class: Some(child_class_name),
-            static_class_type: StaticClassType::Name(child_class_name),
-            function_is_final: child_method_meta.is_final,
-            ..Default::default()
-        };
-
         if expanded_parent_param_type.is_expandable() {
-            expand_union(codebase, &mut expanded_parent_param_type, &expansion_options);
+            expand_union(codebase, &mut expanded_parent_param_type, &parent_expansion_options);
         }
+        replace_used_trait_with_class(codebase, &mut expanded_child_param_type, child_class_name);
         if expanded_child_param_type.is_expandable() {
-            expand_union(codebase, &mut expanded_child_param_type, &expansion_options);
+            expand_union(codebase, &mut expanded_child_param_type, &child_expansion_options);
         }
 
         let is_compatible = union_comparator::is_contained_by(
@@ -196,7 +324,7 @@ pub fn validate_method_signature_compatibility(
             continue;
         };
 
-        if parent_param.name != child_param.name {
+        if parent_param.name != child_param.name && !parent_method.flags.forbids_named_arguments() {
             issues.push(SignatureCompatibilityIssue::ParameterNameMismatch {
                 parameter_index: index,
                 child_name: child_param.name.0,
@@ -210,16 +338,8 @@ pub fn validate_method_signature_compatibility(
         && !parent_method.flags.is_built_in()
     {
         let mut expanded_parent_return_type = parent_return.type_union.clone();
-
-        let expansion_options = TypeExpansionOptions {
-            self_class: Some(child_class_name),
-            static_class_type: StaticClassType::Name(child_class_name),
-            function_is_final: child_method_meta.is_final,
-            ..Default::default()
-        };
-
         if expanded_parent_return_type.is_expandable() {
-            expand_union(codebase, &mut expanded_parent_return_type, &expansion_options);
+            expand_union(codebase, &mut expanded_parent_return_type, &parent_expansion_options);
         }
 
         issues.push(SignatureCompatibilityIssue::MissingReturnTypeDeclaration {
@@ -234,18 +354,12 @@ pub fn validate_method_signature_compatibility(
         let mut expanded_parent_return_type = parent_return.type_union.clone();
         let mut expanded_child_return_type = child_return.type_union.clone();
 
-        let expansion_options = TypeExpansionOptions {
-            self_class: Some(child_class_name),
-            static_class_type: StaticClassType::Name(child_class_name),
-            function_is_final: child_method_meta.is_final,
-            ..Default::default()
-        };
-
         if expanded_parent_return_type.is_expandable() {
-            expand_union(codebase, &mut expanded_parent_return_type, &expansion_options);
+            expand_union(codebase, &mut expanded_parent_return_type, &parent_expansion_options);
         }
+        replace_used_trait_with_class(codebase, &mut expanded_child_return_type, child_class_name);
         if expanded_child_return_type.is_expandable() {
-            expand_union(codebase, &mut expanded_child_return_type, &expansion_options);
+            expand_union(codebase, &mut expanded_child_return_type, &child_expansion_options);
         }
 
         let mut comparison_result = ComparisonResult::new();
@@ -278,13 +392,17 @@ pub fn validate_method_signature_compatibility(
         let expansion_options = TypeExpansionOptions {
             self_class: Some(child_class_name),
             static_class_type: StaticClassType::Name(child_class_name),
-            function_is_final: child_method_meta.is_final,
             ..Default::default()
         };
 
         if expanded_parent_return_type.is_expandable() {
-            expand_union(codebase, &mut expanded_parent_return_type, &expansion_options);
+            expand_union(
+                codebase,
+                &mut expanded_parent_return_type,
+                &TypeExpansionOptions { self_class: Some(parent_class_name), ..expansion_options.clone() },
+            );
         }
+        replace_used_trait_with_class(codebase, &mut expanded_child_return_type, child_class_name);
         if expanded_child_return_type.is_expandable() {
             expand_union(codebase, &mut expanded_child_return_type, &expansion_options);
         }

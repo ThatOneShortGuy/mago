@@ -105,6 +105,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Function<'arena> {
             &self.parameter_list,
             FunctionLikeBody::Statements(self.body.statements.as_slice(), self.body.span()),
             None,
+            None,
         )?;
 
         // Call plugin on_leave_function hooks
@@ -116,13 +117,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Function<'arena> {
             }
         }
 
-        check_unused_function_template_parameters(
-            context,
-            function_metadata,
-            self.name.span(),
-            "function",
-            function_name,
-        );
+        check_unused_function_template_parameters(context, function_metadata, self.name.span(), "function", || {
+            function_name
+        });
 
         if context.settings.find_unused_parameters {
             unused_parameter::check_unused_params(

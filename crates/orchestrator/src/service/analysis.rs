@@ -262,6 +262,12 @@ impl AnalysisService {
             retain_project_references || self.plugin_registry.has_custom_plugins() || external_session.is_some();
         let codebase_scan_plan =
             self.plugin_registry.external_codebase_scan_plan().map_err(AnalysisError::from)?.map(Arc::new);
+        let parser_settings = ParserSettings {
+            elide_detached_whitespace: !self.plugin_registry.has_custom_plugins()
+                && external_session.is_none()
+                && codebase_scan_plan.is_none(),
+            ..self.parser_settings
+        };
         let lifecycle_capabilities = Arc::new(OnceLock::new());
         let additional_symbol_references = Arc::new(OnceLock::new());
         let reducer = AnalysisResultReducer {
@@ -279,23 +285,24 @@ impl AnalysisService {
             self.database,
             self.codebase,
             self.symbol_references,
-            (self.settings.clone(), self.parser_settings),
-            self.parser_settings,
+            (self.settings.clone(), parser_settings),
+            parser_settings,
             self.settings.version,
             Box::new(reducer),
             self.use_progress_bars,
         )
         // We only need file signatures if there's a custom plugin that can inspect them,
         // so just don't bother computing them here
-        .with_file_signatures(self.plugin_registry.has_custom_plugins());
+        .with_file_signatures(self.plugin_registry.has_custom_plugins())
+        .with_project_references(retain_project_references);
 
         let plugin_registry = Arc::clone(&self.plugin_registry);
-        let before_plugin_registry = Arc::clone(&self.plugin_registry);
+        let before_plugin_registry = self.plugin_registry;
         let before_external_session = external_session.clone();
         let before_capabilities = Arc::clone(&lifecycle_capabilities);
-        let map_capabilities = Arc::clone(&lifecycle_capabilities);
+        let map_capabilities = lifecycle_capabilities;
         let before_additional_symbol_references = Arc::clone(&additional_symbol_references);
-        let map_additional_symbol_references = Arc::clone(&additional_symbol_references);
+        let map_additional_symbol_references = additional_symbol_references;
 
         #[cfg(not(target_arch = "wasm32"))]
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
@@ -512,17 +519,16 @@ impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
         results: Vec<AnalysisTaskResult>,
     ) -> Result<AnalysisResult, OrchestratorError> {
         let mut aggregated_result = AnalysisResult::new(symbol_references);
-        let codebase_issues = codebase.take_issues(true);
-        aggregated_result
-            .issues
-            .reserve(codebase_issues.len() + results.iter().map(|result| result.result.issues.len()).sum::<usize>());
+        let mut issues = Vec::with_capacity(results.len() + 1);
         let mut snapshots = Vec::new();
-        for result in results {
+        for mut result in results {
+            issues.push(std::mem::take(&mut result.result.issues));
             aggregated_result.extend(result.result);
             snapshots.extend(result.snapshot);
         }
 
-        aggregated_result.issues.extend(codebase_issues);
+        issues.push(codebase.take_issues(true));
+        aggregated_result.issues = IssueCollection::concat(issues);
         let after_file = self.plugin_registry.has_external_after_file_analysis_hooks().map_err(AnalysisError::from)?;
         if after_file {
             #[cfg(not(target_arch = "wasm32"))]
@@ -582,13 +588,8 @@ impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
         aggregated_result.issues.extend(pragma_reconciler.finish()?);
 
         #[cfg(not(target_arch = "wasm32"))]
-        if codebase.class_likes.len() + codebase.function_likes.len() >= 4096 && rayon::current_num_threads() > 1 {
-            let class_likes = std::mem::take(&mut codebase.class_likes);
-            let function_likes = std::mem::take(&mut codebase.function_likes);
-            rayon::join(
-                || class_likes.into_par_iter().for_each(drop),
-                || rayon::join(|| function_likes.into_par_iter().for_each(drop), || drop(codebase)),
-            );
+        if codebase.class_likes.len() + codebase.function_likes.len() >= 4096 {
+            let _ = std::thread::Builder::new().name("mago-drop".to_owned()).spawn(move || drop(codebase));
         }
 
         Ok(aggregated_result)

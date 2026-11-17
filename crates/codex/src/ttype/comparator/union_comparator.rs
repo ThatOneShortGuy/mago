@@ -60,7 +60,7 @@ pub fn is_contained_by(
     all_matched
 }
 
-/// Checks containment while treating omitted, non-defaulted generic arguments in the
+/// Checks containment while treating omitted generic arguments in the
 /// container as erased runtime wildcards.
 ///
 /// This is intentionally narrower than normal generic containment. It is used where a
@@ -113,7 +113,7 @@ fn replace_erased_template_arguments(input_type: &TUnion, container_type: &TUnio
         };
 
         for (container_parameter, input_parameter) in container_parameters.iter_mut().zip(input_parameters) {
-            if container_parameter.from_unspecified_template() {
+            if container_parameter.from_template_fallback() {
                 *container_parameter = input_parameter.clone();
                 replaced = true;
             }
@@ -194,6 +194,24 @@ fn is_contained_by_atomic(
     let mut some_type_coerced = false;
     let mut some_type_coerced_from_nested_mixed = false;
 
+    if let TAtomic::Scalar(TScalar::String(input_string)) = input_type_part
+        && input_string.literal.is_none()
+        && !input_string.is_non_empty
+        && !input_string.is_truthy
+        && container_atomic_types.iter().any(|atomic| atomic.get_literal_string_value().is_some_and(<[u8]>::is_empty))
+        && container_atomic_types.iter().any(|atomic| {
+            matches!(atomic, TAtomic::Scalar(TScalar::String(container_string))
+                if container_string.literal.is_none()
+                    && container_string.is_non_empty
+                    && !container_string.is_truthy
+                    && (!container_string.is_numeric || input_string.is_numeric)
+                    && (!container_string.is_callable || input_string.is_callable)
+                    && (container_string.casing.is_unspecified() || container_string.casing == input_string.casing))
+        })
+    {
+        return true;
+    }
+
     if matches!(input_type_part, TAtomic::Scalar(TScalar::ArrayKey)) {
         if container_type.has_int_and_string() {
             return true;
@@ -221,6 +239,23 @@ fn is_contained_by_atomic(
         if has_int && has_string {
             return true;
         }
+    }
+
+    if matches!(input_type_part, TAtomic::Scalar(TScalar::Numeric))
+        && [TScalar::int(), TScalar::float(), TScalar::numeric_string()].into_iter().all(|scalar| {
+            let part = TAtomic::Scalar(scalar);
+            container_atomic_types.iter().any(|container_atomic_type| {
+                atomic_comparator::is_contained_by(
+                    codebase,
+                    &part,
+                    container_atomic_type,
+                    inside_assertion,
+                    &mut ComparisonResult::new(),
+                )
+            })
+        })
+    {
+        return true;
     }
 
     if matches!(input_type_part, TAtomic::Scalar(TScalar::Generic))
@@ -454,4 +489,36 @@ pub fn can_expression_types_be_identical(
     }
 
     false
+}
+
+#[must_use]
+pub fn strict_equality_overlap(codebase: &CodebaseMetadata, left: &TUnion, right: &TUnion) -> (TUnion, TUnion) {
+    let mut left_types = Vec::new();
+
+    for left_part in left.types.iter() {
+        if right
+            .types
+            .iter()
+            .any(|right_part| atomic_comparator::can_be_identical(codebase, left_part, right_part, true, false))
+        {
+            left_types.push(left_part.clone());
+        }
+    }
+
+    let mut right_types = Vec::new();
+
+    for right_part in right.types.iter() {
+        if left
+            .types
+            .iter()
+            .any(|left_part| atomic_comparator::can_be_identical(codebase, left_part, right_part, true, false))
+        {
+            right_types.push(right_part.clone());
+        }
+    }
+
+    (
+        if left_types.is_empty() { TUnion::from_atomic(TAtomic::Never) } else { TUnion::from_vec(left_types) },
+        if right_types.is_empty() { TUnion::from_atomic(TAtomic::Never) } else { TUnion::from_vec(right_types) },
+    )
 }

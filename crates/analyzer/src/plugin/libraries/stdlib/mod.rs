@@ -4,6 +4,7 @@ pub mod array;
 pub mod closure;
 pub mod cookie;
 pub mod r#enum;
+pub mod exception;
 pub mod filter;
 pub mod json;
 pub mod math;
@@ -38,6 +39,8 @@ impl Plugin for StdlibPlugin {
 
     fn register(&self, registry: &mut PluginRegistry) {
         registry.register_function_provider(string::StrlenProvider);
+        registry.register_function_provider(string::StrvalProvider);
+        registry.register_function_provider(string::ImplodeProvider);
         registry.register_function_provider(string::SprintfProvider);
         registry.register_function_provider(json::JsonEncodeProvider);
         registry.register_function_provider(random::RandProvider);
@@ -51,8 +54,11 @@ impl Plugin for StdlibPlugin {
         registry.register_function_provider(array::ArrayKeyExistsProvider);
         registry.register_function_provider(array::ArrayMapProvider);
         registry.register_function_provider(array::ArrayMergeProvider);
+        registry.register_function_provider(array::ArrayMergeRecursiveProvider);
+        registry.register_function_provider(array::ArrayReplaceProvider);
         registry.register_function_provider(array::ArrayPadProvider);
         registry.register_function_provider(array::CompactProvider);
+        registry.register_function_provider(object::GetCalledClassProvider);
         registry.register_function_provider(object::GetObjectVarsProvider);
         registry.register_function_provider(url::ParseUrlProvider);
         registry.register_function_provider(filter::FilterVarProvider);
@@ -69,9 +75,12 @@ impl Plugin for StdlibPlugin {
         registry.register_function_call_hook(session::SessionSetSaveHandlerHook);
         registry.register_function_call_hook(session::SessionSetCookieParamsHook);
         registry.register_function_call_hook(math::IntdivHook);
+        registry.register_function_call_hook(pcre::PregLiteralPatternHook);
 
+        registry.register_method_provider(closure::ClosureFromCallableProvider);
         registry.register_method_provider(closure::ClosureGetCurrentProvider);
         registry.register_method_provider(r#enum::EnumCasesProvider);
+        registry.register_method_provider(exception::ExceptionGetCodeProvider);
         registry.register_method_provider(reflection::ReflectionMethodGetNameProvider);
         registry.register_method_provider(reflection::ReflectionMethodInvokeProvider);
 

@@ -17,6 +17,7 @@ use mago_word::ascii_lowercase_constant_name_word;
 use mago_word::ascii_lowercase_word;
 use mago_word::empty_word;
 use mago_word::word;
+use rayon::prelude::*;
 
 use crate::diff::CodebaseDiff;
 use crate::identifier::method::MethodIdentifier;
@@ -559,6 +560,23 @@ impl CodebaseMetadata {
     pub fn get_constant(&self, name: &[u8]) -> Option<&ConstantMetadata> {
         let lowercase_name = ascii_lowercase_constant_name_word(name);
         self.constants.get(&lowercase_name)
+    }
+
+    /// The constant a docblock type name refers to when no class-like has that name: the
+    /// namespaced constant, or else the global constant of the same short name.
+    #[inline]
+    #[must_use]
+    pub fn get_constant_name_of_type_reference(&self, name: &[u8]) -> Option<Word> {
+        let constant_name = ascii_lowercase_constant_name_word(name);
+        if self.constants.contains_key(&constant_name) {
+            return Some(constant_name);
+        }
+
+        let short_name =
+            name.rsplit(|byte| *byte == b'\\').next().filter(|short_name| short_name.len() < name.len())?;
+        let short_name = word(short_name);
+
+        self.constants.contains_key(&short_name).then_some(short_name)
     }
 
     /// The declaration name span of a top-level symbol named `name`: a
@@ -1225,20 +1243,36 @@ impl CodebaseMetadata {
         }
 
         let mut function_likes = std::mem::take(&mut self.function_likes);
-        let functions: Vec<_> = others.iter_mut().map(|other| std::mem::take(&mut other.function_likes)).collect();
+        let mut symbols = std::mem::take(&mut self.symbols);
+        let (functions, partial_symbols): (Vec<_>, Vec<_>) = others
+            .par_iter_mut()
+            .map(|other| (std::mem::take(&mut other.function_likes), std::mem::take(&mut other.symbols)))
+            .unzip();
         rayon::join(
             || {
+                function_likes.reserve(functions.iter().map(HashMap::len).sum());
                 for incoming in functions {
                     merge_function_likes(&mut function_likes, incoming);
                 }
+                function_likes.shrink_to_fit();
             },
             || {
-                for other in others {
-                    self.extend(other);
-                }
+                rayon::join(
+                    || {
+                        for incoming in partial_symbols {
+                            symbols.extend(incoming);
+                        }
+                    },
+                    || {
+                        for other in others {
+                            self.extend(other);
+                        }
+                    },
+                );
             },
         );
         self.function_likes = function_likes;
+        self.symbols = symbols;
     }
 
     /// Extends this codebase with another by reference, cloning only individual entries.

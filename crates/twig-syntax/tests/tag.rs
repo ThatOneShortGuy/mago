@@ -18,6 +18,7 @@ mod common;
 use crate::common::parse;
 use crate::common::parse_ok;
 use crate::common::parses;
+use crate::common::rejects;
 use mago_allocator::LocalArena;
 use mago_twig_syntax::cst::Expression;
 use mago_twig_syntax::cst::GuardKind;
@@ -437,7 +438,8 @@ fn tag_guard_test_compound_divisible_by() {
     let tpl = parse_ok(&arena, "{% guard test divisible by %}yes{% endguard %}");
     let Statement::Guard(g) = &tpl.statements.nodes[0] else { panic!() };
     assert_eq!(g.kind, GuardKind::Test);
-    assert_eq!(g.name.value, b"divisible by".as_slice());
+    assert_eq!(g.name.value, b"divisible".as_slice());
+    assert_eq!(g.second_word.unwrap().value, b"by".as_slice());
 }
 
 #[test]
@@ -573,4 +575,25 @@ fn combined_extends_block_block() {
     assert!(matches!(&tpl.statements.nodes[0], Statement::Extends(_)));
     assert!(matches!(&tpl.statements.nodes[1], Statement::Block(_)));
     assert!(matches!(&tpl.statements.nodes[2], Statement::Block(_)));
+}
+
+#[test]
+fn component_tag_attribute_spread() {
+    let arena = LocalArena::new();
+    let tpl = parse_ok(&arena, "<twig:Turbo:Frame id=\"{{ id }}\" {{ ...attributes }}>content</twig:Turbo:Frame>");
+    let Statement::Print(id) = &tpl.statements.nodes[1] else { panic!() };
+    assert!(id.ellipsis.is_none());
+    let Statement::Print(attributes) = &tpl.statements.nodes[3] else { panic!() };
+    assert!(attributes.ellipsis.is_some());
+
+    parses("<twig:Alert message=\"a > {{ b }} > c\" data-x='1 > 0' {{ ...attributes }} />");
+    parses("<twig:Button {{ ...attributes.defaults({class: 'btn'}) }}>Go</twig:Button>");
+}
+
+#[test]
+fn attribute_spread_outside_component_tag_is_rejected() {
+    rejects("{{ ...attributes }}");
+    rejects("<div {{ ...attributes }}>");
+    rejects("<twig:Alert />{{ ...attributes }}");
+    rejects("<twig:Alert title=\"{{ ...attributes }}\" />");
 }

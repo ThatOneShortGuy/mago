@@ -116,6 +116,7 @@ pub struct ClassLikeMetadata {
     pub inheritable_property_ids: WordMap<Word>,
     pub overridden_property_ids: WordMap<WordSet>,
     pub initialized_properties: WordSet,
+    pub constructor_assigned_inherited_properties: WordSet,
     pub constants: WordMap<ClassLikeConstantMetadata>,
     #[cfg_attr(feature = "serde", serde(default))]
     declared_constants: Option<Box<[Word]>>,
@@ -205,6 +206,7 @@ impl ClassLikeMetadata {
             enum_type: None,
             inheritable_property_ids: WordMap::default(),
             initialized_properties: WordSet::default(),
+            constructor_assigned_inherited_properties: WordSet::default(),
             invalid_dependencies: WordSet::default(),
             span,
             name_span,
@@ -382,6 +384,20 @@ impl ClassLikeMetadata {
 
     pub(crate) fn declared_mixin_count(&self) -> usize {
         self.declared_mixin_count.unwrap_or(self.mixins.len())
+    }
+
+    pub(crate) fn reset_for_population(&mut self) {
+        self.reset_ancestry();
+        self.reset_inherited_constants();
+        self.reset_inherited_members();
+        self.flags &= !MetadataFlags::POPULATED;
+        self.declaring_property_ids.clear();
+        self.appearing_property_ids.clear();
+        self.declaring_method_ids.clear();
+        self.appearing_method_ids.clear();
+        self.overridden_method_ids.clear();
+        self.overridden_property_ids.clear();
+        self.invalid_dependencies.clear();
     }
 
     pub(crate) fn reset_inherited_members(&mut self) {
@@ -1103,6 +1119,7 @@ impl ClassLikeMetadata {
         self.magic_properties.shrink_to_fit();
         self.magic_property_ids.shrink_to_fit();
         self.initialized_properties.shrink_to_fit();
+        self.constructor_assigned_inherited_properties.shrink_to_fit();
         self.appearing_property_ids.shrink_to_fit();
         self.declaring_property_ids.shrink_to_fit();
         self.inheritable_property_ids.shrink_to_fit();

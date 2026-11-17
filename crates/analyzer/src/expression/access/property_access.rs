@@ -5,7 +5,9 @@ use std::slice::from_ref;
 use mago_allocator::Arena;
 use mago_codex::assertion::Assertion;
 use mago_codex::ttype::add_optional_union_type;
+use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
@@ -109,6 +111,28 @@ where
         && let Some(property_access_id) = &property_access_id
         && let Some(existing_type) = block_context.locals.get(property_access_id).cloned()
     {
+        // Once the receiver is known not to be null, the nullsafe fetch reads what `->` would.
+        let existing_type = if is_null_safe
+            && let Some(object_id) = get_block_expression_id(object, context, block_context)
+            && block_context
+                .locals
+                .get(&object_id)
+                .is_some_and(|object_type| !object_type.can_be_null() && !object_type.possibly_undefined())
+            && let Some(non_nullsafe_id) = get_property_access_expression_id(
+                object,
+                property_selector,
+                false,
+                block_context.scope.get_class_like_name(),
+                context.resolved_names,
+                Some(context.codebase),
+            )
+            && let Some(narrowed_type) = block_context.locals.get(&non_nullsafe_id)
+        {
+            Rc::clone(narrowed_type)
+        } else {
+            existing_type
+        };
+
         add_memoized_property_reference(context, block_context, artifacts, object, property_selector, is_null_safe)?;
 
         artifacts.set_rc_expression_type(&span, existing_type);
@@ -125,6 +149,7 @@ where
         arrow_span,
         is_null_safe,
         false, // `for_assignment`
+        false, // `known_property`
     )?;
 
     let mut resulting_expression_type = None;
@@ -188,6 +213,15 @@ where
     }
 
     let mut resulting_type = resulting_expression_type.unwrap_or_else(get_never);
+    if artifacts.get_expression_type(object).is_some_and(|t| t.possibly_undefined()) {
+        resulting_type.set_possibly_undefined(true, None);
+
+        // A missing receiver reads as `null`, so a nullsafe access short-circuits to `null`.
+        if is_null_safe && !resulting_type.is_never() {
+            resulting_type = add_union_type(resulting_type, &get_null(), context.codebase, CombinerOptions::default());
+        }
+    }
+
     let object_has_nullsafe_null = artifacts.get_expression_type(object).is_some_and(|t| t.has_nullsafe_null());
     if resolution_result.all_properties_non_nullable
         && ((is_null_safe && resolution_result.encountered_null) || object_has_nullsafe_null)

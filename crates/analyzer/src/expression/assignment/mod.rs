@@ -7,14 +7,18 @@ use mago_algebra::clause::Clause;
 use mago_algebra::disjoin_clauses;
 use mago_codex::assertion::Assertion;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::combine_union_types;
+use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
+use mago_codex::ttype::get_array_value_parameter;
 use mago_codex::ttype::get_literal_int;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
@@ -31,6 +35,7 @@ use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::List;
 use mago_syntax::cst::UnaryPrefix;
@@ -38,6 +43,7 @@ use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
 use mago_word::Word;
 use mago_word::WordSet;
+use mago_word::concat_word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -51,13 +57,16 @@ use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
+use crate::formula::negate_or_synthesize;
+use crate::resolver::function::is_builtin_function_call;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::expression_has_logic;
+use crate::utils::expression::get_access_base_expressions;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_non_nullsafe_expression_id;
-use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::expression::get_root_expression_id;
 use crate::utils::misc::unwrap_expression;
 
@@ -132,6 +141,10 @@ where
         && let Some(preliminary_type) = get_closure_expression_type(context.source_file, source_expression)
     {
         block_context.locals.insert(*target_variable_id, Rc::new(preliminary_type));
+    }
+
+    if assignment_operator.is_none() && source_expression.is_some() {
+        analyze_assignment_target_indices(target_expression, context, block_context, artifacts)?;
     }
 
     let mut assignment_operation_type = None;
@@ -238,6 +251,9 @@ where
 
     if let (Some(target_variable_id), Some(existing_target_type)) = (&target_variable_id, &existing_target_type) {
         block_context.remove_descendants(context, *target_variable_id, existing_target_type, Some(&source_type));
+        if matches!(target_expression, Expression::Access(Access::Property(_))) {
+            block_context.locals.insert(*target_variable_id, Rc::clone(existing_target_type));
+        }
     } else {
         let root_var_id = get_root_expression_id(target_expression);
 
@@ -305,7 +321,7 @@ where
         && let (Some(target_variable_id), Some(source_expression)) = (target_variable_id, source_expression)
         && matches!(target_expression, Expression::Variable(_))
     {
-        add_nullsafe_assignment_clauses(target_variable_id, source_expression, context, block_context);
+        add_access_assignment_clauses(target_variable_id, source_expression, context, block_context, artifacts);
     }
 
     if let Some(assignment_span) = assignment_span {
@@ -315,15 +331,16 @@ where
     Ok(())
 }
 
-fn add_nullsafe_assignment_clauses<'ctx, 'arena, A>(
+fn add_access_assignment_clauses<'ctx, 'arena, A>(
     target_variable_id: Word,
     source_expression: &Expression<'arena>,
     context: &Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
+    artifacts: &AnalysisArtifacts,
 ) where
     A: Arena,
 {
-    for base in get_nullsafe_base_expressions(source_expression) {
+    for base in get_access_base_expressions(source_expression, artifacts) {
         let Some(base_id) = get_block_expression_id(base, context, block_context) else {
             continue;
         };
@@ -374,7 +391,14 @@ where
             Rc::make_mut(&mut source_type).set_by_reference(source_expression.is_reference());
         }
 
-        analyze_reference_assignment(context, block_context, target_expression, source_expression);
+        analyze_reference_assignment(
+            context,
+            block_context,
+            artifacts,
+            target_expression,
+            source_expression,
+            &source_type,
+        )?;
     }
 
     if let Some(root) = get_root_expression_id(target_expression) {
@@ -453,6 +477,12 @@ where
                 list.elements.as_slice(),
             )?;
         }
+        Expression::Variable(Variable::Indirect(indirect)) => {
+            indirect.expression.analyze(context, block_context, artifacts)?;
+        }
+        Expression::Variable(Variable::Nested(nested)) => {
+            nested.variable.analyze(context, block_context, artifacts)?;
+        }
         _ => {
             return Ok(false);
         }
@@ -462,11 +492,14 @@ where
 }
 
 fn analyze_reference_assignment<'ctx, 'ast, 'arena, A>(
-    context: &Context<'ctx, 'arena, A>,
+    context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
     target_expression: &'ast Expression<'arena>,
     source_expression: &'ast Expression<'arena>,
-) where
+    source_type: &Rc<TUnion>,
+) -> Result<(), AnalysisError>
+where
     A: Arena,
 {
     let Expression::UnaryPrefix(UnaryPrefix {
@@ -474,16 +507,33 @@ fn analyze_reference_assignment<'ctx, 'ast, 'arena, A>(
         operand: referenced_expression,
     }) = source_expression
     else {
-        return;
+        return Ok(());
     };
 
     let target_variable_id = get_block_expression_id(target_expression, context, block_context);
     let referenced_variable_id = get_block_expression_id(referenced_expression, context, block_context);
     let (Some(target_variable_id), Some(referenced_variable_id)) = (target_variable_id, referenced_variable_id) else {
-        return;
+        return Ok(());
     };
 
-    block_context.locals.entry(referenced_variable_id).or_insert_with(|| Rc::new(get_mixed()));
+    if let Expression::ArrayAccess(array_access) = referenced_expression
+        && get_root_expression_id(referenced_expression) != Some(target_variable_id)
+        && artifacts.get_expression_type(array_access.array).is_some_and(|ty| !ty.has_object_type())
+    {
+        assign_to_expression(
+            context,
+            block_context,
+            artifacts,
+            referenced_expression,
+            Some(referenced_variable_id),
+            None,
+            Rc::clone(source_type),
+            false,
+            PropertyWriteKind::Mutation,
+        )?;
+    }
+
+    block_context.locals.entry(referenced_variable_id).or_insert_with(|| Rc::clone(source_type));
 
     if block_context.references_in_scope.contains_key(&target_variable_id) {
         block_context.decrement_reference_count(target_variable_id.as_bytes());
@@ -498,6 +548,8 @@ fn analyze_reference_assignment<'ctx, 'ast, 'arena, A>(
     if memchr::memchr(b'[', referenced_bytes).is_some() || memchr::memmem::find(referenced_bytes, b"->").is_some() {
         block_context.references_to_external_scope.insert(target_variable_id);
     }
+
+    Ok(())
 }
 
 pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
@@ -512,6 +564,10 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
+    if let Some(existing_type) = block_context.locals.get(&variable_id).cloned() {
+        block_context.remove_descendants(context, variable_id, &existing_type, Some(&assigned_type));
+    }
+
     if let Some(constraint) = block_context.by_reference_constraints.get(&variable_id) {
         if let Some(constraint_type) = constraint.constraint_type.as_ref()
             && !union_comparator::is_contained_by(
@@ -605,6 +661,10 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         if !assigned_type.by_reference() {
             Rc::make_mut(&mut assigned_type).set_by_reference(true);
         }
+    }
+
+    if assigned_type.has_nullsafe_null() {
+        Rc::make_mut(&mut assigned_type).set_nullsafe_null(false);
     }
 
     if block_context.references_possibly_from_confusing_scope.contains(&variable_id) {
@@ -705,16 +765,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
     if !from_docblock
         && assigned_type.is_bool()
         && let Some(source_expression) = source_expression
-        && match unwrap_expression(source_expression) {
-            Expression::Binary(_) => true,
-            Expression::Call(call) => {
-                let span = call.span();
-                let range = (span.start.offset, span.end.offset);
-
-                artifacts.if_true_assertions.contains_key(&range) || artifacts.if_false_assertions.contains_key(&range)
-            }
-            _ => false,
-        }
+        && is_boolean_logic(source_expression, artifacts)
     {
         handle_assignment_with_boolean_logic(
             context,
@@ -729,13 +780,77 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
     block_context.locals.retain(|var_id, _| !var_references_dynamic(*var_id, variable_id));
     block_context.derived_local_sources.remove(&variable_id);
     block_context.possibly_undefined_variable_ids.remove(&variable_id);
+    block_context.class_string_sources.retain(|holder, source| {
+        *holder != variable_id && !var_has_root(*source, variable_id) && !var_references_dynamic(*source, variable_id)
+    });
 
     if artifacts.editor.is_some() {
         artifacts.set_rc_expression_type(&variable_span, Rc::clone(&assigned_type));
     }
 
+    if assigned_type.possibly_undefined() || assigned_type.possibly_undefined_from_try() {
+        Rc::make_mut(&mut assigned_type).set_possibly_undefined(false, Some(false));
+    }
+
     block_context.locals.insert(variable_id, assigned_type);
     block_context.variables_possibly_in_scope.insert(variable_id);
+
+    if let Some(source) = source_expression
+        && let Expression::Call(Call::Function(function_call)) = unwrap_expression(source)
+        && function_call.argument_list.arguments.len() == 1
+        && let Some(argument) = function_call.argument_list.arguments.first()
+    {
+        let is_get_class =
+            is_builtin_function_call(function_call, b"get_class", context.resolved_names, context.codebase);
+        let is_key_lookup = !is_get_class
+            && (is_builtin_function_call(function_call, b"array_key_first", context.resolved_names, context.codebase)
+                || is_builtin_function_call(
+                    function_call,
+                    b"array_key_last",
+                    context.resolved_names,
+                    context.codebase,
+                ));
+
+        if (is_get_class || is_key_lookup)
+            && let Some(source_id) = get_expression_id(
+                argument.value(),
+                block_context.scope.get_class_like_name(),
+                context.resolved_names,
+                Some(context.codebase),
+            )
+            && variable_id != source_id
+        {
+            if is_get_class {
+                block_context.class_string_sources.insert(variable_id, source_id);
+            } else if let Some(array_type) = block_context.locals.get(&source_id)
+                && let Some(value_type) = get_array_union_value_type(array_type, context.codebase)
+            {
+                block_context.locals.insert(
+                    concat_word!(source_id.as_bytes(), b"[", variable_id.as_bytes(), b"]"),
+                    Rc::new(value_type),
+                );
+            }
+        }
+    }
+}
+
+fn get_array_union_value_type(array_type: &TUnion, codebase: &CodebaseMetadata) -> Option<TUnion> {
+    let mut value_type: Option<TUnion> = None;
+    for atomic in array_type.types.iter() {
+        let TAtomic::Array(array) = atomic else {
+            return None;
+        };
+
+        let array_value_type = get_array_value_parameter(array, codebase);
+        value_type = Some(match value_type {
+            Some(value_type) => {
+                combine_union_types(&value_type, &array_value_type, codebase, CombinerOptions::default())
+            }
+            None => array_value_type,
+        });
+    }
+
+    value_type.filter(|value_type| !value_type.is_never())
 }
 
 fn analyze_destructuring<'ctx, 'ast, 'arena, A>(
@@ -1208,6 +1323,50 @@ where
     Ok(())
 }
 
+fn analyze_assignment_target_indices<'ctx, 'arena, A>(
+    expression: &Expression<'arena>,
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let Expression::ArrayAccess(array_access) = expression else {
+        return Ok(());
+    };
+
+    analyze_assignment_target_indices(array_access.array, context, block_context, artifacts)?;
+
+    if artifacts.get_expression_type(array_access.index).is_none() {
+        let was_inside_general_use = block_context.flags.inside_general_use();
+        block_context.flags.set_inside_general_use(true);
+        array_access.index.analyze(context, block_context, artifacts)?;
+        block_context.flags.set_inside_general_use(was_inside_general_use);
+    }
+
+    Ok(())
+}
+
+fn is_boolean_logic(expression: &Expression<'_>, artifacts: &AnalysisArtifacts) -> bool {
+    match unwrap_expression(expression) {
+        Expression::Binary(_) => true,
+        Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
+            is_boolean_logic(operand, artifacts)
+        }
+        Expression::Assignment(assignment) if matches!(assignment.operator, AssignmentOperator::Assign(_)) => {
+            is_boolean_logic(assignment.rhs, artifacts)
+        }
+        Expression::Call(call) => {
+            let span = call.span();
+            let range = (span.start.offset, span.end.offset);
+
+            artifacts.if_true_assertions.contains_key(&range) || artifacts.if_false_assertions.contains_key(&range)
+        }
+        _ => false,
+    }
+}
+
 fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
@@ -1238,6 +1397,18 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
         return;
     }
 
+    let right_clauses = right_clauses.into_iter().map(Rc::unwrap_or_clone).collect::<Vec<_>>();
+    let negated_clauses = negate_or_synthesize(
+        &right_clauses,
+        source_expression,
+        context.get_assertion_context_from_block(block_context),
+        artifacts,
+        &context.settings.algebra_thresholds(),
+        context.settings.formula_size_threshold,
+    );
+    let negated_clauses =
+        BlockContext::filter_clauses(context, variable_id, negated_clauses.into_iter().map(Rc::new).collect(), None);
+
     let mut covered_variable_ids: WordSet = WordSet::default();
     covered_variable_ids.insert(variable_id);
     for clause in &right_clauses {
@@ -1248,19 +1419,28 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
 
     block_context.parent_conflicting_clause_variables.retain(|var| !covered_variable_ids.contains(var));
 
-    let mut possibilities = AssertionMap::default();
-    possibilities.insert(variable_id, AssertionMap::from_iter([(Assertion::Falsy.to_hash(), Assertion::Falsy)]));
+    for (assertion, clauses) in [
+        (Assertion::Falsy, right_clauses),
+        (Assertion::Truthy, negated_clauses.into_iter().map(Rc::unwrap_or_clone).collect()),
+    ] {
+        if clauses.is_empty() {
+            continue;
+        }
 
-    block_context.clauses.extend(
-        disjoin_clauses(
-            vec![Clause::new(possibilities, variable_expression_id, variable_expression_id, None, None, None)],
-            right_clauses.into_iter().map(|v| (*v).clone()).collect(),
-            source_expression.span(),
-            &context.settings.algebra_thresholds(),
-        )
-        .into_iter()
-        .map(Rc::new),
-    );
+        let mut possibilities = AssertionMap::default();
+        possibilities.insert(variable_id, AssertionMap::from_iter([(assertion.to_hash(), assertion)]));
+
+        block_context.clauses.extend(
+            disjoin_clauses(
+                vec![Clause::new(possibilities, variable_expression_id, variable_expression_id, None, None, None)],
+                clauses,
+                source_expression.span(),
+                &context.settings.algebra_thresholds(),
+            )
+            .into_iter()
+            .map(Rc::new),
+        );
+    }
 }
 
 fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {

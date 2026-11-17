@@ -9,6 +9,8 @@ use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
 use mago_codex::ttype::atomic::array::list::TList;
+use mago_codex::ttype::atomic::derived::TDerived;
+use mago_codex::ttype::atomic::derived::intersection::TDerivedIntersection;
 use mago_codex::ttype::atomic::mixed::truthiness::TMixedTruthiness;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
@@ -17,20 +19,25 @@ use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::bool::TBool;
 use mago_codex::ttype::atomic::scalar::float::TFloat;
 use mago_codex::ttype::atomic::scalar::int::TInteger;
+use mago_codex::ttype::atomic::scalar::string::TString;
 use mago_codex::ttype::comparator::union_comparator;
-use mago_codex::ttype::get_mixed;
+use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_undefined_null;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::union::TUnion;
 use mago_span::Span;
+use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use crate::reconciler::Context;
 use crate::reconciler::map_generic_constraint;
 use crate::reconciler::simple_assertion_reconciler::get_acceptable_type;
+use crate::reconciler::simple_assertion_reconciler::get_callable_array_shape;
 use crate::reconciler::simple_assertion_reconciler::intersect_null;
+use crate::reconciler::simple_assertion_reconciler::reconcile_non_empty_countable;
 use crate::reconciler::trigger_issue_for_impossible;
 
 pub(crate) fn reconcile<A>(
@@ -65,7 +72,18 @@ where
                     assertion.has_equality(),
                 ));
             }
-            TAtomic::Object(TObject::HasMethod(_) | TObject::HasProperty(_)) => {
+            TAtomic::Object(TObject::HasMethod(has_method)) => {
+                return Some(subtract_has_method(
+                    context,
+                    assertion,
+                    existing_var_type,
+                    key,
+                    has_method.method,
+                    negated,
+                    span,
+                ));
+            }
+            TAtomic::Object(TObject::HasProperty(_)) => {
                 return Some(existing_var_type.clone());
             }
             TAtomic::Object(TObject::Named(subtracting_named))
@@ -167,6 +185,9 @@ where
                     assertion.has_equality(),
                 ));
             }
+            TAtomic::Array(array) if array.is_empty() && matches!(assertion, Assertion::IsNotIdentical(_)) => {
+                return Some(reconcile_non_empty_countable(context, assertion, existing_var_type, key, negated, span));
+            }
             TAtomic::Array(TArray::List(_)) => {
                 return Some(subtract_list_array(
                     context,
@@ -228,9 +249,8 @@ where
         Assertion::Falsy | Assertion::Empty => {
             Some(reconcile_falsy_or_empty(context, assertion, existing_var_type, key, negated, span))
         }
-        Assertion::IsNotIsset | Assertion::ArrayKeyDoesNotExist => {
-            Some(reconcile_not_isset(context, existing_var_type, key, span))
-        }
+        Assertion::IsNotIsset => Some(reconcile_not_isset(existing_var_type, key)),
+        Assertion::ArrayKeyDoesNotExist => Some(get_undefined_null()),
         Assertion::DoesNotHaveArrayKey(key_name) => {
             Some(reconcile_no_array_key(context, assertion, existing_var_type, key, span, key_name, negated))
         }
@@ -322,6 +342,32 @@ where
             }
 
             did_remove_type = true;
+        } else if let TAtomic::Iterable(iterable) = &atomic
+            && !is_equality
+            && !iterable.has_intersection_types()
+            && matches!(type_to_subtract, Some(TAtomic::Object(TObject::Any)))
+        {
+            did_remove_type = true;
+
+            let key_type = if iterable.key_type.is_always_array_key(false) {
+                Arc::clone(&iterable.key_type)
+            } else {
+                Arc::new(get_arraykey())
+            };
+
+            acceptable_types.push(TAtomic::Array(TArray::Keyed(TKeyedArray::new_with_parameters(
+                key_type,
+                Arc::clone(&iterable.value_type),
+            ))));
+        } else if let TAtomic::Callable(callable) = &atomic
+            && !is_equality
+            && matches!(type_to_subtract, Some(TAtomic::Object(TObject::Any)))
+        {
+            did_remove_type = true;
+            if !callable.is_closure() {
+                acceptable_types.push(get_callable_string(&atomic));
+                acceptable_types.push(get_callable_array(&atomic));
+            }
         } else if atomic.is_object_type() {
             did_remove_type = true;
 
@@ -347,6 +393,9 @@ where
                             .iter()
                             .filter(|inheritor| {
                                 !inheritor.as_bytes().eq_ignore_ascii_case(lowercase_subtracting_name.as_bytes())
+                                    && !context
+                                        .codebase
+                                        .is_instance_of(inheritor.as_bytes(), lowercase_subtracting_name.as_bytes())
                             })
                             .map(|inheritor| {
                                 let child = TNamedObject::new(
@@ -365,6 +414,10 @@ where
                             .map(TObject::Named)
                             .map(TAtomic::Object),
                     );
+
+                    if existing_metadata.kind.is_class() && !existing_metadata.flags.is_abstract() {
+                        acceptable_types.push(atomic);
+                    }
                 } else {
                     // Either not a sealed class, or we're subtracting something that's not in the permitted list,
                     // or this is a concrete class (not abstract/interface) - just keep it
@@ -390,6 +443,62 @@ where
         negated,
         true,
         new_var_type,
+    )
+}
+
+fn subtract_has_method<A>(
+    context: &mut Context<'_, '_, A>,
+    assertion: &Assertion,
+    existing_var_type: &TUnion,
+    key: Option<&[u8]>,
+    method_name: Word,
+    negated: bool,
+    span: Option<&Span>,
+) -> TUnion
+where
+    A: Arena,
+{
+    let mut did_remove_type = false;
+    let mut acceptable_types = vec![];
+
+    for atomic in existing_var_type.types.as_ref() {
+        let class_name = match atomic {
+            TAtomic::Object(TObject::Named(named_object)) => named_object.name,
+            TAtomic::Object(TObject::Enum(enum_object)) => enum_object.name,
+            _ => {
+                did_remove_type = true;
+                acceptable_types.push(atomic.clone());
+                continue;
+            }
+        };
+
+        if context
+            .codebase
+            .get_declaring_method(class_name.as_bytes(), method_name.as_bytes())
+            .is_some_and(|method| !method.flags.is_magic_method())
+        {
+            did_remove_type = true;
+            continue;
+        }
+
+        if !context.codebase.get_class_like(class_name.as_bytes()).is_some_and(|m| m.flags.is_final()) {
+            did_remove_type = true;
+        }
+
+        acceptable_types.push(atomic.clone());
+    }
+
+    get_acceptable_type(
+        context,
+        acceptable_types,
+        did_remove_type,
+        key,
+        span,
+        existing_var_type,
+        assertion,
+        negated,
+        true,
+        existing_var_type.clone(),
     )
 }
 
@@ -514,6 +623,13 @@ where
             if is_equality {
                 acceptable_types.push(atomic);
             }
+        } else if let TAtomic::Callable(callable) = &atomic
+            && !is_equality
+            && !callable.is_closure()
+        {
+            did_remove_type = true;
+            acceptable_types.push(get_callable_string(&atomic));
+            acceptable_types.push(get_callable_object(&atomic));
         } else {
             acceptable_types.push(atomic);
         }
@@ -584,6 +700,13 @@ where
                 acceptable_types.push(TAtomic::Scalar(TScalar::float()));
                 acceptable_types.push(TAtomic::Scalar(TScalar::bool()));
             }
+        } else if let TAtomic::Callable(callable) = &atomic
+            && !is_equality
+            && !callable.is_closure()
+        {
+            did_remove_type = true;
+            acceptable_types.push(get_callable_array(&atomic));
+            acceptable_types.push(get_callable_object(&atomic));
         } else if atomic.is_any_string() {
             did_remove_type = true;
 
@@ -1302,31 +1425,28 @@ where
     )
 }
 
-fn reconcile_not_isset<A>(
-    _context: &mut Context<'_, '_, A>,
-    existing_var_type: &TUnion,
-    key: Option<&[u8]>,
-    span: Option<&Span>,
-) -> TUnion
-where
-    A: Arena,
-{
-    // When !isset is true, the value is definitely not set (either null or undefined)
-    // For array accesses, this means the key doesn't exist or the value is null
-    // In both cases, the resulting type should be null
+fn reconcile_not_isset(existing_var_type: &TUnion, key: Option<&[u8]>) -> TUnion {
     if existing_var_type.possibly_undefined() || existing_var_type.possibly_undefined_from_try() {
+        if let Some(key) = key
+            && memchr::memchr(b'[', key).is_none()
+            && memchr::memmem::find(key, b"->").is_some()
+            && !existing_var_type.can_be_null()
+            && !existing_var_type.is_mixed()
+        {
+            return existing_var_type.clone();
+        }
+
         return get_undefined_null();
     }
 
-    if !existing_var_type.is_nullable()
-        && let Some(key) = key
+    if existing_var_type.can_be_null() {
+        return get_null();
+    }
+
+    if let Some(key) = key
         && memchr::memchr(b'[', key).is_none()
         && (!existing_var_type.is_mixed() || existing_var_type.is_always_truthy())
     {
-        if span.is_some() {
-            // todo
-        }
-
         return get_never();
     }
 
@@ -1461,7 +1581,7 @@ where
         trigger_issue_for_impossible(context, existing_var_type.get_id(), key, assertion, true, negated, pos);
     }
 
-    get_mixed()
+    existing_var_type.clone()
 }
 
 fn reconcile_no_array_key<A>(
@@ -1488,6 +1608,10 @@ where
                         if known_item.0 {
                             Arc::make_mut(known_items).remove(key_name);
                             did_remove_type = true;
+                        } else {
+                            did_remove_type = true;
+
+                            continue;
                         }
                     } else if let Some((key_parameter, _)) = parameters
                         && union_comparator::can_expression_types_be_identical(
@@ -1795,4 +1919,26 @@ fn extract_specific_combination(subtract_elements: &BTreeMap<usize, (bool, TUnio
 fn combinations_are_equal(first_combination: &[TAtomic], second_combination: &[TAtomic]) -> bool {
     first_combination.len() == second_combination.len()
         && first_combination.iter().zip(second_combination.iter()).all(|(a, b)| a == b)
+}
+
+fn get_callable_string(callable: &TAtomic) -> TAtomic {
+    let mut intersection =
+        TDerivedIntersection::new(TUnion::from_atomic(TAtomic::Scalar(TScalar::String(TString::callable()))));
+    intersection.add_intersection_type(callable.clone());
+
+    TAtomic::Derived(TDerived::Intersection(intersection))
+}
+
+fn get_callable_object(callable: &TAtomic) -> TAtomic {
+    let mut object = TAtomic::Object(TObject::new_has_method(word("__invoke")));
+    object.add_intersection_type(callable.clone());
+
+    object
+}
+
+fn get_callable_array(callable: &TAtomic) -> TAtomic {
+    let mut intersection = TDerivedIntersection::new(TUnion::from_atomic(get_callable_array_shape()));
+    intersection.add_intersection_type(callable.clone());
+
+    TAtomic::Derived(TDerived::Intersection(intersection))
 }

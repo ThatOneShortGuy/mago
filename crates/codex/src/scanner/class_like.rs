@@ -823,7 +823,7 @@ where
 
             class_like_metadata.require_extends.insert(required_name.to_ascii_lowercase());
             if let Some(required_params) = required_params {
-                class_like_metadata.add_template_extended_offset(required_name, required_params);
+                class_like_metadata.add_template_extended_offset(required_name.to_ascii_lowercase(), required_params);
             }
         }
 
@@ -905,7 +905,8 @@ where
 
             class_like_metadata.require_implements.insert(required_name.to_ascii_lowercase());
             if let Some(required_parameters) = required_parameters {
-                class_like_metadata.add_template_extended_offset(required_name, required_parameters);
+                class_like_metadata
+                    .add_template_extended_offset(required_name.to_ascii_lowercase(), required_parameters);
             }
         }
 
@@ -969,12 +970,23 @@ where
             }
         }
 
+        let mut method_tags = Vec::new();
+        let mut last_method_tags = WordMap::default();
         for tag in document.tags() {
             let TagValue::Method(method_tag) = &tag.value else {
                 continue;
             };
 
             let method_name = ascii_lowercase_word(method_tag.name.value);
+            method_tags.push(method_name);
+            last_method_tags.insert(method_name, method_tag);
+        }
+
+        for method_name in method_tags {
+            let Some(method_tag) = last_method_tags.remove(&method_name) else {
+                continue;
+            };
+
             class_like_metadata.methods.insert(method_name);
             class_like_metadata.pseudo_methods.insert(method_name);
             class_like_metadata
@@ -1510,7 +1522,7 @@ fn create_enum_methods(codebase: &mut CodebaseMetadata, class_like: &mut ClassLi
             codebase.function_likes.insert(method_id, Box::new(function_like_metadata));
         };
 
-    let enum_name_word = class_like.name;
+    let enum_name_word = class_like.original_name;
     let backing_type = class_like.enum_type.clone();
 
     if let Some(backing_type) = backing_type {

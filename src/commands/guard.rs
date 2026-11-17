@@ -56,9 +56,9 @@ use crate::commands::args::substitution::SubstitutionArgs;
 use crate::commands::outcome::CommandOutcome;
 use crate::commands::stdin_input;
 use crate::config::Configuration;
-use crate::consts::PRELUDE_BYTES;
 use crate::error::Error;
 use crate::utils::create_orchestrator;
+use crate::utils::drop_in_background;
 
 /// Command for enforcing architectural rules and layer dependencies.
 ///
@@ -159,11 +159,8 @@ impl GuardCommand {
         let command_start = trace_enabled.then(Instant::now);
 
         let prelude_start = trace_enabled.then(Instant::now);
-        let Prelude { database, metadata, .. } = if self.no_stubs {
-            Prelude::default()
-        } else {
-            Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude")
-        };
+        let Prelude { database, metadata, .. } =
+            if self.no_stubs { Prelude::default() } else { crate::prelude::load() };
         let prelude_duration = prelude_start.map(|s| s.elapsed());
 
         // Determine requested mode from CLI flags
@@ -279,7 +276,7 @@ impl GuardCommand {
         let report_duration = report_start.map(|s| s.elapsed());
 
         let drop_database_start = trace_enabled.then(Instant::now);
-        drop(database);
+        drop_in_background(database.into_static());
         let drop_database_duration = drop_database_start.map(|s| s.elapsed());
 
         let drop_orchestrator_start = trace_enabled.then(Instant::now);

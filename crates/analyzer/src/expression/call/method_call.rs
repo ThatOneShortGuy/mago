@@ -1,6 +1,7 @@
 use mago_allocator::Arena;
 use mago_word::Word;
 use mago_word::WordMap;
+use std::rc::Rc;
 
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
@@ -22,6 +23,7 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::NullSafeMethodCall;
 use mago_syntax::cst::Variable;
 
@@ -54,6 +56,8 @@ use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::resolve_method_targets;
 use crate::utils::availability;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::expression::has_assignment;
+use crate::utils::expression::merge_conditional_locals;
 use crate::visibility::check_method_visibility_by_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
@@ -93,6 +97,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
             &self.method,
             &self.argument_list,
             false, // is_nullsafe
+            self.arrow.span(),
             self.span(),
         )?;
 
@@ -137,6 +142,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
             }
         }
 
+        let pre_call_locals =
+            has_assignment(Node::ArgumentList(&self.argument_list)).then(|| block_context.locals.clone());
+
         analyze_method_call(
             context,
             block_context,
@@ -145,8 +153,15 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
             &self.method,
             &self.argument_list,
             true, // is_nullsafe
+            self.question_mark_arrow.span(),
             self.span(),
         )?;
+
+        if let Some(pre_call_locals) = pre_call_locals
+            && artifacts.get_expression_type(self.object).is_some_and(TUnion::can_be_null)
+        {
+            merge_conditional_locals(context, block_context, &pre_call_locals);
+        }
 
         if context.plugin_registry.has_nullsafe_method_call_hooks() {
             let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
@@ -277,6 +292,7 @@ fn analyze_method_call<'ctx, 'ast, 'arena, A>(
     selector: &'ast ClassLikeMemberSelector<'arena>,
     argument_list: &'ast ArgumentList<'arena>,
     is_null_safe: bool,
+    operator_span: Span,
     span: Span,
 ) -> Result<(), AnalysisError>
 where
@@ -292,7 +308,7 @@ where
     }
 
     let mut method_resolution =
-        resolve_method_targets(context, block_context, artifacts, object, selector, is_null_safe, span)?;
+        resolve_method_targets(context, block_context, artifacts, object, selector, is_null_safe, operator_span, span)?;
 
     if artifacts.get_expression_type(object).is_some_and(|ty| ty.is_null() && (is_null_safe || ty.has_nullsafe_null()))
     {
@@ -302,6 +318,20 @@ where
 
         return Ok(());
     }
+
+    // The arguments of a nullsafe call only run when the receiver is not null.
+    let narrowed_receiver = if is_null_safe
+        && let Some(object_id) = get_block_expression_id(object, context, block_context)
+        && let Some(object_type) = block_context.locals.get(&object_id).cloned()
+        && object_type.can_be_null()
+    {
+        let narrowed = Rc::new(object_type.to_non_nullable());
+        block_context.locals.insert(object_id, Rc::clone(&narrowed));
+
+        Some((object_id, object_type, narrowed))
+    } else {
+        None
+    };
 
     let undocumented_template_result =
         (!method_resolution.undocumented_methods.is_empty()).then(|| method_resolution.template_result.clone());
@@ -413,6 +443,12 @@ where
             MethodInvocationKind::Instance,
             !has_resolved_methods,
         )?;
+    }
+
+    if let Some((object_id, object_type, narrowed)) = narrowed_receiver
+        && block_context.locals.get(&object_id).is_some_and(|current| Rc::ptr_eq(current, &narrowed))
+    {
+        block_context.locals.insert(object_id, object_type);
     }
 
     Ok(())
@@ -538,13 +574,9 @@ where
         };
 
         let mut invocation = Invocation::new(target, InvocationArgumentsSource::ArgumentList(argument_list), span);
-        let signature_handled = if context.external_analysis_session.is_some()
+        let signature_handled = context.external_analysis_session.is_some()
             && context.plugin_registry.may_have_callable_signature_provider(&requested_identifier)
-        {
-            apply_callable_signature(context, artifacts, &requested_identifier, &mut invocation)
-        } else {
-            false
-        };
+            && apply_callable_signature(context, artifacts, &requested_identifier, &mut invocation);
 
         let mut invocation_template_result = template_result.clone();
         let mut parameter_types = WordMap::default();

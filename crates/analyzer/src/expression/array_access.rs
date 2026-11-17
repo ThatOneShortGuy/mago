@@ -6,6 +6,7 @@ use mago_codex::ttype::get_mixed;
 use mago_span::HasSpan;
 use mago_syntax::cst::ArrayAccess;
 use mago_syntax::cst::Expression;
+use mago_word::concat_word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -14,8 +15,8 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::expression_is_nullsafe;
-use crate::utils::expression::get_array_access_id;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::expression::get_index_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
     fn analyze<'ctx, A>(
@@ -27,14 +28,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
     where
         A: Arena,
     {
-        let keyed_array_var_id = get_array_access_id(
-            self,
-            block_context.scope.get_class_like_name(),
-            context.resolved_names,
-            Some(context.codebase),
-        );
-
         let extended_var_id = get_block_expression_id(self.array, context, block_context);
+        let keyed_array_var_id = extended_var_id.and_then(|array_id| {
+            get_index_id(
+                self.index,
+                block_context.scope.get_class_like_name(),
+                context.resolved_names,
+                Some(context.codebase),
+            )
+            .map(|index| concat_word!(array_id.as_bytes(), b"[", index.as_bytes(), b"]"))
+        });
         let saved_narrowed_type = if matches!(self.index, Expression::UnaryPostfix(_)) {
             keyed_array_var_id.as_ref().and_then(|k| block_context.locals.get(k).cloned())
         } else {
@@ -44,16 +47,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
         let was_inside_isset = block_context.flags.inside_isset();
         let was_inside_general_use = block_context.flags.inside_general_use();
         let was_inside_unset = block_context.flags.inside_unset();
+        let was_inside_reference = block_context.flags.inside_reference();
 
         block_context.flags.set_inside_isset(false);
         block_context.flags.set_inside_general_use(true);
         block_context.flags.set_inside_unset(false);
+        block_context.flags.set_inside_reference(false);
 
         self.index.analyze(context, block_context, artifacts)?;
 
         block_context.flags.set_inside_isset(was_inside_isset);
         block_context.flags.set_inside_unset(was_inside_unset);
         block_context.flags.set_inside_general_use(was_inside_general_use);
+        block_context.flags.set_inside_reference(was_inside_reference);
 
         let index_type =
             artifacts.get_rc_expression_type(&self.index).cloned().unwrap_or_else(|| Rc::new(get_arraykey()));
@@ -96,7 +102,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
                 Some(self.index.span()),
                 &container_type,
                 &index_type,
-                false,
+                block_context.flags.inside_reference(),
                 extended_var_id,
                 None,
                 container_type.can_be_null() && expression_is_nullsafe(self.array),

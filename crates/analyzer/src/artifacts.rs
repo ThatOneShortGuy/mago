@@ -23,6 +23,7 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::case_scope::CaseScope;
 use crate::context::scope::loop_scope::LoopScope;
 use crate::readonly::PendingReadonlyPropertyWrite;
+use crate::statement::r#loop::memo::LoopMemo;
 
 pub(crate) use self::expression_types::CheckpointAction;
 pub(crate) use self::expression_types::ExpressionTypeCheckpoints;
@@ -56,11 +57,18 @@ pub struct ResolvedMethodCall {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ShortCircuitAssignmentTypes {
+    pub when_true: WordMap<Rc<TUnion>>,
+    pub when_false: WordMap<Rc<TUnion>>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AnalysisArtifacts {
     pub expression_types: HashMap<(u32, u32), Rc<TUnion>>,
     pub if_true_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub if_false_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub true_branch_only_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
+    pub(crate) short_circuit_assignment_types: HashMap<(u32, u32), ShortCircuitAssignmentTypes>,
     pub inferred_return_types: Vec<Rc<TUnion>>,
     /// The return type inferred from each analyzed function-like's body, keyed
     /// by the function-like's declaration `(start, end)` byte span (the same
@@ -73,6 +81,7 @@ pub struct AnalysisArtifacts {
     /// re-analyzing; the analyzer itself still resolves call sites from the
     /// *declared* signature, so nothing here feeds back into type checking.
     pub inferred_return_types_by_function_like: HashMap<(u32, u32), Rc<TUnion>>,
+    pub has_bare_return: bool,
     pub inferred_yield_key_types: Vec<TUnion>,
     pub inferred_yield_value_types: Vec<TUnion>,
     pub symbol_references: SymbolReferences,
@@ -80,6 +89,8 @@ pub struct AnalysisArtifacts {
     pub case_scopes: Vec<CaseScope>,
     pub fully_matched_switch_offsets: HashSet<u32>,
     pub inferred_parameter_types: Option<HashMap<usize, TUnion>>,
+    pub inferred_return_type: Option<TUnion>,
+    pub expected_return_type: Option<TUnion>,
     pub method_initialized_properties: HashMap<(Word, Word), WordSet>,
     pub method_calls_this_methods: HashMap<(Word, Word), HashSet<Word>>,
     pub method_calls_parent_constructor: HashMap<(Word, Word), bool>,
@@ -93,6 +104,8 @@ pub struct AnalysisArtifacts {
     pub(crate) static_local_types: Option<WordMap<Rc<TUnion>>>,
     expression_type_checkpoints: ExpressionTypeCheckpoints,
     retain_completed_expression_types: bool,
+    pub(crate) assignment_target_log: Option<WordSet>,
+    pub(crate) loop_memos: HashMap<(u32, u32), LoopMemo>,
 }
 
 impl Default for AnalysisArtifacts {
@@ -108,16 +121,20 @@ impl AnalysisArtifacts {
             expression_types: HashMap::default(),
             inferred_return_types: Vec::new(),
             inferred_return_types_by_function_like: HashMap::default(),
+            has_bare_return: false,
             inferred_yield_key_types: Vec::new(),
             inferred_yield_value_types: Vec::new(),
             if_true_assertions: HashMap::default(),
             if_false_assertions: HashMap::default(),
             true_branch_only_assertions: HashMap::default(),
+            short_circuit_assignment_types: HashMap::default(),
             symbol_references: SymbolReferences::new(),
             case_scopes: Vec::new(),
             loop_scope: None,
             fully_matched_switch_offsets: HashSet::default(),
             inferred_parameter_types: None,
+            inferred_return_type: None,
+            expected_return_type: None,
             method_initialized_properties: HashMap::default(),
             method_calls_this_methods: HashMap::default(),
             method_calls_parent_constructor: HashMap::default(),
@@ -131,6 +148,8 @@ impl AnalysisArtifacts {
             static_local_types: None,
             expression_type_checkpoints: ExpressionTypeCheckpoints::default(),
             retain_completed_expression_types: true,
+            assignment_target_log: None,
+            loop_memos: HashMap::default(),
         }
     }
 
@@ -140,7 +159,11 @@ impl AnalysisArtifacts {
     }
 
     pub(crate) fn should_retain_completed_expression_types(&self) -> bool {
-        self.retain_completed_expression_types || !self.expression_type_checkpoints.is_empty()
+        self.retain_completed_expression_types || self.expression_type_checkpoints.has_visible_checkpoints()
+    }
+
+    pub(crate) fn retains_completed_expression_types(&self) -> bool {
+        self.retain_completed_expression_types
     }
 
     pub(crate) fn record_static_local_types(
@@ -253,6 +276,10 @@ impl AnalysisArtifacts {
     }
 
     pub(crate) fn record_loop_assignment_target(&mut self, target: Word) {
+        if let Some(log) = &mut self.assignment_target_log {
+            log.insert(target);
+        }
+
         let mut loop_scope = self.loop_scope.as_mut();
         while let Some(scope) = loop_scope {
             if scope.tracks_assignment_targets {
@@ -308,8 +335,28 @@ impl AnalysisArtifacts {
         }
     }
 
-    pub(crate) fn expression_type_checkpoint_matches(&self, same: impl Fn(&TUnion, &TUnion) -> bool) -> bool {
-        self.expression_type_checkpoints.checkpoint_matches(&self.expression_types, same)
+    pub(crate) fn begin_expression_type_recording(&mut self) {
+        self.expression_type_checkpoints.begin_checkpoint();
+    }
+
+    pub(crate) fn finish_expression_type_recording(&mut self) -> Vec<((u32, u32), Rc<TUnion>)> {
+        self.expression_type_checkpoints.finish_recording(&self.expression_types)
+    }
+
+    pub(crate) fn begin_silent_expression_type_recording(&mut self) {
+        self.expression_type_checkpoints.begin_silent_recording();
+    }
+
+    pub(crate) fn finish_silent_expression_type_recording(&mut self) -> Vec<((u32, u32), Rc<TUnion>)> {
+        self.expression_type_checkpoints.finish_silent_recording(&self.expression_types)
+    }
+
+    pub(crate) fn expression_type_checkpoint_matches(
+        &self,
+        same: impl Fn(&TUnion, &TUnion) -> bool,
+        cleaned: Option<(u32, u32)>,
+    ) -> bool {
+        self.expression_type_checkpoints.checkpoint_matches(&self.expression_types, same, cleaned)
     }
 
     pub(crate) fn finish_expression_type_checkpoint(&mut self, action: CheckpointAction) {

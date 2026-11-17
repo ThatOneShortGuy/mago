@@ -11,7 +11,6 @@ use mago_algebra::AssertionMap;
 use mago_algebra::clause::Clause;
 use mago_algebra::find_satisfying_assignments;
 use mago_algebra::find_satisfying_assignments_iter;
-use mago_algebra::negate_formula;
 use mago_allocator::Arena;
 use mago_reporting::IssueCollection;
 
@@ -46,13 +45,29 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Assignment;
+use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Break;
+use mago_syntax::cst::Conditional;
+use mago_syntax::cst::DirectVariable;
+use mago_syntax::cst::DoWhile;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
 use mago_syntax::cst::Foreach;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LiteralInteger;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::Switch;
+use mago_syntax::cst::UnaryPrefix;
+use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
+use mago_syntax::cst::While;
+use mago_syntax::walker::MutWalker;
 use mago_word::Word;
+use mago_word::WordMap;
 use mago_word::WordSet;
 use mago_word::word;
 
@@ -74,10 +89,12 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
+use crate::utils::misc::unwrap_expression;
 
 mod assignment_map_visitor;
 mod cleaner;
 mod convergence;
+pub(crate) mod memo;
 
 pub mod r#break;
 pub mod r#continue;
@@ -192,7 +209,7 @@ where
     let always_enters_loop = infinite_loop || loop_scope.truthy_pre_conditions;
 
     if loop_scope.condition_always_false {
-        for condition in conditions {
+        if let Some(condition) = conditions.last() {
             let type_id = artifacts
                 .get_expression_type(*condition)
                 .map(|t| t.get_id())
@@ -210,6 +227,10 @@ where
         }
     }
 
+    let marks_new_keys = always_enters_loop && !infinite_loop;
+    let pre_loop_variables =
+        if marks_new_keys { loop_scope.parent_context_variables.clone() } else { WordMap::default() };
+
     inherit_loop_block_context(
         context,
         block_context,
@@ -220,10 +241,15 @@ where
         infinite_loop,
     );
 
-    if always_enters_loop && !infinite_loop {
-        for variable_type in block_context.locals.values_mut() {
+    if marks_new_keys {
+        for (variable_id, variable_type) in block_context.locals.iter_mut() {
+            let previous_type = pre_loop_variables.get(variable_id);
+            if previous_type.is_some_and(|previous_type| Rc::ptr_eq(previous_type, variable_type)) {
+                continue;
+            }
+
             let mut union = (**variable_type).clone();
-            if mark_array_keys_definite(&mut union) {
+            if mark_new_array_keys_definite(&mut union, previous_type.map(|previous_type| &**previous_type)) {
                 *variable_type = Rc::new(union);
             }
         }
@@ -258,27 +284,111 @@ fn inherit_loop_block_context<'ctx, A>(
                 }
             }
 
-            for (variable, _) in inner_loop_block_context.locals {
-                block_context.variables_possibly_in_scope.insert(variable);
-            }
+            block_context.variables_possibly_in_scope.extend(inner_loop_block_context.locals.keys().copied());
         } else {
-            for (variable, variable_type) in inner_loop_block_context.locals {
+            for (variable, variable_type) in &inner_loop_block_context.locals {
+                let (variable, variable_type) = (*variable, Rc::clone(variable_type));
                 if !has_break_or_continue {
                     block_context.locals.insert(variable, variable_type);
+                    continue;
+                }
+
+                // A variable the loop defines and a break leaves undefined is handled with the breaks below.
+                if has_break
+                    && !loop_scope.parent_context_variables.contains_key(&variable)
+                    && !loop_scope
+                        .variables_defined_at_every_break
+                        .as_ref()
+                        .is_some_and(|defined_at_every_break| defined_at_every_break.contains(&variable))
+                {
                     continue;
                 }
 
                 if let Some(possible_type) = loop_scope.possibly_defined_loop_parent_variables.get(&variable) {
                     block_context.locals.insert(
                         variable,
-                        Rc::new(ttype::combine_union_types(
-                            &variable_type,
-                            possible_type,
-                            context.codebase,
-                            CombinerOptions::default(),
-                        )),
+                        if known_infinite_loop {
+                            Rc::clone(possible_type)
+                        } else {
+                            Rc::new(ttype::combine_union_types(
+                                &variable_type,
+                                possible_type,
+                                context.codebase,
+                                CombinerOptions::default(),
+                            ))
+                        },
                     );
                 }
+            }
+        }
+
+        if has_break && known_infinite_loop {
+            for (variable, variable_type) in &loop_scope.possibly_redefined_loop_parent_variables {
+                if block_context.locals.contains_key(variable) {
+                    block_context.locals.insert(*variable, Rc::clone(variable_type));
+                }
+            }
+        }
+
+        if has_break {
+            for (variable, variable_type) in &loop_scope.possibly_defined_loop_parent_variables {
+                if block_context.locals.contains_key(variable)
+                    || variable.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':'))
+                {
+                    continue;
+                }
+
+                let exit_type = inner_loop_block_context
+                    .locals
+                    .get(variable)
+                    .filter(|_| !known_infinite_loop && loop_scope.variables_defined_by_condition.contains(variable));
+                let always_defined = (known_infinite_loop || exit_type.is_some())
+                    && loop_scope
+                        .variables_defined_at_every_break
+                        .as_ref()
+                        .is_some_and(|defined_at_every_break| defined_at_every_break.contains(variable));
+
+                if always_defined {
+                    block_context.locals.insert(
+                        *variable,
+                        match exit_type {
+                            Some(exit_type) => combine_union_types_rc(
+                                exit_type,
+                                variable_type,
+                                context.codebase,
+                                CombinerOptions::default(),
+                            ),
+                            None => Rc::clone(variable_type),
+                        },
+                    );
+                } else {
+                    let mut variable_type = (**variable_type).clone();
+                    variable_type.set_possibly_undefined(true, None);
+                    block_context.locals.insert(*variable, Rc::new(variable_type));
+                    block_context.possibly_undefined_variable_ids.insert(*variable);
+                }
+
+                block_context.variables_possibly_in_scope.insert(*variable);
+            }
+        }
+
+        if !always_enters_loop {
+            for (variable, variable_type) in inner_loop_block_context.locals {
+                if block_context.locals.contains_key(&variable)
+                    || variable.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':'))
+                {
+                    continue;
+                }
+
+                if loop_scope.variables_defined_by_condition.contains(&variable) {
+                    block_context.locals.insert(variable, variable_type);
+                    continue;
+                }
+
+                let mut variable_type = Rc::unwrap_or_clone(variable_type);
+                variable_type.set_possibly_undefined(true, None);
+                block_context.locals.insert(variable, Rc::new(variable_type));
+                block_context.possibly_undefined_variable_ids.insert(variable);
             }
         }
     } else {
@@ -333,6 +443,8 @@ where
         let assertion_context = context.get_assertion_context_from_block(loop_context);
 
         let mut complex_conditions = vec![];
+        let (leading_conditions, pre_conditions) = pre_conditions.split_at(pre_conditions.len() - 1);
+        pre_condition_clauses.extend(leading_conditions.iter().map(|_| vec![]));
         for pre_condition in pre_conditions {
             let condition_span = pre_condition.span();
             let clauses = get_formula(
@@ -398,7 +510,7 @@ where
 
         artifacts.set_loop_scope(loop_scope.clone());
         for (condition_offset, pre_condition) in pre_conditions.iter().enumerate() {
-            let Some(clauses) = pre_condition_clauses.get(condition_offset) else {
+            let Some(clauses) = pre_condition_clauses.get_mut(condition_offset) else {
                 continue;
             };
 
@@ -411,6 +523,7 @@ where
                 artifacts,
                 is_do,
                 !pre_conditions_applied,
+                condition_offset + 1 == pre_conditions.len(),
             )?;
         }
 
@@ -454,13 +567,14 @@ where
                         unsafe {
                             // SAFETY: we know the pre_condition_clauses will contain
                             // the clauses for the pre_condition at condition_offset.
-                            pre_condition_clauses.get_unchecked(condition_offset)
+                            pre_condition_clauses.get_unchecked_mut(condition_offset)
                         },
                         loop_context,
                         loop_parent_context,
                         artifacts,
                         is_do,
                         !pre_conditions_applied,
+                        condition_offset + 1 == pre_conditions.len(),
                     )?;
                 }
 
@@ -501,13 +615,14 @@ where
                         unsafe {
                             // SAFETY: we know the pre_condition_clauses will contain
                             // the clauses for the pre_condition at condition_offset.
-                            pre_condition_clauses.get_unchecked(condition_offset)
+                            pre_condition_clauses.get_unchecked_mut(condition_offset)
                         },
                         &mut continue_context,
                         loop_parent_context,
                         artifacts,
                         is_do,
                         !pre_conditions_applied,
+                        condition_offset + 1 == pre_conditions.len(),
                     )?);
                 }
 
@@ -607,6 +722,19 @@ where
         ) && convergence::supports_nodes(statements, pre_conditions, &post_expressions);
         let mut previous_input: Option<Box<convergence::Snapshot<'ctx>>> = None;
         let mut converged_passes = 0;
+        let cleaned_range = statements
+            .first()
+            .zip(statements.last())
+            .map(|(first, last)| (first.span().start.offset, last.span().end.offset));
+        let condition_variables: WordSet = {
+            let mut variables = ShortCircuitedVariables::default();
+            for pre_condition in pre_conditions {
+                variables.walk_expression(pre_condition, &mut ());
+            }
+
+            variables.always.into_iter().chain(variables.sometimes).collect()
+        };
+        let unseeded_variables = get_unseeded_variables(statements, pre_conditions, &post_expressions);
         while i <= assignment_depth {
             let previous_output = previous_input
                 .as_ref()
@@ -714,10 +842,26 @@ where
                         has_changes = true;
                     }
 
-                    if !is_do {
+                    if !is_do || variable_id.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':')) {
                         variables_to_remove.push(variable_id);
                     }
                 }
+            }
+
+            for (variable_id, parent_context_type) in &original_parent_context.locals {
+                if continue_context.locals.contains_key(variable_id)
+                    || !continue_context.possibly_assigned_variable_ids.contains(variable_id)
+                    || variable_id.as_bytes().contains(&b'[')
+                    || variable_id.as_bytes().contains(&b'-')
+                    || variable_id.as_bytes().contains(&b':')
+                {
+                    continue;
+                }
+
+                let mut possibly_unset_type = (**parent_context_type).clone();
+                possibly_unset_type.set_possibly_undefined(true, None);
+                continue_context.locals.insert(*variable_id, Rc::new(possibly_unset_type));
+                continue_context.possibly_undefined_variable_ids.insert(*variable_id);
             }
 
             continue_context.flags.set_has_returned(false);
@@ -736,11 +880,52 @@ where
                 break;
             }
 
+            loop_scope.seeded_loop_variables.clear();
             for variable_id in variables_to_remove {
+                let is_plain_variable = !variable_id.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':'));
+                if is_plain_variable
+                    && !condition_variables.contains(&variable_id)
+                    && !unseeded_variables.contains(&variable_id)
+                    && !continue_context.references_in_scope.contains_key(&variable_id)
+                {
+                    let end_type = continue_context.locals.get(&variable_id).cloned();
+                    let continue_type = loop_scope.possibly_defined_loop_variables.get(&variable_id).cloned();
+                    let seeded_type = match (end_type, continue_type) {
+                        (Some(end_type), Some(continue_type)) => {
+                            Some(combine_union_types(&end_type, &continue_type, codebase, CombinerOptions::default()))
+                        }
+                        (Some(only_type), None) | (None, Some(only_type)) => Some((*only_type).clone()),
+                        (None, None) => None,
+                    };
+
+                    if let Some(mut seeded_type) = seeded_type {
+                        seeded_type.set_possibly_undefined(true, None);
+                        seeded_type.set_populated(false);
+                        let seeded_type = Rc::new(seeded_type);
+                        loop_scope.seeded_loop_variables.insert(variable_id, Rc::clone(&seeded_type));
+                        continue_context.locals.insert(variable_id, seeded_type);
+                        continue_context.possibly_undefined_variable_ids.insert(variable_id);
+                        continue_context.variables_possibly_in_scope.insert(variable_id);
+
+                        continue;
+                    }
+                }
+
+                if unseeded_variables.contains(&variable_id) {
+                    continue_context.variables_possibly_in_scope.remove(&variable_id);
+                    continue_context.possibly_undefined_variable_ids.remove(&variable_id);
+                }
+
                 continue_context.locals.remove(&variable_id);
             }
 
             continue_context.clauses.clone_from(&pre_loop_context.clauses);
+            continue_context
+                .parent_conflicting_clause_variables
+                .clone_from(&pre_loop_context.parent_conflicting_clause_variables);
+            continue_context
+                .possibly_assigned_variable_ids
+                .clone_from(&pre_loop_context.possibly_assigned_variable_ids);
             continue_context.by_reference_constraints.clone_from(&pre_loop_context.by_reference_constraints);
 
             // Only compare later passes: the first body visit records extra break-path state.
@@ -756,6 +941,7 @@ where
                         &loop_scope,
                         artifacts,
                         recorded_issues.is_empty(),
+                        cleaned_range,
                     )
                 })
             {
@@ -802,13 +988,14 @@ where
                         unsafe {
                             // SAFETY: we know the pre_condition_clauses will contain
                             // the clauses for the pre_condition at condition_offset.
-                            pre_condition_clauses.get_unchecked(condition_offset)
+                            pre_condition_clauses.get_unchecked_mut(condition_offset)
                         },
                         &mut continue_context,
                         loop_parent_context,
                         artifacts,
                         is_do,
                         !pre_conditions_applied,
+                        condition_offset + 1 == pre_conditions.len(),
                     );
 
                     if is_do {
@@ -816,6 +1003,24 @@ where
                     }
 
                     result?;
+                }
+
+                if is_do {
+                    for (variable_id, parent_type) in &original_parent_context.locals {
+                        if let Some(continue_type) = continue_context.locals.get_mut(variable_id) {
+                            *continue_type = combine_union_types_rc(
+                                continue_type,
+                                parent_type,
+                                codebase,
+                                CombinerOptions::default(),
+                            );
+                        }
+                    }
+
+                    continue_context.locals.retain(|variable_id, _| {
+                        original_parent_context.locals.contains_key(variable_id)
+                            || !variable_id.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':'))
+                    });
                 }
 
                 pre_conditions_applied = true;
@@ -870,13 +1075,14 @@ where
                             unsafe {
                                 // SAFETY: we know the pre_condition_clauses will contain
                                 // the clauses for the pre_condition at condition_offset.
-                                pre_condition_clauses.get_unchecked(condition_offset)
+                                pre_condition_clauses.get_unchecked_mut(condition_offset)
                             },
                             &mut continue_context,
                             loop_parent_context,
                             artifacts,
                             is_do,
                             !pre_conditions_applied,
+                            condition_offset + 1 == pre_conditions.len(),
                         )?;
                     }
 
@@ -1010,7 +1216,18 @@ where
         for (variable_id, variable_type) in loop_parent_context.locals.clone() {
             if let Some(continue_context_type) = continue_context.locals.get_mut(&variable_id) {
                 if continue_context_type.is_mixed() {
-                    loop_parent_context.locals.insert(variable_id, Rc::clone(continue_context_type));
+                    let exit_type = if variable_type.has_mixed() {
+                        Rc::new(combine_union_types(
+                            &variable_type,
+                            continue_context_type,
+                            codebase,
+                            CombinerOptions::default(),
+                        ))
+                    } else {
+                        Rc::clone(continue_context_type)
+                    };
+
+                    loop_parent_context.locals.insert(variable_id, exit_type);
                     loop_parent_context.remove_variable_from_conflicting_clauses(context, variable_id, None);
                 } else if continue_context_type != &variable_type {
                     loop_parent_context.locals.insert(
@@ -1030,32 +1247,57 @@ where
                 } else if let Some(loop_parent_context_type) = loop_parent_context.locals.get_mut(&variable_id) {
                     *loop_parent_context_type = Rc::clone(continue_context_type);
                 }
+            } else if continue_context.possibly_assigned_variable_ids.contains(&variable_id)
+                && !variable_id.as_bytes().contains(&b'[')
+                && !variable_id.as_bytes().contains(&b'-')
+                && !variable_id.as_bytes().contains(&b':')
+            {
+                let mut possibly_unset_type = Rc::unwrap_or_clone(variable_type);
+                possibly_unset_type.set_possibly_undefined(true, None);
+                loop_parent_context.locals.insert(variable_id, Rc::new(possibly_unset_type));
+                loop_parent_context.possibly_undefined_variable_ids.insert(variable_id);
             } else {
                 loop_parent_context.locals.remove(&variable_id);
             }
         }
     }
 
-    if !pre_conditions.is_empty() && !pre_condition_clauses.is_empty() && !does_sometimes_break {
-        // if the loop contains an assertion and there are no break statements, we can negate that assertion
-        // and apply it to the current context
+    if !pre_conditions.is_empty() && !pre_condition_clauses.is_empty() {
+        let only_condition_variables = does_sometimes_break.then_some(&loop_scope.variables_defined_by_condition);
+        let pre_condition_clauses: Vec<Clause> = pre_condition_clauses.into_iter().flatten().collect();
+        let tested_condition = pre_conditions[pre_conditions.len() - 1];
+        let negated_pre_condition_clauses = negate_or_synthesize(
+            &pre_condition_clauses,
+            tested_condition,
+            context.get_assertion_context_from_block(&continue_context),
+            artifacts,
+            &context.settings.algebra_thresholds(),
+            context.settings.formula_size_threshold,
+        );
 
-        let pre_condition_clauses = pre_condition_clauses.into_iter().flatten().collect();
-        let negated_pre_condition_clauses = if pre_conditions.len() == 1 {
-            negate_or_synthesize(
-                pre_condition_clauses,
-                pre_conditions[0],
-                context.get_assertion_context_from_block(&continue_context),
-                artifacts,
-                &context.settings.algebra_thresholds(),
-                context.settings.formula_size_threshold,
-            )
-        } else {
-            negate_formula(pre_condition_clauses, &context.settings.algebra_thresholds()).unwrap_or_default()
-        };
+        let mut assignments = vec![];
+        for pre_condition in pre_conditions {
+            collect_condition_assignments(pre_condition, &mut assignments);
+        }
 
-        let (negated_pre_condition_types, _) =
+        for (variable, value) in assignments {
+            let variable_id = word(variable.name);
+            if only_condition_variables.is_none_or(|variable_ids| variable_ids.contains(&variable_id))
+                && let Some(value_type) = artifacts.get_rc_expression_type(value)
+            {
+                if let Some(inner_do_context) = inner_do_context.as_mut() {
+                    inner_do_context.locals.insert(variable_id, Rc::clone(value_type));
+                }
+
+                continue_context.locals.insert(variable_id, Rc::clone(value_type));
+            }
+        }
+
+        let (mut negated_pre_condition_types, _) =
             find_satisfying_assignments(negated_pre_condition_clauses.iter().as_slice(), None, &mut WordSet::default());
+        if let Some(variable_ids) = only_condition_variables {
+            negated_pre_condition_types.retain(|variable_id, _| variable_ids.contains(variable_id));
+        }
 
         if !negated_pre_condition_types.is_empty() {
             let mut changed_variable_ids = WordSet::default();
@@ -1076,15 +1318,86 @@ where
                 false,
             );
 
+            if does_sometimes_break {
+                changed_variable_ids.clear();
+            }
+
+            let mut parent_assertions = AssertionMap::default();
+            for (variable_id, assertions) in &negated_pre_condition_types {
+                if !changed_variable_ids.contains(variable_id)
+                    && let Some(parent_type) = loop_parent_context.locals.get(variable_id)
+                    && continue_context.locals.get(variable_id).is_some_and(|end_type| end_type != parent_type)
+                {
+                    parent_assertions.insert(*variable_id, assertions.clone());
+                }
+            }
+
+            let mut condition_variables = ShortCircuitedVariables::default();
+            if !always_enters_loop.get() {
+                for pre_condition in pre_conditions {
+                    condition_variables.walk_expression(pre_condition, &mut ());
+                }
+            }
+
             for variable_id in changed_variable_ids {
+                if !always_enters_loop.get()
+                    && !condition_variables.assigned.contains(&variable_id)
+                    && loop_parent_context.locals.contains_key(&variable_id)
+                    && let Some(assertions) = negated_pre_condition_types.get(&variable_id)
+                {
+                    parent_assertions.insert(variable_id, assertions.clone());
+                    continue;
+                }
+
                 if let Some(reconciled_type) = continue_context.locals.get(&variable_id) {
-                    if loop_parent_context.locals.contains_key(&variable_id) {
+                    if loop_parent_context.locals.contains_key(&variable_id)
+                        || (!reconciled_type.possibly_undefined()
+                            && !variable_id.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':')))
+                    {
                         loop_parent_context.locals.insert(variable_id, Rc::clone(reconciled_type));
                     }
 
                     loop_parent_context.remove_variable_from_conflicting_clauses(context, variable_id, None);
                 }
             }
+
+            if !parent_assertions.is_empty() {
+                let mut changed_parent_variable_ids = WordSet::default();
+
+                reconcile_keyed_types(
+                    context,
+                    &parent_assertions,
+                    AssertionMap::default(),
+                    loop_parent_context,
+                    &mut changed_parent_variable_ids,
+                    &WordSet::default(),
+                    &unsafe {
+                        // SAFETY: we know that pre_conditions is not empty.
+                        pre_conditions.get_unchecked(0).span()
+                    },
+                    false,
+                    false,
+                );
+
+                for variable_id in changed_parent_variable_ids {
+                    loop_parent_context.remove_variable_from_conflicting_clauses(context, variable_id, None);
+                }
+            }
+        }
+    }
+
+    if always_enters_loop.get() && does_sometimes_continue {
+        for (variable_id, variable_type) in &loop_scope.possibly_defined_loop_variables {
+            if loop_parent_context.locals.contains_key(variable_id) || continue_context.locals.contains_key(variable_id)
+            {
+                continue;
+            }
+
+            let mut variable_type = (**variable_type).clone();
+            variable_type.set_possibly_undefined(true, None);
+            loop_parent_context.locals.insert(*variable_id, Rc::new(variable_type));
+            loop_parent_context.possibly_undefined_variable_ids.insert(*variable_id);
+            loop_parent_context.variables_possibly_in_scope.insert(*variable_id);
         }
     }
 
@@ -1094,6 +1407,16 @@ where
             // that the loop has finished executing, so the assertions at the end
             // the loop in the while conditional may not hold
             if does_sometimes_break || does_sometimes_continue {
+                if does_sometimes_break
+                    && !loop_scope.parent_context_variables.contains_key(variable_id)
+                    && !loop_scope
+                        .variables_defined_at_every_break
+                        .as_ref()
+                        .is_some_and(|defined_at_every_break| defined_at_every_break.contains(variable_id))
+                {
+                    continue;
+                }
+
                 if let Some(possibly_defined_type) = loop_scope.possibly_defined_loop_parent_variables.get(variable_id)
                 {
                     loop_parent_context.locals.insert(
@@ -1128,6 +1451,10 @@ where
                 }
             } else {
                 loop_parent_context.locals.insert(*variable_id, Rc::clone(variable_type));
+
+                if continue_context.possibly_undefined_variable_ids.contains(variable_id) {
+                    loop_parent_context.possibly_undefined_variable_ids.insert(*variable_id);
+                }
             }
         }
     }
@@ -1142,56 +1469,70 @@ where
     Ok((continue_context, loop_scope))
 }
 
-/// Recursively marks all optional known items in array types as definite.
+/// Marks the optional keys a loop that always enters added to an array as definite.
 ///
-/// After a loop that always enters, keys added inside the loop body are guaranteed
-/// to exist. This applies at all nesting levels, both in known items' values and
-/// in generic parameter values.
-fn mark_array_keys_definite(union: &mut TUnion) -> bool {
+/// The loop writes them on its first pass. Keys the array already had before the loop
+/// keep their optionality, at every nesting level.
+fn mark_new_array_keys_definite(union: &mut TUnion, previous: Option<&TUnion>) -> bool {
+    let previous_atomics = previous.map_or(&[][..], |previous| previous.types.as_ref());
     let mut changed = false;
     for atomic in union.types.to_mut().iter_mut() {
         match atomic {
-            TAtomic::Array(TArray::Keyed(TKeyedArray { known_items: Some(items), parameters, .. })) => {
-                for (optional, value) in Arc::make_mut(items).values_mut() {
-                    if *optional {
-                        *optional = false;
-                        changed = true;
-                    }
+            TAtomic::Array(TArray::Keyed(TKeyedArray { known_items, parameters, .. })) => {
+                if let Some(items) = known_items {
+                    for (key, (optional, value)) in Arc::make_mut(items).iter_mut() {
+                        let previous_item = previous_atomics.iter().find_map(|previous| match previous {
+                            TAtomic::Array(TArray::Keyed(TKeyedArray { known_items: Some(items), .. })) => {
+                                items.get(key)
+                            }
+                            _ => None,
+                        });
 
-                    if mark_array_keys_definite(value) {
-                        changed = true;
+                        if *optional && previous_item.is_none() {
+                            *optional = false;
+                            changed = true;
+                        }
+
+                        changed |= mark_new_array_keys_definite(value, previous_item.map(|(_, value)| value));
                     }
                 }
 
                 if let Some((_, value_type)) = parameters {
-                    let value = Arc::make_mut(value_type);
-                    if mark_array_keys_definite(value) {
-                        changed = true;
-                    }
+                    let previous_value = previous_atomics.iter().find_map(|previous| match previous {
+                        TAtomic::Array(TArray::Keyed(TKeyedArray { parameters: Some((_, value)), .. })) => {
+                            Some(&**value)
+                        }
+                        _ => None,
+                    });
+
+                    changed |= mark_new_array_keys_definite(Arc::make_mut(value_type), previous_value);
                 }
             }
-            TAtomic::Array(TArray::List(TList { known_elements: Some(elements), element_type, .. })) => {
-                for (optional, value) in Arc::make_mut(elements).values_mut() {
-                    if *optional {
-                        *optional = false;
-                        changed = true;
-                    }
+            TAtomic::Array(TArray::List(TList { known_elements, element_type, .. })) => {
+                if let Some(elements) = known_elements {
+                    for (index, (optional, value)) in Arc::make_mut(elements).iter_mut() {
+                        let previous_element = previous_atomics.iter().find_map(|previous| match previous {
+                            TAtomic::Array(TArray::List(TList { known_elements: Some(elements), .. })) => {
+                                elements.get(index)
+                            }
+                            _ => None,
+                        });
 
-                    if mark_array_keys_definite(value) {
-                        changed = true;
+                        if *optional && previous_element.is_none() {
+                            *optional = false;
+                            changed = true;
+                        }
+
+                        changed |= mark_new_array_keys_definite(value, previous_element.map(|(_, value)| value));
                     }
                 }
 
-                let el = Arc::make_mut(element_type);
-                if mark_array_keys_definite(el) {
-                    changed = true;
-                }
-            }
-            TAtomic::Array(TArray::Keyed(TKeyedArray { parameters: Some((_, value_type)), .. })) => {
-                let value = Arc::make_mut(value_type);
-                if mark_array_keys_definite(value) {
-                    changed = true;
-                }
+                let previous_element_type = previous_atomics.iter().find_map(|previous| match previous {
+                    TAtomic::Array(TArray::List(TList { element_type, .. })) => Some(&**element_type),
+                    _ => None,
+                });
+
+                changed |= mark_new_array_keys_definite(Arc::make_mut(element_type), previous_element_type);
             }
             _ => {}
         }
@@ -1217,7 +1558,25 @@ fn is_iteration_dependent_truthiness_issue(code: Option<&str>) -> bool {
         Ok(IssueCode::ImpossibleCondition
             | IssueCode::RedundantComparison
             | IssueCode::RedundantCondition
-            | IssueCode::RedundantTypeComparison)
+            | IssueCode::RedundantTypeComparison
+            | IssueCode::ImpossibleTypeComparison
+            | IssueCode::ImpossibleNullTypeComparison
+            | IssueCode::ParadoxicalCondition
+            | IssueCode::RedundantLogicalOperation
+            | IssueCode::RedundantNullCoalesce
+            | IssueCode::RedundantIssetCheck
+            | IssueCode::RedundantKeyCheck
+            | IssueCode::ImpossibleKeyCheck
+            | IssueCode::ImpossibleNonnullEntryCheck
+            | IssueCode::UnreachableElseClause
+            | IssueCode::MatchArmAlwaysTrue
+            | IssueCode::UnreachableMatchArm
+            | IssueCode::UnreachableMatchDefaultArm
+            | IssueCode::AlwaysMatchingSwitchCase
+            | IssueCode::UnreachableSwitchCase
+            | IssueCode::UnreachableSwitchDefault
+            | IssueCode::ImpossibleAssignment
+            | IssueCode::NoValue)
     )
 }
 
@@ -1263,47 +1622,43 @@ fn get_assignment_map_depth(
 /// allow the comparison to be false. For example, `int(0) < int<0, max>`
 /// can be false when `$n = 0`.
 #[allow(clippy::similar_names)]
-fn can_condition_be_initially_false(pre_condition: &Expression<'_>, artifacts: &AnalysisArtifacts) -> bool {
+fn can_condition_be_initially_false(
+    pre_condition: &Expression<'_>,
+    artifacts: &AnalysisArtifacts,
+    loop_parent_context: &BlockContext<'_>,
+) -> bool {
     let Expression::Binary(binary) = pre_condition else {
         return artifacts.get_expression_type(pre_condition).is_none_or(|ct| !ct.is_always_truthy());
     };
 
     match binary.operator {
         BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => {
-            return can_condition_be_initially_false(binary.lhs, artifacts)
-                || can_condition_be_initially_false(binary.rhs, artifacts);
+            return can_condition_be_initially_false(binary.lhs, artifacts, loop_parent_context)
+                || can_condition_be_initially_false(binary.rhs, artifacts, loop_parent_context);
         }
         BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => {
-            return can_condition_be_initially_false(binary.lhs, artifacts)
-                && can_condition_be_initially_false(binary.rhs, artifacts);
+            return can_condition_be_initially_false(binary.lhs, artifacts, loop_parent_context)
+                && can_condition_be_initially_false(binary.rhs, artifacts, loop_parent_context);
         }
         _ => {}
     }
 
-    let Some(left_type) = artifacts.get_expression_type(binary.lhs) else {
-        return false;
+    let (Some((left_lb, left_ub)), Some((right_lb, right_ub))) = (
+        initial_int_bounds(binary.lhs, artifacts, loop_parent_context),
+        initial_int_bounds(binary.rhs, artifacts, loop_parent_context),
+    ) else {
+        let is_ordering = matches!(
+            binary.operator,
+            BinaryOperator::LessThan(_)
+                | BinaryOperator::LessThanOrEqual(_)
+                | BinaryOperator::GreaterThan(_)
+                | BinaryOperator::GreaterThanOrEqual(_)
+        );
+
+        return !is_ordering
+            || matches!(unwrap_expression(binary.lhs), Expression::Literal(_))
+            || matches!(unwrap_expression(binary.rhs), Expression::Literal(_));
     };
-
-    let Some(right_type) = artifacts.get_expression_type(binary.rhs) else {
-        return false;
-    };
-
-    let left_int = left_type.types.iter().find_map(|a| match a {
-        TAtomic::Scalar(TScalar::Integer(i)) => Some(i),
-        _ => None,
-    });
-
-    let right_int = right_type.types.iter().find_map(|a| match a {
-        TAtomic::Scalar(TScalar::Integer(i)) => Some(i),
-        _ => None,
-    });
-
-    let (Some(left_int), Some(right_int)) = (left_int, right_int) else {
-        return false;
-    };
-
-    let (left_lb, left_ub) = left_int.get_bounds();
-    let (right_lb, right_ub) = right_int.get_bounds();
 
     match &binary.operator {
         BinaryOperator::LessThan(_) => match (left_ub, right_lb) {
@@ -1322,6 +1677,319 @@ fn can_condition_be_initially_false(pre_condition: &Expression<'_>, artifacts: &
             (None, _) | (_, None) => true,
             (Some(a), Some(b)) => a < b,
         },
+        _ => true,
+    }
+}
+
+fn initial_int_bounds(
+    expression: &Expression<'_>,
+    artifacts: &AnalysisArtifacts,
+    loop_parent_context: &BlockContext<'_>,
+) -> Option<(Option<i64>, Option<i64>)> {
+    if let Expression::UnaryPrefix(UnaryPrefix { operator, operand }) = expression
+        && let Expression::Variable(Variable::Direct(variable)) = operand
+        && let Some(value) =
+            loop_parent_context.locals.get(&Word::from(variable.name)).and_then(|t| t.get_single_literal_int_value())
+    {
+        let value = match operator {
+            UnaryPrefixOperator::PreIncrement(_) => value.checked_add(1)?,
+            UnaryPrefixOperator::PreDecrement(_) => value.checked_sub(1)?,
+            _ => return None,
+        };
+
+        return Some((Some(value), Some(value)));
+    }
+
+    artifacts.get_expression_type(expression)?.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Scalar(TScalar::Integer(integer)) => Some(integer.get_bounds()),
+        TAtomic::Scalar(TScalar::Float(_)) => atomic
+            .get_literal_float_value()
+            .filter(|value| value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0)
+            .map(|value| (Some(value as i64), Some(value as i64))),
+        TAtomic::Scalar(TScalar::String(_)) => atomic
+            .get_literal_string_value()
+            .and_then(|value| std::str::from_utf8(value).ok()?.parse::<i64>().ok())
+            .map(|value| (Some(value), Some(value))),
+        _ => None,
+    })
+}
+
+fn collect_condition_assignments<'ast, 'arena>(
+    expression: &'ast Expression<'arena>,
+    assignments: &mut Vec<(&'ast DirectVariable<'arena>, &'ast Expression<'arena>)>,
+) {
+    match expression {
+        Expression::Parenthesized(parenthesized) => {
+            collect_condition_assignments(parenthesized.expression, assignments)
+        }
+        Expression::UnaryPrefix(unary) => collect_condition_assignments(unary.operand, assignments),
+        Expression::Binary(binary) => {
+            collect_condition_assignments(binary.lhs, assignments);
+            collect_condition_assignments(binary.rhs, assignments);
+        }
+        Expression::Assignment(assignment) if matches!(assignment.operator, AssignmentOperator::Assign(_)) => {
+            if let Expression::Variable(Variable::Direct(variable)) = assignment.lhs {
+                assignments.push((variable, assignment.rhs));
+            }
+
+            collect_condition_assignments(assignment.rhs, assignments);
+        }
+        _ => {}
+    }
+}
+
+/// The variables a condition assigns whenever it is true: when an `&&` chain is true, each of its operands ran.
+fn assigned_when_true(condition: &Expression<'_>) -> WordSet {
+    if let Expression::Binary(binary) = unwrap_expression(condition)
+        && matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_))
+    {
+        let mut assigned = assigned_when_true(binary.lhs);
+        assigned.extend(assigned_when_true(binary.rhs));
+
+        return assigned;
+    }
+
+    let mut variables = ShortCircuitedVariables::default();
+    variables.walk_expression(condition, &mut ());
+
+    variables.assigned
+}
+
+fn get_unseeded_variables(
+    statements: &[Statement<'_>],
+    pre_conditions: &[&Expression<'_>],
+    post_expressions: &[&Expression<'_>],
+) -> WordSet {
+    let mut owners = NestedLoopOwners::default();
+    for statement in statements {
+        owners.walk_statement(statement, &mut ());
+    }
+
+    if owners.breaks_loop {
+        return WordSet::default();
+    }
+
+    for expression in pre_conditions.iter().chain(post_expressions) {
+        owners.walk_expression(expression, &mut ());
+    }
+
+    let mut read = WordSet::default();
+    let mut unseeded = WordSet::default();
+    for expression in pre_conditions {
+        collect_variables(Node::Expression(expression), &mut read);
+    }
+
+    let mut pending: Vec<&Statement<'_>> = statements.iter().rev().collect();
+    while let Some(statement) = pending.pop() {
+        if let Statement::Block(block) = statement {
+            pending.extend(block.statements.iter().rev());
+        } else if let Statement::Expression(expression_statement) = statement
+            && let Expression::Assignment(assignment) = expression_statement.expression
+            && matches!(assignment.operator, AssignmentOperator::Assign(_))
+            && let Expression::Variable(Variable::Direct(variable)) = assignment.lhs
+        {
+            collect_variables(Node::Expression(assignment.rhs), &mut read);
+            let variable = word(variable.name);
+            if read.insert(variable) {
+                unseeded.insert(variable);
+            }
+        } else {
+            collect_variables(Node::Statement(statement), &mut read);
+        }
+    }
+
+    unseeded.extend(owners.owners.into_iter().filter_map(|(variable, owner)| owner.map(|_| variable)));
+    unseeded
+}
+
+fn collect_variables(node: Node<'_, '_>, variables: &mut WordSet) {
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        if let Node::DirectVariable(variable) = node {
+            variables.insert(word(variable.name));
+        }
+
+        node.visit_children(|child| pending.push(child));
+    }
+}
+
+#[derive(Default)]
+struct NestedLoopOwners {
+    depth: usize,
+    breakable_depth: usize,
+    current: u32,
+    owners: WordMap<Option<u32>>,
+    breaks_loop: bool,
+}
+
+impl NestedLoopOwners {
+    fn enter(&mut self, span: Span) {
+        if self.depth == 0 {
+            self.current = span.start.offset;
+        }
+
+        self.depth += 1;
+        self.breakable_depth += 1;
+    }
+
+    fn leave(&mut self) {
+        self.depth -= 1;
+        self.breakable_depth -= 1;
+    }
+}
+
+impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for NestedLoopOwners {
+    fn walk_in_break(&mut self, r#break: &'ast Break<'arena>, _context: &mut ()) {
+        let level = match r#break.level {
+            None => 1,
+            Some(Expression::Literal(Literal::Integer(integer))) => integer.value.unwrap_or(u64::MAX),
+            Some(_) => u64::MAX,
+        };
+
+        if level > self.breakable_depth as u64 {
+            self.breaks_loop = true;
+        }
+    }
+
+    fn walk_in_switch(&mut self, _switch: &'ast Switch<'arena>, _context: &mut ()) {
+        self.breakable_depth += 1;
+    }
+
+    fn walk_out_switch(&mut self, _switch: &'ast Switch<'arena>, _context: &mut ()) {
+        self.breakable_depth -= 1;
+    }
+
+    fn walk_in_direct_variable(&mut self, variable: &'ast DirectVariable<'arena>, _context: &mut ()) {
+        let owner = (self.depth > 0).then_some(self.current);
+        self.owners
+            .entry(word(variable.name))
+            .and_modify(|existing| {
+                if *existing != owner {
+                    *existing = None;
+                }
+            })
+            .or_insert(owner);
+    }
+
+    fn walk_foreach(&mut self, foreach: &'ast Foreach<'arena>, context: &mut ()) {
+        self.walk_expression(foreach.expression, context);
+        self.enter(foreach.span());
+        self.walk_foreach_target(&foreach.target, context);
+        self.walk_foreach_body(&foreach.body, context);
+        self.leave();
+    }
+
+    fn walk_for(&mut self, r#for: &'ast For<'arena>, context: &mut ()) {
+        for expression in r#for.initializations.iter().chain(r#for.conditions.iter()) {
+            self.walk_expression(expression, context);
+        }
+
+        self.enter(r#for.span());
+        for expression in r#for.increments.iter() {
+            self.walk_expression(expression, context);
+        }
+
+        self.walk_for_body(&r#for.body, context);
+        self.leave();
+    }
+
+    fn walk_while(&mut self, r#while: &'ast While<'arena>, context: &mut ()) {
+        self.walk_expression(r#while.condition, context);
+        self.enter(r#while.span());
+        self.walk_while_body(&r#while.body, context);
+        self.leave();
+    }
+
+    fn walk_do_while(&mut self, do_while: &'ast DoWhile<'arena>, context: &mut ()) {
+        self.enter(do_while.span());
+        self.walk_statement(do_while.statement, context);
+        self.leave();
+        self.walk_expression(do_while.condition, context);
+    }
+}
+
+#[derive(Default)]
+struct ShortCircuitedVariables {
+    depth: usize,
+    always: WordSet,
+    sometimes: WordSet,
+    assigned: WordSet,
+}
+
+impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for ShortCircuitedVariables {
+    fn walk_in_direct_variable(&mut self, variable: &'ast DirectVariable<'arena>, _context: &mut ()) {
+        (if self.depth == 0 { &mut self.always } else { &mut self.sometimes }).insert(word(variable.name));
+    }
+
+    fn walk_in_assignment(&mut self, assignment: &'ast Assignment<'arena>, _context: &mut ()) {
+        if self.depth == 0
+            && matches!(assignment.operator, AssignmentOperator::Assign(_))
+            && let Expression::Variable(Variable::Direct(variable)) = assignment.lhs
+        {
+            self.assigned.insert(word(variable.name));
+        }
+    }
+
+    fn walk_binary(&mut self, binary: &'ast Binary<'arena>, context: &mut ()) {
+        let short_circuits = usize::from(matches!(
+            binary.operator,
+            BinaryOperator::And(_)
+                | BinaryOperator::Or(_)
+                | BinaryOperator::LowAnd(_)
+                | BinaryOperator::LowOr(_)
+                | BinaryOperator::NullCoalesce(_)
+        ));
+        self.walk_expression(binary.lhs, context);
+        self.depth += short_circuits;
+        self.walk_expression(binary.rhs, context);
+        self.depth -= short_circuits;
+    }
+
+    fn walk_conditional(&mut self, conditional: &'ast Conditional<'arena>, context: &mut ()) {
+        self.walk_expression(conditional.condition, context);
+        self.depth += 1;
+        if let Some(then) = conditional.then {
+            self.walk_expression(then, context);
+        }
+        self.walk_expression(conditional.r#else, context);
+        self.depth -= 1;
+    }
+}
+
+pub(super) fn is_always_true_literal(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::Literal(Literal::True(_)) => true,
+        Expression::Literal(Literal::Integer(integer)) => integer.value.is_none_or(|value| value > 0),
+        _ => false,
+    }
+}
+
+fn condition_needs_analyzed_types(expression: &Expression<'_>) -> bool {
+    match expression {
+        Expression::Call(_) => true,
+        Expression::Parenthesized(parenthesized) => condition_needs_analyzed_types(parenthesized.expression),
+        Expression::UnaryPrefix(unary) => condition_needs_analyzed_types(unary.operand),
+        Expression::Binary(binary) => match binary.operator {
+            BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_) => {
+                [binary.lhs, binary.rhs].iter().any(|side| side.is_true() || side.is_false())
+            }
+            // A loose comparison with `null` keeps only the falsy values the operand's type can hold.
+            BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_) | BinaryOperator::AngledNotEqual(_) => {
+                [binary.lhs, binary.rhs]
+                    .iter()
+                    .any(|side| matches!(unwrap_expression(side), Expression::Literal(Literal::Null(_))))
+            }
+            BinaryOperator::And(_) | BinaryOperator::Or(_) | BinaryOperator::LowAnd(_) | BinaryOperator::LowOr(_) => {
+                let mut right_assignments = vec![];
+                collect_condition_assignments(binary.rhs, &mut right_assignments);
+
+                !right_assignments.is_empty()
+                    || condition_needs_analyzed_types(binary.lhs)
+                    || condition_needs_analyzed_types(binary.rhs)
+            }
+            _ => false,
+        },
+        Expression::Assignment(assignment) => condition_needs_analyzed_types(assignment.rhs),
         _ => false,
     }
 }
@@ -1329,12 +1997,13 @@ fn can_condition_be_initially_false(pre_condition: &Expression<'_>, artifacts: &
 fn apply_pre_condition_to_loop_context<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     pre_condition: &Expression<'arena>,
-    pre_condition_clauses: &[Clause],
+    pre_condition_clauses: &mut Vec<Clause>,
     loop_context: &mut BlockContext<'ctx>,
     loop_parent_context: &BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     is_do: bool,
     first_application: bool,
+    tested: bool,
 ) -> Result<WordSet, AnalysisError>
 where
     A: Arena,
@@ -1342,7 +2011,7 @@ where
     let pre_condition_span = pre_condition.span();
     let pre_referenced_variable_ids = std::mem::take(&mut loop_context.conditionally_referenced_variable_ids);
 
-    loop_context.flags.set_inside_conditional(true);
+    loop_context.flags.set_inside_conditional(tested);
     loop_context.flags.set_inside_loop_expressions(true);
 
     pre_condition.analyze(context, loop_context, artifacts)?;
@@ -1350,7 +2019,23 @@ where
     loop_context.flags.set_inside_loop_expressions(false);
     loop_context.flags.set_inside_conditional(false);
 
-    if first_application {
+    if first_application
+        && tested
+        && condition_needs_analyzed_types(pre_condition)
+        && let Some(clauses) = get_formula(
+            pre_condition_span,
+            pre_condition_span,
+            pre_condition,
+            context.get_assertion_context_from_block(loop_context),
+            artifacts,
+            &context.settings.algebra_thresholds(),
+            context.settings.formula_size_threshold,
+        )
+    {
+        *pre_condition_clauses = clauses;
+    }
+
+    if first_application && tested {
         let condition_type = artifacts.get_expression_type(pre_condition);
         let is_always_falsy = condition_type.is_some_and(|ct| ct.is_always_falsy());
         let is_always_truthy = condition_type.is_some_and(|ct| ct.is_always_truthy());
@@ -1364,7 +2049,7 @@ where
             // The condition is indeterminate (bool). Check if the loop condition
             // can be false with the initial variable values by testing the boundary
             // of integer ranges involved in the comparison.
-            if can_condition_be_initially_false(pre_condition, artifacts)
+            if can_condition_be_initially_false(pre_condition, artifacts, loop_parent_context)
                 && let Some(loop_scope) = artifacts.get_loop_scope_mut()
             {
                 loop_scope.truthy_pre_conditions = false;
@@ -1377,6 +2062,27 @@ where
 
     let always_assigned_before_loop_body_variables =
         BlockContext::get_new_or_updated_locals(loop_context, loop_parent_context);
+
+    if first_application && let Some(loop_scope) = artifacts.get_loop_scope_mut() {
+        let mut short_circuited = ShortCircuitedVariables::default();
+        short_circuited.walk_expression(pre_condition, &mut ());
+        loop_scope.variables_defined_by_condition.extend(
+            loop_context
+                .locals
+                .keys()
+                .filter(|variable_id| {
+                    !loop_parent_context.locals.contains_key(*variable_id)
+                        && !variable_id.as_bytes().iter().any(|byte| matches!(byte, b'[' | b'-' | b':'))
+                        && (!short_circuited.sometimes.contains(*variable_id)
+                            || short_circuited.always.contains(*variable_id))
+                })
+                .copied(),
+        );
+    }
+
+    if !tested {
+        return Ok(always_assigned_before_loop_body_variables);
+    }
 
     loop_context.clauses = saturate_shared_clauses(
         loop_parent_context.clauses.iter().cloned().chain(pre_condition_clauses.iter().cloned().map(Rc::new)),
@@ -1401,6 +2107,16 @@ where
             first_application,
             false,
         );
+    }
+
+    for variable_id in assigned_when_true(pre_condition) {
+        if let Some(variable_type) = loop_context.locals.get_mut(&variable_id)
+            && variable_type.possibly_undefined()
+        {
+            Rc::make_mut(variable_type).set_possibly_undefined(false, Some(false));
+        }
+
+        loop_context.possibly_undefined_variable_ids.remove(&variable_id);
     }
 
     if is_do {
@@ -1461,18 +2177,6 @@ fn update_loop_scope_contexts<'ctx, A>(
             continue_context.locals.insert(*variable_id, Rc::clone(pre_type));
         }
     }
-}
-
-fn get_and_expressions<'ast, 'arena>(cond: &'ast Expression<'arena>) -> Vec<&'ast Expression<'arena>> {
-    if let Expression::Binary(binary) = &cond
-        && let BinaryOperator::Or(_) | BinaryOperator::LowOr(_) = binary.operator
-    {
-        let mut anded = get_and_expressions(binary.lhs);
-        anded.extend(get_and_expressions(binary.rhs));
-        return anded;
-    }
-
-    vec![cond]
 }
 
 /// Analyzes the `foreach` iterator expression.

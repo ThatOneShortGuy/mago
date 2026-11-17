@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use foldhash::HashMap;
+use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 
 use mago_word::Word;
@@ -11,12 +12,15 @@ use crate::identifier::method::MethodIdentifier;
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::class_like::ClassLikeMetadata;
 
+pub type OverrideSeeds = HashMap<MethodIdentifier, Arc<IndexMap<Word, MethodIdentifier, RandomState>>>;
+
 /// Inherits method declarations and appearances from a parent class-like.
 /// Updates `declaring_method_ids`, `appearing_method_ids`, etc.
 pub fn inherit_methods_from_parent(
     metadata: &mut ClassLikeMetadata,
     parent_metadata: &ClassLikeMetadata,
     codebase: &CodebaseMetadata,
+    seeds: &mut OverrideSeeds,
 ) {
     let class_like_name = metadata.name;
     let parent_is_trait = parent_metadata.kind.is_trait();
@@ -67,7 +71,15 @@ pub fn inherit_methods_from_parent(
         let inherit_original =
             !parent_is_trait || !metadata.excludes_trait_method(parent_metadata.name, *method_name_lc, codebase);
         if inherit_original
-            && (*method_name_lc != constructor_name || parent_metadata.flags.has_consistent_constructor())
+            && (*method_name_lc != constructor_name
+                || parent_metadata.flags.has_consistent_constructor()
+                || parent_metadata.kind.is_interface()
+                || parent_metadata.overridden_method_ids.contains_key(&constructor_name)
+                || codebase
+                    .function_likes
+                    .get(&(declaring_method_id.get_class_name(), *method_name_lc))
+                    .and_then(|meta| meta.method_metadata.as_ref())
+                    .is_some_and(|method| method.is_abstract))
         {
             let add_parent = !parent_is_trait
                 || codebase
@@ -89,6 +101,15 @@ pub fn inherit_methods_from_parent(
                         if Arc::ptr_eq(entry.get(), parents)
                             && parents.contains_key(&declaring_method_id.get_class_name()) =>
                     {
+                        None
+                    }
+                    (Entry::Vacant(entry), None) => {
+                        entry.insert(Arc::clone(seeds.entry(*declaring_method_id).or_insert_with(|| {
+                            let mut parents = IndexMap::default();
+                            parents.reserve(1);
+                            parents.insert(declaring_method_id.get_class_name(), *declaring_method_id);
+                            Arc::new(parents)
+                        })));
                         None
                     }
                     (entry, _) => {
@@ -126,8 +147,15 @@ pub fn inherit_methods_from_parent(
                 {
                     return;
                 }
+
+                let is_pseudo = |method_id: &MethodIdentifier| {
+                    codebase.get_method_by_id(method_id).is_some_and(|method| method.flags.is_magic_method())
+                };
+
                 if implementing_method_id.get_class_name() == class_like_name
-                    || !codebase.can_replace_inherited_method(*implementing_method_id, parent_metadata.name)
+                    || (is_pseudo(declaring_method_id) && !is_pseudo(implementing_method_id))
+                    || !(codebase.can_replace_inherited_method(*implementing_method_id, parent_metadata.name)
+                        || (is_pseudo(implementing_method_id) && !is_pseudo(declaring_method_id)))
                 {
                     return;
                 }
@@ -206,7 +234,7 @@ mod tests {
         parent.add_overridden_method_parent(method, replacement);
 
         let mut child = class("Child");
-        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new());
+        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new(), &mut OverrideSeeds::default());
         assert_eq!(
             overridden(&child, method),
             Some(vec![(parent.name, replacement), (ancestor.get_class_name(), ancestor)])
@@ -218,7 +246,7 @@ mod tests {
         let existing = MethodIdentifier::new(word("Existing"), method);
         child.add_overridden_method_parent(method, old_ancestor);
         child.add_overridden_method_parent(method, existing);
-        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new());
+        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new(), &mut OverrideSeeds::default());
         assert_eq!(
             overridden(&child, method),
             Some(vec![
@@ -255,7 +283,7 @@ mod tests {
                 );
                 function.method_metadata = Some(MethodMetadata { is_abstract, ..MethodMetadata::default() });
                 codebase.function_likes.insert((parent.name, method), Box::new(function));
-                inherit_methods_from_parent(&mut child, &parent, &codebase);
+                inherit_methods_from_parent(&mut child, &parent, &codebase, &mut OverrideSeeds::default());
 
                 let mut expected = Vec::new();
                 if has_existing {
@@ -284,7 +312,7 @@ mod tests {
                 parent.flags.insert(MetadataFlags::CONSISTENT_CONSTRUCTOR);
             }
             let mut child = class("Child");
-            inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new());
+            inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new(), &mut OverrideSeeds::default());
             assert_eq!(overridden(&child, method), consistent.then(|| vec![(parent.name, parent_id)]));
         }
     }
@@ -308,7 +336,7 @@ mod tests {
             child.trait_visibility_map.insert(name, Visibility::Private);
         }
 
-        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new());
+        inherit_methods_from_parent(&mut child, &parent, &CodebaseMetadata::new(), &mut OverrideSeeds::default());
         assert_eq!(child.appearing_method_ids.get(&alias), Some(&own_alias));
         assert_eq!(child.appearing_method_ids.get(&method), Some(&MethodIdentifier::new(child.name, method)));
         assert_eq!(child.declaring_method_ids.get(&alias), Some(&method_id));

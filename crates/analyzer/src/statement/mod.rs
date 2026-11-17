@@ -1,5 +1,7 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::identifier::method::MethodIdentifier;
+use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_names::kind::NameKind;
@@ -8,13 +10,17 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::ExpressionStatement;
 use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Statement;
 use mago_word::Word;
+use mago_word::word;
 
 use crate::Context;
 use crate::analyzable::Analyzable;
@@ -184,10 +190,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
             }
             Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
             Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
-            Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
-            Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
-            Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
-            Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
+            Statement::Foreach(_) | Statement::For(_) | Statement::While(_) | Statement::DoWhile(_) => {
+                r#loop::memo::analyze_loop(
+                    self,
+                    context,
+                    block_context,
+                    artifacts,
+                    |context, block_context, artifacts| match self {
+                        Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
+                        Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
+                        Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
+                        Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
+                        _ => Ok(()),
+                    },
+                )
+            }
             Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),
             Statement::Break(r#break) => r#break.analyze(context, block_context, artifacts),
             Statement::If(r#if) => r#if.analyze(context, block_context, artifacts),
@@ -238,7 +255,18 @@ pub fn analyze_statements<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    for statement in statements {
+    for (index, statement) in statements.iter().enumerate() {
+        if let Statement::Use(_) = statement
+            && PrecedingDocblocks::new(context.comments, statement.span().start.offset).next().is_some()
+        {
+            for following in statements[index..].iter().map_while(|statement| match statement {
+                Statement::Use(r#use) => Some(r#use),
+                _ => None,
+            }) {
+                context.scope.populate_from_use(following);
+            }
+        }
+
         let is_declaration = statement.is_declaration();
 
         if block.flags.has_returned() {
@@ -260,7 +288,10 @@ where
                             .with_note("This statement is unreachable because the block has already returned.")
                             .with_help("Consider removing this statement as it does not do anything in this context."),
                     );
-                } else if !is_declaration {
+                } else if !is_declaration
+                    && !matches!(statement, Statement::ClosingTag(_) | Statement::OpeningTag(_) | Statement::Noop(_))
+                    && !matches!(statement, Statement::Inline(inline) if inline.value.iter().all(u8::is_ascii_whitespace))
+                {
                     context.collector.report_with_code(
                         IssueCode::UnevaluatedCode,
                         Issue::help("Unreachable code detected.")
@@ -317,7 +348,46 @@ fn detect_unused_statement_expressions<'ast, 'arena, A>(
         Expression::Access(_) => {
             "Accessing a property or constant as a statement might have no effect (unless it's meant to trigger a magic method call)."
         }
-        Expression::AnonymousClass(_) => "Defining an anonymous class without assigning it has no effect.",
+        Expression::AnonymousClass(anonymous_class) => {
+            let Some(class_like) = context.codebase.get_anonymous_class(context.source_file, expression.span()) else {
+                return;
+            };
+
+            let arguments = anonymous_class.argument_list.iter().flat_map(|list| list.arguments.iter());
+            if arguments.clone().any(|argument| argument.value().is_none())
+                || !discarded_object_has_no_effect(
+                    class_like,
+                    arguments.filter_map(PartialArgument::value),
+                    context,
+                    artifacts,
+                )
+            {
+                return;
+            }
+
+            "Defining an anonymous class without assigning it has no effect."
+        }
+        Expression::Instantiation(Instantiation {
+            class: Expression::Identifier(class_name), argument_list, ..
+        }) => {
+            let Some(class_like) = context.codebase.get_class_like(context.resolved_names.get(class_name)) else {
+                return;
+            };
+
+            if !class_like.kind.is_class()
+                || class_like.flags.is_abstract()
+                || !discarded_object_has_no_effect(
+                    class_like,
+                    argument_list.iter().flat_map(|list| list.arguments.iter()).map(Argument::value),
+                    context,
+                    artifacts,
+                )
+            {
+                return;
+            }
+
+            "Creating an object without using it has no effect."
+        }
         Expression::Closure(_) | Expression::ArrowFunction(_) | Expression::PartialApplication(_) => {
             "Defining a closure or arrow function without assigning or calling it has no effect."
         }
@@ -328,6 +398,9 @@ fn detect_unused_statement_expressions<'ast, 'arena, A>(
         Expression::Binary(binary) => {
             if (binary.operator.is_null_coalesce() || binary.operator.is_logical())
                 && (expression_has_observable_side_effect(binary.rhs)
+                    || artifacts
+                        .get_expression_type(binary.rhs)
+                        .is_some_and(mago_codex::ttype::union::TUnion::is_never)
                     || call_may_have_observable_side_effect(binary.rhs, context, artifacts))
             {
                 return;
@@ -378,6 +451,38 @@ fn detect_unused_statement_expressions<'ast, 'arena, A>(
                 "To fix this, assign the value to a variable, return it, or remove the statement if it is truly unnecessary.",
             ),
     );
+}
+
+fn discarded_object_has_no_effect<'ast, 'arena, A>(
+    class_like: &ClassLikeMetadata,
+    mut arguments: impl Iterator<Item = &'ast Expression<'arena>>,
+    context: &Context<'_, 'arena, A>,
+    artifacts: &AnalysisArtifacts,
+) -> bool
+where
+    A: Arena,
+    'arena: 'ast,
+{
+    if class_like.appearing_method_ids.contains_key(&word("__destruct")) {
+        return false;
+    }
+
+    let constructor_id = MethodIdentifier::new(class_like.name, word("__construct"));
+    if let Some(constructor) = context.codebase.get_declaring_method_by_id(&constructor_id)
+        && (!(constructor.flags.is_pure()
+            || constructor.flags.is_mutation_free()
+            || constructor.flags.is_external_mutation_free())
+            || constructor.flags.has_throw()
+            || !constructor.thrown_types.is_empty()
+            || constructor.parameters.iter().any(|parameter| parameter.flags.is_by_reference()))
+    {
+        return false;
+    }
+
+    arguments.all(|argument| {
+        !expression_has_observable_side_effect(argument)
+            && !call_may_have_observable_side_effect(argument, context, artifacts)
+    })
 }
 
 fn call_may_have_observable_side_effect<'arena, A>(

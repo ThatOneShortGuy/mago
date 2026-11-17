@@ -160,6 +160,102 @@ impl Deref for ClauseHandle<'_> {
     }
 }
 
+fn infer_common_consequences(clauses: &[ClauseHandle<'_>]) -> Vec<Clause> {
+    let mut implications: HashMap<_, AssertionMap<_, _>> = HashMap::default();
+    let mut known = HashSet::default();
+
+    for clause in clauses {
+        if !clause.reconcilable || clause.wedge {
+            continue;
+        }
+
+        let mut entries = clause.possibilities.iter();
+        let Some(first) = entries.next() else {
+            continue;
+        };
+
+        if clause.possibilities.len() == 1
+            && first.1.len() == 1
+            && let Some((hash, _)) = first.1.first()
+        {
+            known.insert((*first.0, *hash));
+        }
+
+        let Some(second) = entries.next() else {
+            continue;
+        };
+
+        if entries.next().is_some() || first.1.len() != 1 || second.1.len() != 1 {
+            continue;
+        }
+
+        for ((variable, assertions), (consequence_variable, consequences)) in [(first, second), (second, first)] {
+            let (Some((_, assertion)), Some((hash, consequence))) = (assertions.first(), consequences.first()) else {
+                continue;
+            };
+
+            let negated = assertion.get_negation();
+            if !assertion.is_negation_of(&negated) {
+                continue;
+            }
+
+            implications
+                .entry((*variable, negated.to_hash()))
+                .or_default()
+                .insert((*consequence_variable, *hash), consequence);
+        }
+    }
+
+    let mut inferred = Vec::new();
+    for clause in clauses {
+        if !clause.reconcilable || clause.wedge {
+            continue;
+        }
+
+        let Some((variable, assertions)) = clause.possibilities.first() else {
+            continue;
+        };
+
+        if clause.possibilities.len() == 1 && assertions.len() == 1 {
+            continue;
+        }
+
+        let Some((hash, _)) = assertions.first() else {
+            continue;
+        };
+
+        let Some(candidates) = implications.get(&(*variable, *hash)) else {
+            continue;
+        };
+
+        for (&candidate, &assertion) in candidates {
+            if known.contains(&candidate)
+                || !clause.possibilities.iter().all(|(variable, assertions)| {
+                    assertions.keys().all(|hash| {
+                        implications
+                            .get(&(*variable, *hash))
+                            .is_some_and(|consequences| consequences.contains_key(&candidate))
+                    })
+                })
+            {
+                continue;
+            }
+
+            known.insert(candidate);
+            inferred.push(Clause::new(
+                AssertionMap::from_iter([(candidate.0, AssertionMap::from_iter([(candidate.1, assertion.clone())]))]),
+                clause.condition_span,
+                clause.span,
+                Some(false),
+                Some(true),
+                Some(clause.generated),
+            ));
+        }
+    }
+
+    inferred
+}
+
 fn saturate_clause_handles<'clause>(
     clauses: impl IntoIterator<Item = ClauseHandle<'clause>>,
     thresholds: &AlgebraThresholds,
@@ -168,15 +264,15 @@ fn saturate_clause_handles<'clause>(
         unique_clauses: Vec<ClauseHandle<'_>>,
         saturation_complexity: usize,
         consensus_limit: usize,
-    ) -> Vec<ClauseHandle<'_>> {
+    ) -> (Vec<ClauseHandle<'_>>, bool) {
         let unique_clauses_len = unique_clauses.len();
         if unique_clauses_len == 0 || unique_clauses_len > saturation_complexity {
             // If the complexity is too high, or there are no clauses, return an empty set.
-            return vec![];
+            return (vec![], false);
         }
 
         if unique_clauses_len == 1 {
-            return unique_clauses;
+            return (unique_clauses, false);
         }
 
         if unique_clauses_len == 2
@@ -185,11 +281,12 @@ fn saturate_clause_handles<'clause>(
             && unique_clauses[0].possibilities.first().map(|(key, _)| key)
                 != unique_clauses[1].possibilities.first().map(|(key, _)| key)
         {
-            return unique_clauses;
+            return (unique_clauses, false);
         }
 
         let mut removed_indices: Vec<bool> = vec![false; unique_clauses_len];
         let mut added_clauses: Vec<Clause> = Vec::new();
+        let mut propagated_units = false;
         // Link clauses with matching key sets in input order. Hash collisions still
         // reach the exact comparison below. Resolution needs at least two variables.
         let hasher = FixedState::default();
@@ -272,6 +369,7 @@ fn saturate_clause_handles<'clause>(
                     }
 
                     removed_indices[clause_b_idx] = true;
+                    propagated_units = true;
 
                     if matching_clause_possibilities.len() == 1 {
                         if let Some(updated_clause) = clause_b.remove_possibilities(clause_var) {
@@ -352,6 +450,10 @@ fn saturate_clause_handles<'clause>(
                     }
                 }
             }
+        }
+
+        if unique_clauses_len > 2 && unique_clauses_len < consensus_limit && !first_by_keys.is_empty() {
+            added_clauses.extend(infer_common_consequences(&unique_clauses));
         }
 
         let mut combined_clauses = unique_clauses;
@@ -455,12 +557,19 @@ fn saturate_clause_handles<'clause>(
                 .collect();
 
             for (clause_a_idx, clause_a) in simplified_clauses.iter().enumerate() {
-                for (clause_b_idx, clause_b) in simplified_clauses.iter().enumerate().skip(clause_a_idx + 1) {
-                    if singleton_masks[clause_a_idx] & singleton_masks[clause_b_idx] == 0 {
+                'pairs: for (clause_b_idx, clause_b) in simplified_clauses.iter().enumerate().skip(clause_a_idx + 1) {
+                    if singleton_masks[clause_a_idx] & singleton_masks[clause_b_idx] == 0
+                        || !clause_a.reconcilable
+                        || clause_a.wedge
+                        || !clause_b.reconcilable
+                        || clause_b.wedge
+                        || removed_hashes.contains(&clause_a.hash)
+                        || removed_hashes.contains(&clause_b.hash)
+                    {
                         continue;
                     }
 
-                    let mut common_negated_keys: HashSet<Word> = HashSet::default();
+                    let mut negated_key = None;
                     for (index, (&common_key, a_possibilities)) in clause_a.possibilities.iter().enumerate() {
                         if a_possibilities.len() != 1 {
                             continue;
@@ -481,17 +590,18 @@ fn saturate_clause_handles<'clause>(
                                 .values()
                                 .next()
                                 .is_some_and(|a| b_possibilities.values().next().is_some_and(|b| a.is_negation_of(b)))
+                            && negated_key.replace(common_key).is_some()
                         {
-                            common_negated_keys.insert(common_key);
+                            continue 'pairs;
                         }
                     }
 
-                    if !common_negated_keys.is_empty() {
+                    if let Some(negated_key) = negated_key {
                         let mut new_possibilities: AssertionMap<Word, AssertionMap<u64, Assertion>> =
                             AssertionMap::default();
 
                         for (var_id, possibilities) in &clause_a.possibilities {
-                            if !common_negated_keys.contains(var_id) {
+                            if *var_id != negated_key {
                                 new_possibilities
                                     .entry(*var_id)
                                     .or_default()
@@ -500,7 +610,7 @@ fn saturate_clause_handles<'clause>(
                         }
 
                         for (var_id, possibilities) in &clause_b.possibilities {
-                            if !common_negated_keys.contains(var_id) {
+                            if *var_id != negated_key {
                                 new_possibilities
                                     .entry(*var_id)
                                     .or_default()
@@ -518,13 +628,25 @@ fn saturate_clause_handles<'clause>(
             simplified_clauses.retain(|f| !removed_hashes.contains(&f.hash));
         }
 
-        simplified_clauses
+        (simplified_clauses, propagated_units)
     }
 
     let mut seen: HashSet<u32> = HashSet::default();
-    let unique_clauses = clauses.into_iter().filter(|c| seen.insert(c.hash)).collect();
+    let mut unique_clauses = clauses.into_iter().filter(|c| seen.insert(c.hash)).collect();
 
-    saturate_clauses_inner(unique_clauses, thresholds.saturation_complexity.into(), thresholds.consensus_limit.into())
+    loop {
+        let (simplified, propagated_units) = saturate_clauses_inner(
+            unique_clauses,
+            thresholds.saturation_complexity.into(),
+            thresholds.consensus_limit.into(),
+        );
+
+        if !propagated_units {
+            return simplified;
+        }
+
+        unique_clauses = simplified;
+    }
 }
 
 /// Extracts simple assertions from a set of clauses and identifies which are "active".
@@ -544,7 +666,7 @@ fn saturate_clause_handles<'clause>(
 ///
 /// * `clauses` - A slice of clauses to analyze.
 /// * `creating_conditional_id` - An optional `Span` representing a conditional context.
-///   An assertion is "active" if its `condition_span` matches this ID.
+///   An assertion is "active" if its clause is not generated and its `condition_span` matches this ID.
 /// * `conditionally_referenced_var_ids` - A mutable `HashSet` that will be populated with all
 ///   variable IDs found in non-generated clauses.
 ///
@@ -614,6 +736,7 @@ pub fn find_satisfying_assignments_iter<'clause>(
 
         if let Some(creating_conditional_id) = creating_conditional_id
             && creating_conditional_id == clause.condition_span
+            && !clause.generated
         {
             active_truths.entry(*variable_id).or_default().insert(new_truth_index);
         }
@@ -782,12 +905,15 @@ pub fn disjoin_clauses(
 /// or `None` if the negation is not possible due to complexity or other constraints.
 #[inline]
 #[must_use]
-pub fn negate_formula(mut clauses: Vec<Clause>, thresholds: &AlgebraThresholds) -> Option<Vec<Clause>> {
-    clauses.retain(|clause| clause.reconcilable);
-
-    clauses.retain(|clause| {
-        clause.wedge || clause.possibilities.values().all(|assertions| assertions.values().all(Assertion::is_negatable))
-    });
+pub fn negate_formula(clauses: &[Clause], thresholds: &AlgebraThresholds) -> Option<Vec<Clause>> {
+    let clauses: Vec<&Clause> = clauses
+        .iter()
+        .filter(|clause| {
+            clause.reconcilable
+                && (clause.wedge
+                    || clause.possibilities.values().all(|assertions| assertions.values().all(Assertion::is_negatable)))
+        })
+        .collect();
 
     if clauses.is_empty() {
         return Some(vec![]);
@@ -804,7 +930,7 @@ pub fn negate_formula(mut clauses: Vec<Clause>, thresholds: &AlgebraThresholds) 
 }
 
 #[inline]
-fn group_impossibilities(mut clauses: Vec<Clause>, max_complexity: usize) -> Option<Vec<Clause>> {
+fn group_impossibilities(mut clauses: Vec<&Clause>, max_complexity: usize) -> Option<Vec<Clause>> {
     let mut seed_clauses = Vec::new();
     let mut complexity = 1usize;
 
@@ -1035,6 +1161,44 @@ mod tests {
     }
 
     #[test]
+    fn unit_propagation_applies_all_units_to_a_disjunction() {
+        let input = [
+            clause(1, &[("$a", Assertion::Truthy), ("$b", Assertion::Truthy), ("$c", Assertion::Truthy)]),
+            clause(2, &[("$a", Assertion::Falsy)]),
+            clause(3, &[("$b", Assertion::Falsy)]),
+        ];
+
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let reordered = order.map(|index| input[index].clone());
+            let output = saturate_clauses(&reordered, &AlgebraThresholds::default());
+            let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+            assert_eq!(truths.get(&word("$a")), Some(&vec![vec![Assertion::Falsy]]));
+            assert_eq!(truths.get(&word("$b")), Some(&vec![vec![Assertion::Falsy]]));
+            assert_eq!(truths.get(&word("$c")), Some(&vec![vec![Assertion::Truthy]]));
+        }
+    }
+
+    #[test]
+    fn unit_propagation_applies_newly_derived_units() {
+        let input = [
+            clause(1, &[("$a", Assertion::Truthy)]),
+            clause(2, &[("$a", Assertion::Falsy), ("$b", Assertion::Truthy)]),
+            clause(3, &[("$b", Assertion::Falsy), ("$c", Assertion::Truthy)]),
+        ];
+
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let reordered = order.map(|index| input[index].clone());
+            let output = saturate_clauses(&reordered, &AlgebraThresholds::default());
+            let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+            for variable in ["$a", "$b", "$c"] {
+                assert_eq!(truths.get(&word(variable)), Some(&vec![vec![Assertion::Truthy]]));
+            }
+        }
+    }
+
+    #[test]
     fn resolution_preserves_the_first_clause_metadata() {
         let first = clause(1, &[("$x", Assertion::Truthy), ("$y", Assertion::Truthy)]);
         let second = clause(2, &[("$x", Assertion::Falsy), ("$y", Assertion::Truthy)]);
@@ -1050,6 +1214,84 @@ mod tests {
         let expected = first.remove_possibilities(word("$x")).into_iter().collect::<Vec<_>>();
 
         assert_exact(&saturate_clauses(&[first, second], &AlgebraThresholds::default()), &expected);
+    }
+
+    #[test]
+    fn disjunction_keeps_common_implication_consequences() {
+        let input = [
+            clause(1, &[("$a", Assertion::Truthy), ("$b", Assertion::Truthy)]),
+            clause(2, &[("$a", Assertion::Falsy), ("$value", Assertion::Truthy)]),
+            clause(3, &[("$b", Assertion::Falsy), ("$value", Assertion::Truthy)]),
+        ];
+        let output = saturate_clauses(&input, &AlgebraThresholds::default());
+        let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+        assert_eq!(truths.get(&word("$value")), Some(&vec![vec![Assertion::Truthy]]));
+    }
+
+    #[test]
+    fn disjunction_does_not_infer_unshared_consequences() {
+        let input = [
+            clause(1, &[("$a", Assertion::Truthy), ("$b", Assertion::Truthy)]),
+            clause(2, &[("$a", Assertion::Falsy), ("$left", Assertion::Truthy)]),
+            clause(3, &[("$b", Assertion::Falsy), ("$right", Assertion::Truthy)]),
+        ];
+        let output = saturate_clauses(&input, &AlgebraThresholds::default());
+        let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+        assert!(!truths.contains_key(&word("$left")));
+        assert!(!truths.contains_key(&word("$right")));
+    }
+
+    #[test]
+    fn common_consequences_respect_consensus_limit() {
+        let input = [
+            clause(1, &[("$a", Assertion::Truthy), ("$b", Assertion::Truthy)]),
+            clause(2, &[("$a", Assertion::Falsy), ("$value", Assertion::Truthy)]),
+            clause(3, &[("$b", Assertion::Falsy), ("$value", Assertion::Truthy)]),
+        ];
+        let thresholds = AlgebraThresholds { consensus_limit: 3, ..AlgebraThresholds::default() };
+        let output = saturate_clauses(&input, &thresholds);
+        let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+        assert!(!truths.contains_key(&word("$value")));
+    }
+
+    #[test]
+    fn common_consequences_preserve_satisfying_assignments() {
+        let variables = ["$a", "$b", "$value"].map(word);
+        let evaluate = |clause: &Clause, assignment: usize| {
+            clause.possibilities.iter().any(|(variable, assertions)| {
+                variables.iter().position(|candidate| candidate == variable).is_some_and(|index| {
+                    assertions
+                        .values()
+                        .any(|assertion| matches!(assertion, Assertion::Truthy) == (assignment & (1 << index) != 0))
+                })
+            })
+        };
+
+        for polarity in 0..8 {
+            let assertions =
+                [0, 1, 2].map(|index| if polarity & (1 << index) != 0 { Assertion::Truthy } else { Assertion::Falsy });
+            let input = [
+                clause(1, &[("$a", assertions[0].clone()), ("$b", assertions[1].clone())]),
+                clause(2, &[("$a", assertions[0].get_negation()), ("$value", assertions[2].clone())]),
+                clause(3, &[("$b", assertions[1].get_negation()), ("$value", assertions[2].clone())]),
+            ];
+
+            for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                let reordered = order.map(|index| input[index].clone());
+                let output = saturate_clauses(&reordered, &AlgebraThresholds::default());
+                let (truths, _) = find_satisfying_assignments(&output, None, &mut WordSet::default());
+
+                assert_eq!(truths.get(&word("$value")), Some(&vec![vec![assertions[2].clone()]]));
+                for assignment in 0..8 {
+                    if input.iter().all(|clause| evaluate(clause, assignment)) {
+                        assert!(output.iter().all(|clause| evaluate(clause, assignment)));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1118,13 +1360,25 @@ mod tests {
     }
 
     #[test]
-    fn consensus_removes_every_shared_negated_variable() {
+    fn consensus_keeps_a_clause_implied_only_by_a_double_clash() {
         let first = clause(1, &[("$x", Assertion::Truthy), ("$y", Assertion::Truthy), ("$p", Assertion::Truthy)]);
         let second = clause(2, &[("$x", Assertion::Falsy), ("$y", Assertion::Falsy), ("$q", Assertion::Truthy)]);
         let consensus = clause(3, &[("$p", Assertion::Truthy), ("$q", Assertion::Truthy)]);
-        let expected = [first.clone(), second.clone()];
+        let expected = [first.clone(), second.clone(), consensus.clone()];
 
         assert_exact(&saturate_clauses(&[first, second, consensus], &AlgebraThresholds::default()), &expected);
+    }
+
+    #[test]
+    fn consensus_does_not_remove_a_parent_of_a_removed_clause() {
+        let first = clause(1, &[("$p", Assertion::Truthy), ("$v", Assertion::Truthy)]);
+        let second = clause(2, &[("$v", Assertion::Falsy), ("$u", Assertion::Truthy)]);
+        let third = clause(3, &[("$p", Assertion::Truthy), ("$u", Assertion::Truthy)]);
+        let fourth = clause(4, &[("$u", Assertion::Falsy), ("$v", Assertion::Truthy)]);
+        let input = [first, second, third, fourth];
+        let output = saturate_clauses(&input, &AlgebraThresholds::default());
+
+        assert_eq!(output.len(), 3);
     }
 
     #[test]

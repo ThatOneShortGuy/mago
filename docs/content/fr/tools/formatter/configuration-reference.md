@@ -17,6 +17,8 @@ use-tabs = true
 
 ## Préréglages
 
+Les réglages et préréglages PHP ne s'appliquent pas à Twig. Utilisez [`[twig.formatter]`](/tools/formatter/twig/#configuration) pour configurer ou désactiver son formatage.
+
 Un préréglage est un ensemble complet d'options de formateur ajustées pour une norme de codage spécifique.
 
 ```toml
@@ -29,7 +31,7 @@ preset = "laravel"
 | `default` | Conforme à PER-CS. Identique aux valeurs par défaut intégrées. |
 | `psr-12` | Norme de codage PSR-12. |
 | `laravel` | Préréglage `laravel` de Laravel Pint. |
-| `drupal` | Norme de codage Drupal. |
+| `drupal` | Norme de codage Drupal. L'[extension officielle `drupal/mago`](/recipes/drupal/) le règle pour vous. |
 
 Les préréglages acceptent un suffixe de version :
 

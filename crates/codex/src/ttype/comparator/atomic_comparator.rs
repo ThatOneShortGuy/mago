@@ -1,22 +1,27 @@
+use std::str::from_utf8;
 use std::sync::Arc;
 
 use mago_word::concat_word;
 use mago_word::word;
 
 use crate::metadata::CodebaseMetadata;
+use crate::metadata::class_like::ClassLikeMetadata;
 use crate::misc::GenericParent;
 use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::array::TArray;
 use crate::ttype::atomic::array::keyed::TKeyedArray;
+use crate::ttype::atomic::array::list::TList;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::generic::TGenericParameter;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::r#enum::TEnum;
 use crate::ttype::atomic::object::named::TNamedObject;
+use crate::ttype::atomic::object::with_properties::TObjectWithProperties;
 use crate::ttype::atomic::reference::TReference;
 use crate::ttype::atomic::scalar::TScalar;
 use crate::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use crate::ttype::atomic::scalar::int::TInteger;
 use crate::ttype::atomic::scalar::string::TString;
 use crate::ttype::atomic::scalar::string::TStringCasing;
 use crate::ttype::atomic::scalar::string::TStringLiteral;
@@ -377,17 +382,20 @@ pub fn is_contained_by(
                         .and_then(|declaring_metadata| declaring_metadata.properties.get(&property_name));
 
                     // Structural containment is an external view: a publicly readable real
-                    // property governs; otherwise a magic `@property*` tag documents the
-                    // `__get` interface and applies instead.  A non-public real property
-                    // without a tag is still accepted, as it always was here.
+                    // property governs; otherwise a magic `@property*` tag applies, when the
+                    // class has a `__get` to serve it.
                     let declared_property = match real_property {
                         Some(real) if real.read_visibility.is_public() => Some(real),
-                        real => class_like_metadata
-                            .magic_property_ids
-                            .get(&property_name)
-                            .and_then(|tag_class| codebase.get_class_like_by_name(*tag_class))
-                            .and_then(|tag_metadata| tag_metadata.magic_properties.get(&property_name))
-                            .or(real),
+                        _ if class_like_metadata.flags.allows_dynamic_properties()
+                            || class_like_metadata.declaring_method_ids.contains_key(&word("__get")) =>
+                        {
+                            class_like_metadata
+                                .magic_property_ids
+                                .get(&property_name)
+                                .and_then(|tag_class| codebase.get_class_like_by_name(*tag_class))
+                                .and_then(|tag_metadata| tag_metadata.magic_properties.get(&property_name))
+                        }
+                        _ => None,
                     };
 
                     let Some(declared_property) = declared_property else {
@@ -401,8 +409,8 @@ pub fn is_contained_by(
                         Some(property_type_metadata) => {
                             if !union_comparator::is_contained_by(
                                 codebase,
-                                container_property_type,
                                 &property_type_metadata.type_union,
+                                container_property_type,
                                 false,
                                 false,
                                 inside_assertion,
@@ -423,8 +431,7 @@ pub fn is_contained_by(
                     // For sealed objects, we need to ensure the input object doesn't have
                     // properties that aren't in the container type
                     for property_name in class_like_metadata.declaring_property_ids.keys() {
-                        let actual_property_name =
-                            word(property_name.as_bytes().strip_prefix(b"$").unwrap_or(property_name.as_bytes()));
+                        let actual_property_name = word(property_name.as_bytes().trim_prefix(b"$"));
 
                         // Check if this property exists in our container's known properties
                         if !container_object_with_properties.known_properties.contains_key(&actual_property_name) {
@@ -551,6 +558,15 @@ pub(crate) fn can_be_identical(
     inside_assertion: bool,
     allow_type_coercion: bool,
 ) -> bool {
+    if let (TAtomic::Iterable(_), object @ TAtomic::Object(TObject::Named(named)))
+    | (object @ TAtomic::Object(TObject::Named(named)), TAtomic::Iterable(_)) = (first_part, second_part)
+        && !named.has_intersection_types()
+        && !object.is_traversable(codebase)
+        && codebase.get_class_like(named.name.as_bytes()).is_some_and(|metadata| metadata.flags.is_final())
+    {
+        return false;
+    }
+
     if matches!(
         (first_part, second_part),
         // If either part is a variable, they can be identical
@@ -580,6 +596,16 @@ pub(crate) fn can_be_identical(
     {
         return match (class_string, string.get_known_literal_value()) {
             (TClassLikeString::Literal { value }, Some(str_value)) => value.as_bytes().eq_ignore_ascii_case(str_value),
+            (_, Some(str_value)) => {
+                let name = str_value.strip_prefix(b"\\").unwrap_or(str_value);
+
+                match (codebase.get_class_like(name), class_string.constraint()) {
+                    (Some(metadata), Some(TAtomic::Object(TObject::Named(constraint)))) => {
+                        codebase.is_instance_of(metadata.name.as_bytes(), constraint.name.as_bytes())
+                    }
+                    _ => true,
+                }
+            }
             _ => true,
         };
     }
@@ -604,22 +630,32 @@ pub(crate) fn can_be_identical(
         };
     }
 
+    if let (TAtomic::Array(first_array), TAtomic::Array(second_array)) = (first_part, second_part)
+        && ((first_array.is_empty() && is_surely_non_empty(second_array))
+            || (second_array.is_empty() && is_surely_non_empty(first_array)))
+    {
+        return false;
+    }
+
     if (first_part.is_list() && second_part.is_non_empty_list())
         || (second_part.is_list() && first_part.is_non_empty_list())
     {
-        return if let Some(first_element_type) = first_part.get_list_element_type()
-            && let Some(second_element_type) = second_part.get_list_element_type()
+        return if let (TAtomic::Array(TArray::List(first_list)), TAtomic::Array(TArray::List(second_list))) =
+            (first_part, second_part)
         {
-            union_comparator::can_expression_types_be_identical(
-                codebase,
-                first_element_type,
-                second_element_type,
-                inside_assertion,
-                false,
-            )
+            list_values_can_match(codebase, first_list, second_list, inside_assertion)
+                && list_values_can_match(codebase, second_list, first_list, inside_assertion)
         } else {
             false
         };
+    }
+
+    if inside_assertion
+        && let (TAtomic::Array(first_array), TAtomic::Array(second_array)) = (first_part, second_part)
+        && first_array.get_minimum_size() == 0
+        && second_array.get_minimum_size() == 0
+    {
+        return true;
     }
 
     if let (TAtomic::Array(TArray::Keyed(first_array)), TAtomic::Array(TArray::Keyed(second_array))) =
@@ -759,7 +795,7 @@ pub(crate) fn can_be_identical(
         || is_contained_by(codebase, second_part, first_part, inside_assertion, &mut second_comparison_result)
         || (first_comparison_result.type_coerced.unwrap_or(false)
             && second_comparison_result.type_coerced.unwrap_or(false))
-        || (allow_type_coercion && first_part.is_some_scalar() && second_part.is_some_scalar())
+        || (allow_type_coercion && scalars_can_be_identical_with_coercion(first_part, second_part))
     {
         return true;
     }
@@ -783,10 +819,73 @@ pub(crate) fn can_be_identical(
     if let (TAtomic::Object(first_object), TAtomic::Object(second_object)) = (first_part, second_part)
         && let (Some(first_name), Some(second_name)) = (first_object.get_name(), second_object.get_name())
     {
+        let first_intersections = first_part.get_intersection_types().unwrap_or_default();
+        let second_intersections = second_part.get_intersection_types().unwrap_or_default();
+        if !first_intersections.is_empty() || !second_intersections.is_empty() {
+            let bare = |atomic: &TAtomic| {
+                let mut atomic = atomic.clone();
+                if let Some(types) = atomic.get_intersection_types_mut() {
+                    types.clear();
+                }
+
+                atomic
+            };
+
+            let first_parts: Vec<TAtomic> =
+                std::iter::once(bare(first_part)).chain(first_intersections.iter().cloned()).collect();
+            let second_parts: Vec<TAtomic> =
+                std::iter::once(bare(second_part)).chain(second_intersections.iter().cloned()).collect();
+
+            return first_parts.iter().all(|first| {
+                second_parts
+                    .iter()
+                    .all(|second| can_be_identical(codebase, first, second, inside_assertion, allow_type_coercion))
+            });
+        }
+
         return match (codebase.get_class_like_by_name(first_name), codebase.get_class_like_by_name(second_name)) {
-            (Some(c1), Some(c2)) => c1.kind.is_interface() || c2.kind.is_interface(),
+            (Some(c1), Some(c2)) => {
+                let final_class_outside = |class: &ClassLikeMetadata, interface: &ClassLikeMetadata| {
+                    (class.flags.is_final() || class.kind.is_enum())
+                        && !codebase.is_instance_of(class.name.as_bytes(), interface.name.as_bytes())
+                };
+
+                (c1.kind.is_interface() && !final_class_outside(c2, c1))
+                    || (c2.kind.is_interface() && !final_class_outside(c1, c2))
+            }
             _ => true,
         };
+    }
+
+    match (first_part, second_part) {
+        (
+            TAtomic::Object(TObject::WithProperties(first_shape)),
+            TAtomic::Object(TObject::WithProperties(second_shape)),
+        ) => {
+            let conflicts = |left: &TObjectWithProperties, right: &TObjectWithProperties| {
+                left.known_properties.iter().any(|(name, (optional, left_type))| {
+                    match right.known_properties.get(name) {
+                        Some((_, right_type)) => !union_comparator::can_expression_types_be_identical(
+                            codebase,
+                            left_type,
+                            right_type,
+                            inside_assertion,
+                            allow_type_coercion,
+                        ),
+                        None => right.sealed && !optional,
+                    }
+                })
+            };
+
+            return !conflicts(first_shape, second_shape) && !conflicts(second_shape, first_shape);
+        }
+        (TAtomic::Object(TObject::Named(named)), TAtomic::Object(TObject::WithProperties(_)))
+        | (TAtomic::Object(TObject::WithProperties(_)), TAtomic::Object(TObject::Named(named)))
+            if named.name.as_bytes().eq_ignore_ascii_case(b"stdClass") =>
+        {
+            return true;
+        }
+        _ => {}
     }
 
     matches!(
@@ -834,6 +933,126 @@ fn strings_can_be_identical(lhs: &TString, rhs: &TString) -> bool {
     true
 }
 
+#[must_use]
+pub fn scalars_can_be_identical_with_coercion(first: &TAtomic, second: &TAtomic) -> bool {
+    let (TAtomic::Scalar(first_scalar), TAtomic::Scalar(second_scalar)) = (first, second) else {
+        return false;
+    };
+
+    match (first_scalar, second_scalar) {
+        (TScalar::Generic, _) | (_, TScalar::Generic) => true,
+        (TScalar::ArrayKey, _) | (_, TScalar::ArrayKey) => true,
+        (TScalar::Bool(b1), TScalar::Bool(b2)) => !(b1.is_true() && b2.is_false() || b1.is_false() && b2.is_true()),
+        (TScalar::Bool(b), other) | (other, TScalar::Bool(b)) => {
+            !(b.is_true() && other.is_falsy() || b.is_false() && other.is_truthy())
+        }
+        (TScalar::Integer(i1), TScalar::Integer(i2)) => {
+            if let (Some(v1), Some(v2)) = (i1.get_literal_value(), i2.get_literal_value()) {
+                v1 == v2
+            } else {
+                i1.overlaps(*i2)
+            }
+        }
+        (TScalar::Float(f1), TScalar::Float(f2)) => {
+            if let (Some(v1), Some(v2)) = (f1.get_literal_value(), f2.get_literal_value()) { v1 == v2 } else { true }
+        }
+        (TScalar::String(s1), TScalar::String(s2)) => {
+            if let (Some(v1), Some(v2)) = (s1.get_known_literal_value(), s2.get_known_literal_value()) {
+                v1 == v2
+                    || (s1.is_numeric
+                        && s2.is_numeric
+                        && match (from_utf8(v1), from_utf8(v2)) {
+                            (Ok(str1), Ok(str2)) => {
+                                let str1 = str1.trim();
+                                let str2 = str2.trim();
+
+                                if let (Ok(num1), Ok(num2)) = (str1.parse::<i64>(), str2.parse::<i64>()) {
+                                    num1 == num2
+                                } else {
+                                    match (str1.parse::<f64>(), str2.parse::<f64>()) {
+                                        (Ok(num1), Ok(num2)) => num1 == num2,
+                                        _ => false,
+                                    }
+                                }
+                            }
+                            _ => false,
+                        })
+            } else {
+                s1.get_known_literal_value().is_none_or(|_| s1.is_numeric)
+                    && s2.get_known_literal_value().is_none_or(|_| s2.is_numeric)
+            }
+        }
+        (TScalar::String(s), TScalar::ClassLikeString(cls)) | (TScalar::ClassLikeString(cls), TScalar::String(s)) => {
+            if let (Some(v1), TClassLikeString::Literal { value }) = (s.get_known_literal_value(), cls) {
+                v1.eq_ignore_ascii_case(value.as_bytes())
+            } else {
+                true
+            }
+        }
+        (TScalar::ClassLikeString(c1), TScalar::ClassLikeString(c2)) => {
+            if let (TClassLikeString::Literal { value: v1 }, TClassLikeString::Literal { value: v2 }) = (c1, c2) {
+                v1.as_bytes().eq_ignore_ascii_case(v2.as_bytes())
+            } else {
+                true
+            }
+        }
+        (TScalar::Integer(i), TScalar::Float(f)) | (TScalar::Float(f), TScalar::Integer(i)) => {
+            if let (Some(iv), Some(fv)) = (i.get_literal_value(), f.get_literal_value()) {
+                (iv as f64) == fv
+            } else {
+                true
+            }
+        }
+        (TScalar::Integer(i), TScalar::String(s)) | (TScalar::String(s), TScalar::Integer(i)) => {
+            if let Some(s_val) = s.get_known_literal_value() {
+                if let Ok(s_str) = from_utf8(s_val) {
+                    if let Ok(s_int) = s_str.trim().parse::<i64>() {
+                        if let Some(i_val) = i.get_literal_value() {
+                            i_val == s_int
+                        } else {
+                            i.overlaps(TInteger::literal(s_int))
+                        }
+                    } else if let Ok(s_float) = s_str.trim().parse::<f64>() {
+                        if let Some(i_val) = i.get_literal_value() { (i_val as f64) == s_float } else { true }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        (TScalar::Float(f), TScalar::String(s)) | (TScalar::String(s), TScalar::Float(f)) => {
+            if let Some(s_val) = s.get_known_literal_value() {
+                if let Ok(s_str) = from_utf8(s_val) {
+                    if let Ok(s_float) = s_str.trim().parse::<f64>() {
+                        if let Some(f_val) = f.get_literal_value() { f_val == s_float } else { true }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        (TScalar::ClassLikeString(_), TScalar::Integer(_) | TScalar::Float(_))
+        | (TScalar::Integer(_) | TScalar::Float(_), TScalar::ClassLikeString(_)) => false,
+        (TScalar::Numeric, TScalar::String(s)) | (TScalar::String(s), TScalar::Numeric) => {
+            if let Some(s_val) = s.get_known_literal_value() {
+                if let Ok(s_str) = from_utf8(s_val) { s_str.trim().parse::<f64>().is_ok() } else { false }
+            } else {
+                true
+            }
+        }
+        (TScalar::Numeric, TScalar::ClassLikeString(_)) | (TScalar::ClassLikeString(_), TScalar::Numeric) => false,
+        (TScalar::Numeric, _) | (_, TScalar::Numeric) => true,
+    }
+}
+
 fn entry_can_match_parameters(
     codebase: &CodebaseMetadata,
     entry: &(bool, TUnion),
@@ -876,6 +1095,36 @@ fn parameters_can_be_identical(
         }
         _ => true,
     }
+}
+
+fn is_surely_non_empty(array: &TArray) -> bool {
+    match array {
+        TArray::List(list) => list.non_empty,
+        TArray::Keyed(keyed) => {
+            keyed.known_items.as_ref().is_some_and(|items| items.values().any(|(optional, _)| !optional))
+        }
+    }
+}
+
+fn list_values_can_match(codebase: &CodebaseMetadata, list: &TList, other: &TList, inside_assertion: bool) -> bool {
+    let other_values: Vec<&TUnion> = other
+        .known_elements
+        .iter()
+        .flat_map(|elements| elements.values().map(|(_, element_type)| element_type))
+        .chain((!other.element_type.is_never()).then_some(other.element_type.as_ref()))
+        .collect();
+
+    let can_match = |value: &TUnion| {
+        other_values.iter().any(|other_value| {
+            union_comparator::can_expression_types_be_identical(codebase, value, other_value, inside_assertion, false)
+        })
+    };
+
+    list.known_elements
+        .iter()
+        .flat_map(|elements| elements.values())
+        .all(|(optional, element_type)| *optional || can_match(element_type))
+        && (list.element_type.is_never() || can_match(&list.element_type))
 }
 
 fn keyed_arrays_can_be_identical(

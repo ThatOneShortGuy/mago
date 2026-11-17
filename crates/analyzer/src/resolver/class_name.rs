@@ -11,12 +11,15 @@ use mago_codex::ttype::atomic::object::r#enum::TEnum;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeStringKind;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassConstantAccess;
+use mago_syntax::cst::ClassLikeConstantSelector;
 use mago_syntax::cst::Expression;
 
 use crate::analyzable::Analyzable;
@@ -25,6 +28,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::function::is_builtin_function_call;
 use crate::utils::expression::expression_is_nullsafe;
 use crate::utils::names::display_class_like_name;
 
@@ -234,7 +238,10 @@ where
             possible_types.push(ResolvedClassname::new(
                 Some(fqcn),
                 ResolutionOrigin::Named { is_parent: false, is_self: false },
-                context.codebase.is_enum_or_final_class(fqcn.as_bytes()),
+                context
+                    .codebase
+                    .get_class_like_by_name(fqcn)
+                    .is_some_and(|metadata| metadata.kind.is_enum() || metadata.flags.is_final()),
             ));
         }
         Expression::Self_(self_keyword) => {
@@ -351,7 +358,10 @@ where
                 block_context.flags.set_inside_call(was_inside_call);
             }
 
-            let expression_type = artifacts.get_expression_type(expression);
+            let expression_type = get_runtime_class_object(context, expression)
+                .and_then(|object| artifacts.get_expression_type(object))
+                .filter(|object_type| object_type.types.iter().all(TAtomic::is_object_type))
+                .or_else(|| artifacts.get_expression_type(expression));
 
             let is_directly_nullsafe = matches!(
                 expression.unparenthesized(),
@@ -423,6 +433,29 @@ where
 /// - `mixed`, `any`, `object`: Resolved with a corresponding generic origin.
 ///
 /// Returns `None` for atomic types that can never be a class name (e.g., int, bool, array).
+fn get_runtime_class_object<'ast, 'arena, A>(
+    context: &Context<'_, 'arena, A>,
+    expression: &'ast Expression<'arena>,
+) -> Option<&'ast Expression<'arena>>
+where
+    A: Arena,
+{
+    match expression {
+        Expression::Access(Access::ClassConstant(ClassConstantAccess {
+            class,
+            constant: ClassLikeConstantSelector::Identifier(constant),
+            ..
+        })) if constant.value.eq_ignore_ascii_case(b"class") => Some(class),
+        Expression::Call(Call::Function(call))
+            if call.argument_list.arguments.len() == 1
+                && is_builtin_function_call(call, b"get_class", context.resolved_names, context.codebase) =>
+        {
+            call.argument_list.arguments.first().map(|argument| argument.value())
+        }
+        _ => None,
+    }
+}
+
 pub fn get_class_name_from_atomic(codebase: &CodebaseMetadata, atomic: &TAtomic) -> Option<ResolvedClassname> {
     #[inline]
     fn get_class_name_from_atomic_impl(
@@ -483,6 +516,12 @@ pub fn get_class_name_from_atomic(codebase: &CodebaseMetadata, atomic: &TAtomic)
             },
             TAtomic::Scalar(TScalar::ClassLikeString(class_string)) => {
                 match class_string {
+                    TClassLikeString::Any { kind: TClassLikeStringKind::Enum } => {
+                        let unit_enum = TAtomic::Object(TObject::Named(TNamedObject::new(word("UnitEnum"))));
+                        let class_string = TClassLikeString::of_type(TClassLikeStringKind::Enum, unit_enum.clone());
+
+                        get_class_name_from_atomic_impl(codebase, &unit_enum, Some(&class_string))?
+                    }
                     TClassLikeString::Any { .. } => {
                         ResolvedClassname::new(None, ResolutionOrigin::AnyClassString, false)
                     }

@@ -566,7 +566,7 @@ impl TAtomic {
             // Instances of some classes (e.g. an empty `SimpleXMLElement`) can cast to `false`,
             // so they are neither always truthy nor always falsy.
             TAtomic::Object(TObject::Named(named_object)) => {
-                let name = named_object.name.as_bytes().strip_prefix(b"\\").unwrap_or(named_object.name.as_bytes());
+                let name = named_object.name.as_bytes().trim_prefix(b"\\");
                 if POSSIBLY_FALSY_CLASS_NAMES.iter().any(|class_name| name.eq_ignore_ascii_case(class_name)) {
                     return false;
                 }
@@ -963,7 +963,7 @@ pub fn populate_atomic_type(
                 }
 
                 if let Some(symbol_kind) = codebase_symbols.get_kind(name.to_ascii_lowercase()) {
-                    if symbol_kind == SymbolKind::Enum {
+                    if symbol_kind == SymbolKind::Enum && parameters.is_none() {
                         *unpopulated_atomic = TAtomic::Object(TObject::new_enum(*name));
                     } else {
                         let intersection_types = intersection_types.take().map(|intersection_types| {
@@ -1009,10 +1009,17 @@ pub fn populate_atomic_type(
                 }
             }
             TReference::Global { selector } => {
-                if let TGlobalReferenceSelector::Identifier(name) = selector
-                    && let Some(reference_source) = reference_source
-                {
-                    add_symbol_reference(reference_source, symbol_references, *name);
+                if let Some(reference_source) = reference_source {
+                    match selector {
+                        TGlobalReferenceSelector::Identifier(name) => {
+                            add_symbol_reference(reference_source, symbol_references, *name);
+                        }
+                        TGlobalReferenceSelector::Fallback { name, fallback } => {
+                            add_symbol_reference(reference_source, symbol_references, *name);
+                            add_symbol_reference(reference_source, symbol_references, *fallback);
+                        }
+                        _ => {}
+                    }
                 }
             }
         },

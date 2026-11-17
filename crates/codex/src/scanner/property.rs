@@ -66,6 +66,10 @@ where
         flags |= MetadataFlags::READONLY;
     }
 
+    if parameter.modifiers.iter().any(|modifier| matches!(modifier, Modifier::PublicSet(_))) {
+        flags |= MetadataFlags::PUBLIC_SET;
+    }
+
     if parameter.modifiers.contains_abstract() {
         flags |= MetadataFlags::ABSTRACT;
     }
@@ -112,7 +116,7 @@ where
         }
 
         let name_bytes = name.0.as_bytes();
-        let prop_name = name_bytes.strip_prefix(b"$").unwrap_or(name_bytes);
+        let prop_name = name_bytes.trim_prefix(b"$");
         property_metadata.set_is_virtual(!hooks_reference_backing_store(&hook_list.hooks, prop_name));
     }
 
@@ -210,6 +214,10 @@ where
 
                     if plain_property.modifiers.contains_readonly() {
                         item_flags |= MetadataFlags::READONLY;
+                    }
+
+                    if plain_property.modifiers.iter().any(|modifier| matches!(modifier, Modifier::PublicSet(_))) {
+                        item_flags |= MetadataFlags::PUBLIC_SET;
                     }
 
                     if plain_property.modifiers.contains_abstract() {
@@ -344,7 +352,7 @@ where
             }
 
             let name_bytes = name.0.as_bytes();
-            let prop_name = name_bytes.strip_prefix(b"$").unwrap_or(name_bytes);
+            let prop_name = name_bytes.trim_prefix(b"$");
             metadata.set_is_virtual(!hooks_reference_backing_store(&hooked_property.hook_list.hooks, prop_name));
 
             if matches!(verdict.type_override, Some(TypeOverride::Untyped)) {

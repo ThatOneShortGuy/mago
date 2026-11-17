@@ -40,7 +40,6 @@ use mago_server::Server;
 use mago_server::Settings as ServerSettings;
 
 use crate::config::Configuration;
-use crate::consts::PRELUDE_BYTES;
 use crate::language_server::ServerConfig;
 use crate::language_server::document::OpenDocument;
 
@@ -161,7 +160,7 @@ pub fn build_workspace(
     server_config: Arc<ServerConfig>,
 ) -> Result<(WorkspaceState, AnalysisResult), String> {
     let root = root.canonicalize().unwrap_or(root);
-    let prelude = Prelude::decode(PRELUDE_BYTES).map_err(|e| format!("decode prelude: {e}"))?;
+    let prelude = crate::prelude::load();
     let Prelude { database: prelude_db, metadata, symbol_references } = prelude;
 
     let configuration = resolve_workspace_configuration(&root, &server_config);

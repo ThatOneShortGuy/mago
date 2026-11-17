@@ -117,6 +117,10 @@ impl TPropertiesOf {
                             continue;
                         };
 
+                        if property_metadata.flags.is_static() {
+                            continue;
+                        }
+
                         // Filter by visibility if specified
                         if let Some(required_visibility) = visibility_filter
                             && property_metadata.read_visibility != required_visibility
@@ -128,7 +132,7 @@ impl TPropertiesOf {
                         if let Some(type_metadata) = &property_metadata.type_metadata {
                             // Property name without the leading '$'
                             let name_str = prop_name.as_bytes();
-                            let stripped_name = name_str.strip_prefix(b"$").unwrap_or(name_str);
+                            let stripped_name = name_str.trim_prefix(b"$");
                             let key = ArrayKey::String(Word::from(stripped_name));
                             let is_optional = false; // Class properties are not optional in the shape
 

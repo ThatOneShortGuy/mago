@@ -3,8 +3,10 @@ use mago_word::Word;
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::class_like::ClassLikeMetadata;
 use crate::metadata::flags::MetadataFlags;
+use crate::populator::methods::OverrideSeeds;
 use crate::populator::methods::inherit_methods_from_parent;
 use crate::populator::properties::inherit_properties_from_parent;
+use crate::populator::templates::bind_inherited_templates;
 use crate::populator::templates::extend_template_parameters;
 use crate::reference::SymbolReferences;
 use crate::visibility::Visibility;
@@ -38,8 +40,9 @@ pub fn merge_interface_metadata_from_parent_interface(
     codebase: &CodebaseMetadata,
     parent_interface: Word,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
-    merge_interface_metadata(metadata, codebase, parent_interface, symbol_references, true);
+    merge_interface_metadata(metadata, codebase, parent_interface, symbol_references, true, seeds);
 }
 
 pub fn merge_metadata_from_required_interface(
@@ -47,8 +50,9 @@ pub fn merge_metadata_from_required_interface(
     codebase: &CodebaseMetadata,
     required_interface: Word,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
-    merge_interface_metadata(metadata, codebase, required_interface, symbol_references, false);
+    merge_interface_metadata(metadata, codebase, required_interface, symbol_references, false, seeds);
 }
 
 fn merge_interface_metadata(
@@ -57,6 +61,7 @@ fn merge_interface_metadata(
     interface: Word,
     symbol_references: &mut SymbolReferences,
     inherit_constants: bool,
+    seeds: &mut OverrideSeeds,
 ) {
     symbol_references.add_symbol_reference_to_symbol(metadata.name, interface, true);
 
@@ -91,8 +96,8 @@ fn merge_interface_metadata(
         metadata.permitted_inheritors.get_or_insert_default().extend(inheritors.iter().copied());
     }
 
-    extend_template_parameters(metadata, parent_interface_metadata);
-    inherit_methods_from_parent(metadata, parent_interface_metadata, codebase);
+    extend_template_parameters(metadata, parent_interface_metadata, codebase);
+    inherit_methods_from_parent(metadata, parent_interface_metadata, codebase, seeds);
     inherit_properties_from_parent(metadata, parent_interface_metadata);
 }
 
@@ -103,6 +108,7 @@ pub fn merge_metadata_from_parent_class_like(
     codebase: &CodebaseMetadata,
     parent_class: Word,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
     symbol_references.add_symbol_reference_to_symbol(metadata.name, parent_class, true);
 
@@ -120,15 +126,24 @@ pub fn merge_metadata_from_parent_class_like(
     metadata.all_parent_interfaces.extend(parent_metadata.all_parent_interfaces.iter().copied());
     metadata.used_traits.extend(parent_metadata.used_traits.iter().copied());
     metadata.invalid_dependencies.extend(parent_metadata.invalid_dependencies.iter().copied());
-    metadata.mixins.extend(parent_metadata.mixins.iter().cloned());
-
     if let Some(inheritors) = &parent_metadata.permitted_inheritors {
         metadata.permitted_inheritors.get_or_insert_default().extend(inheritors.iter().copied());
     }
 
-    extend_template_parameters(metadata, parent_metadata);
+    extend_template_parameters(metadata, parent_metadata, codebase);
 
-    inherit_methods_from_parent(metadata, parent_metadata, codebase);
+    let inherited_mixins = parent_metadata
+        .mixins
+        .iter()
+        .map(|mixin| {
+            let mut mixin = mixin.clone();
+            mixin.type_union = bind_inherited_templates(metadata, &mixin.type_union, codebase);
+            mixin
+        })
+        .collect::<Vec<_>>();
+    metadata.mixins.extend(inherited_mixins);
+
+    inherit_methods_from_parent(metadata, parent_metadata, codebase, seeds);
     inherit_properties_from_parent(metadata, parent_metadata);
 
     for (parent_constant_name, parent_constant_metadata) in &parent_metadata.constants {
@@ -178,6 +193,7 @@ pub fn merge_metadata_from_trait(
     codebase: &CodebaseMetadata,
     trait_name: Word,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
     symbol_references.add_symbol_reference_to_symbol(metadata.name, trait_name, true);
 
@@ -203,10 +219,10 @@ pub fn merge_metadata_from_trait(
     metadata.mixins.extend(trait_metadata.mixins.iter().cloned());
     metadata.add_used_traits(trait_metadata.used_traits.iter().copied());
 
-    extend_template_parameters(metadata, trait_metadata);
+    extend_template_parameters(metadata, trait_metadata, codebase);
     remove_trait_requirement_template_parameters(metadata, trait_metadata, codebase);
 
-    inherit_methods_from_parent(metadata, trait_metadata, codebase);
+    inherit_methods_from_parent(metadata, trait_metadata, codebase, seeds);
     inherit_properties_from_parent(metadata, trait_metadata);
 }
 

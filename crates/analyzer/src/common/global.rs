@@ -11,13 +11,11 @@ use mago_codex::ttype::atomic::array::list::TList;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::int::TInteger;
 use mago_codex::ttype::atomic::scalar::string::TString;
-use mago_codex::ttype::get_bool;
 use mago_codex::ttype::get_float;
 use mago_codex::ttype::get_int_range;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_non_empty_string;
 use mago_codex::ttype::get_non_negative_int;
-use mago_codex::ttype::get_one_int;
 use mago_codex::ttype::get_positive_int;
 use mago_codex::ttype::get_string;
 use mago_codex::ttype::get_truthy_string;
@@ -41,7 +39,7 @@ std::thread_local! {
         }));
 
         map.insert(word("$argc"), Rc::new({
-            let mut type_union = get_one_int();
+            let mut type_union = get_positive_int();
 
             type_union.set_ignore_nullable_issues(true);
             type_union
@@ -192,7 +190,7 @@ std::thread_local! {
                 known_items.insert(ArrayKey::String(word("HTTP_SEC_CH_UA")), (true, get_non_empty_string()));
 
             // Common framework and application variables (e.g., Symfony, PHPUnit, Laravel)
-            known_items.insert(ArrayKey::String(word("APP_DEBUG")), (true, get_bool()));
+            known_items.insert(ArrayKey::String(word("APP_DEBUG")), (true, get_string()));
             known_items.insert(ArrayKey::String(word("APP_ENV")), (true, get_string()));
             known_items.insert(ArrayKey::String(word("APP_NAME")), (true, get_non_empty_string()));
             known_items.insert(ArrayKey::String(word("APP_URL")), (true, get_non_empty_string()));
@@ -234,7 +232,7 @@ std::thread_local! {
             known_items.insert(ArrayKey::String(word("SHELL")), (true, get_non_empty_string()));
 
             // Common framework and application variables (e.g., Symfony, PHPUnit, Laravel)
-            known_items.insert(ArrayKey::String(word("APP_DEBUG")), (true, get_bool()));
+            known_items.insert(ArrayKey::String(word("APP_DEBUG")), (true, get_string()));
             known_items.insert(ArrayKey::String(word("APP_ENV")), (true, get_string()));
             known_items.insert(ArrayKey::String(word("APP_NAME")), (true, get_non_empty_string()));
             known_items.insert(ArrayKey::String(word("APP_URL")), (true, get_non_empty_string()));

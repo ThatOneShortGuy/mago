@@ -10,6 +10,7 @@ use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
 use mago_codex::ttype::atomic::array::list::TList;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::get_int;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
@@ -28,7 +29,11 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::expression::get_root_expression_id;
+use crate::visibility::ProtectedMember;
+use crate::visibility::is_member_visible_from_scope;
 use mago_word::concat_word;
+use mago_word::word;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
     fn analyze<'ctx, A>(
@@ -59,7 +64,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
                 block_context.references_possibly_from_confusing_scope.remove(value_id);
             }
 
-            check_property_unset(context, artifacts, self.unset.span, value);
+            check_property_unset(context, block_context, artifacts, self.unset.span, value);
+            forget_shape_property(context, block_context, value);
 
             'array_access: {
                 let Expression::ArrayAccess(array_access) = value else {
@@ -70,11 +76,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
                     break 'array_access;
                 };
 
+                // Unsetting an offset writes the array that holds it, and the variable at its root.
+                for written_id in [Some(array_id), get_root_expression_id(array_access.array)].into_iter().flatten() {
+                    artifacts.record_loop_assignment_target(written_id);
+                    block_context.possibly_assigned_variable_ids.insert(written_id);
+                }
+
                 let Some(key_type) = artifacts.get_expression_type(array_access.index) else {
                     break 'array_access;
                 };
 
-                let Some(array_variable) = block_context.locals.remove(&array_id) else {
+                let Some(array_variable) = block_context.locals.remove(&array_id).or_else(|| {
+                    matches!(array_access.array, Expression::ArrayAccess(_))
+                        .then(|| artifacts.get_rc_expression_type(array_access.array).cloned())
+                        .flatten()
+                }) else {
                     break 'array_access;
                 };
 
@@ -142,6 +158,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
 
                             let Some(ArrayKey::Integer(target_index)) = &array_key else {
                                 if array_key.is_none() {
+                                    let required_count =
+                                        known_elements.values().filter(|(optional, _)| !optional).count();
                                     atomics.push(TAtomic::Array(TArray::List(TList {
                                         known_elements: Some(
                                             // We don't know the key value, so we can't unset it.
@@ -159,8 +177,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
                                         ),
                                         element_type,
                                         known_count,
-                                        // Mark the list as potentially undefined.
-                                        non_empty: true,
+                                        non_empty: non_empty && required_count >= 2,
                                     })));
                                 } else {
                                     // Keep everything as is, attempting to remove a string key from a list
@@ -270,6 +287,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
                             };
 
                             let Some(array_key) = &array_key else {
+                                let required_count = known_items.values().filter(|(optional, _)| !optional).count();
                                 atomics.push(TAtomic::Array(TArray::Keyed(TKeyedArray {
                                     known_items: Some(
                                         // We don't know the key value, so we can't unset it.
@@ -286,7 +304,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
                                             .into(),
                                     ),
                                     parameters,
-                                    non_empty,
+                                    non_empty: non_empty && required_count >= 2,
                                     known_non_list,
                                 })));
 
@@ -325,6 +343,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
 
                 block_context.locals.insert(array_id, Rc::clone(&rc));
                 block_context.remove_variable_from_conflicting_clauses(context, array_id, Some(rc.as_ref()));
+                write_back_to_holding_arrays(context, block_context, artifacts, array_access.array, rc);
             };
         }
 
@@ -334,15 +353,120 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
     }
 }
 
-fn check_property_unset<'arena, A>(
-    context: &mut Context<'_, 'arena, A>,
+/// Writes the new type of a nested array into the arrays that hold it, up to the root variable.
+fn write_back_to_holding_arrays<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &mut BlockContext<'_>,
+    artifacts: &AnalysisArtifacts,
+    mut array: &Expression<'_>,
+    mut array_type: Rc<TUnion>,
+) where
+    A: Arena,
+{
+    while let Expression::ArrayAccess(holder_access) = array {
+        let Some(key) = artifacts.get_expression_type(holder_access.index).and_then(TUnion::get_single_array_key)
+        else {
+            return;
+        };
+
+        let Some(holder_id) = get_block_expression_id(holder_access.array, context, block_context) else {
+            return;
+        };
+
+        let Some(holder_type) =
+            block_context.locals.get(&holder_id).or_else(|| artifacts.get_rc_expression_type(holder_access.array))
+        else {
+            return;
+        };
+
+        let mut holder_type = (**holder_type).clone();
+        let mut updated = false;
+        for atomic in holder_type.types.to_mut() {
+            let item = match atomic {
+                TAtomic::Array(TArray::Keyed(keyed)) => {
+                    keyed.known_items.as_mut().and_then(|items| Arc::make_mut(items).get_mut(&key))
+                }
+                TAtomic::Array(TArray::List(list)) => match key {
+                    ArrayKey::Integer(index) => usize::try_from(index).ok().and_then(|index| {
+                        list.known_elements.as_mut().and_then(|elements| Arc::make_mut(elements).get_mut(&index))
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            if let Some((_, item_type)) = item {
+                *item_type = (*array_type).clone();
+                updated = true;
+            }
+        }
+
+        if !updated {
+            return;
+        }
+
+        array_type = Rc::new(holder_type);
+        block_context.locals.insert(holder_id, Rc::clone(&array_type));
+        array = holder_access.array;
+    }
+}
+
+fn forget_shape_property<A>(context: &Context<'_, '_, A>, block_context: &mut BlockContext<'_>, value: &Expression<'_>)
+where
+    A: Arena,
+{
+    let mut target = value;
+    let mut member_type: Option<TUnion> = None;
+    while let Expression::Access(Access::Property(property_access)) = target
+        && let ClassLikeMemberSelector::Identifier(property_name) = &property_access.property
+        && let Some(object_id) = get_block_expression_id(property_access.object, context, block_context)
+        && let Some(object_type) = block_context.locals.get(&object_id)
+    {
+        let property_name = word(property_name.value);
+        let mut object_type = (**object_type).clone();
+        let mut changed = false;
+        for atomic in object_type.types.to_mut() {
+            let TAtomic::Object(TObject::WithProperties(shape)) = atomic else {
+                continue;
+            };
+
+            match &member_type {
+                None => changed |= shape.known_properties.remove(&property_name).is_some(),
+                Some(member_type) => {
+                    if let Some((_, property_type)) = shape.known_properties.get_mut(&property_name) {
+                        *property_type = member_type.clone();
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+
+        block_context.locals.insert(object_id, Rc::new(object_type.clone()));
+        member_type = Some(object_type);
+        target = property_access.object;
+    }
+}
+
+fn check_property_unset<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &BlockContext<'ctx>,
     artifacts: &AnalysisArtifacts,
     unset_keyword_span: Span,
     value: &Expression<'arena>,
 ) where
     A: Arena,
 {
-    let Expression::Access(Access::Property(property_access)) = value else {
+    let mut property = value;
+    while let Expression::ArrayAccess(array_access) = property {
+        property = array_access.array;
+    }
+
+    let unsets_item = !std::ptr::eq(property, value);
+    let Expression::Access(Access::Property(property_access)) = property else {
         return;
     };
 
@@ -350,8 +474,14 @@ fn check_property_unset<'arena, A>(
         return;
     };
 
-    let Some(object_type) = artifacts.get_expression_type(property_access.object) else {
-        return;
+    let object_type = match artifacts.get_expression_type(property_access.object) {
+        Some(object_type) => object_type,
+        None => match get_block_expression_id(property_access.object, context, block_context)
+            .and_then(|object_id| block_context.locals.get(&object_id))
+        {
+            Some(object_type) => object_type.as_ref(),
+            None => return,
+        },
     };
 
     for atomic in object_type.types.as_ref() {
@@ -374,6 +504,58 @@ fn check_property_unset<'arena, A>(
             context.codebase.get_class_like(class_name.as_bytes()).is_some_and(|class| class.flags.is_readonly());
 
         let qualified = format!("{}::${}", BytesDisplay(class_name.as_bytes()), BytesDisplay(property_name.value));
+
+        if unsets_item {
+            if (property_metadata.flags.is_readonly() || class_is_readonly)
+                && artifacts
+                    .get_expression_type(property)
+                    .is_some_and(|property_type| property_type.types.iter().all(TAtomic::is_array))
+            {
+                context.collector.report_with_code(
+                    IssueCode::InvalidUnset,
+                    Issue::error(format!("Cannot unset an item of readonly property `{qualified}`."))
+                        .with_annotation(
+                            Annotation::primary(value.span()).with_message("This item belongs to a readonly property."),
+                        )
+                        .with_annotation(Annotation::secondary(unset_keyword_span).with_message("`unset` used here."))
+                        .with_note(
+                            "Unsetting an item modifies the readonly property, which throws an `Error` at runtime.",
+                        )
+                        .with_help("Build a new array without the item where the property is initialized."),
+                );
+            }
+
+            return;
+        }
+
+        if !property_metadata.flags.is_readonly()
+            && !class_is_readonly
+            && property_metadata.write_visibility != property_metadata.read_visibility
+            && let Some(declaring_class) =
+                context.codebase.get_declaring_property_class(class_name.as_bytes(), qualified_property_name.as_bytes())
+            && !is_member_visible_from_scope(
+                context.codebase,
+                property_metadata.write_visibility,
+                declaring_class.as_bytes(),
+                ProtectedMember::Property(qualified_property_name),
+                block_context.scope.get_class_like_name(),
+            )
+        {
+            let visibility = property_metadata.write_visibility;
+            context.collector.report_with_code(
+                IssueCode::InvalidUnset,
+                Issue::error(format!("Cannot unset {visibility}(set) property `{qualified}` from this scope."))
+                    .with_annotation(
+                        Annotation::primary(value.span())
+                            .with_message(format!("This property can only be modified from {visibility} scope.")),
+                    )
+                    .with_annotation(Annotation::secondary(unset_keyword_span).with_message("`unset` used here."))
+                    .with_note("Unsetting a property is a write, and its set visibility forbids writes here.")
+                    .with_help("Remove this property from the `unset` statement, or unset it inside the class."),
+            );
+
+            return;
+        }
 
         if property_metadata.flags.is_readonly() || class_is_readonly {
             context.collector.report_with_code(

@@ -16,11 +16,14 @@ use crate::ttype::atomic::array::keyed::TKeyedArray;
 use crate::ttype::atomic::array::list::TList;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
+use crate::ttype::atomic::derived::TDerived;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::reference::TReference;
 use crate::ttype::atomic::scalar::TScalar;
+use crate::ttype::expander::get_signature_of_function_like_identifier;
 use crate::ttype::template::GenericTemplate;
 use crate::ttype::template::TemplateResult;
+use crate::ttype::template::inferred_type_replacer;
 use crate::ttype::union::TUnion;
 
 #[must_use]
@@ -121,11 +124,16 @@ pub fn can_atomic_be_callable(atomic: &TAtomic, codebase: &CodebaseMetadata) -> 
     }
 
     match atomic {
-        TAtomic::Scalar(TScalar::String(_)) | TAtomic::Array(TArray::List(_) | TArray::Keyed(_)) => true,
+        TAtomic::Object(TObject::Any)
+        | TAtomic::Scalar(TScalar::String(_) | TScalar::Generic | TScalar::ArrayKey)
+        | TAtomic::Array(TArray::List(_) | TArray::Keyed(_)) => true,
         TAtomic::Object(TObject::Named(named_object)) => codebase.is_inheritable(named_object.get_name().as_bytes()),
         TAtomic::Reference(TReference::Symbol { .. }) => true,
         TAtomic::GenericParameter(generic_parameter) => {
             generic_parameter.constraint.types.iter().any(|atomic| can_atomic_be_callable(atomic, codebase))
+        }
+        TAtomic::Derived(TDerived::Intersection(intersection)) => {
+            intersection.get_base_type().types.iter().any(|atomic| can_atomic_be_callable(atomic, codebase))
         }
         _ => false,
     }
@@ -134,7 +142,7 @@ pub fn can_atomic_be_callable(atomic: &TAtomic, codebase: &CodebaseMetadata) -> 
 /// Strips the leading root namespace separator PHP allows in callable strings,
 /// which always name a fully qualified function-like or class.
 fn strip_root_separator(name: &[u8]) -> &[u8] {
-    name.strip_prefix(b"\\").unwrap_or(name)
+    name.trim_prefix(b"\\")
 }
 
 fn handle_array_callable(
@@ -215,6 +223,42 @@ fn try_object_method(
         .method_exists(method_identifier.get_class_name().as_bytes(), method_identifier.get_method_name().as_bytes())
     {
         populate_template_result(template_result, codebase, object_name, type_parameters);
+
+        if let Some(type_parameters) = type_parameters
+            && let Some(class_metadata) = codebase.get_class_like(object_name.as_bytes())
+            && let Some(mut signature) = get_signature_of_function_like_identifier(
+                &FunctionLikeIdentifier::Method(object_name, method_name),
+                codebase,
+            )
+        {
+            let mut bounds = TemplateResult::default();
+            for (index, parameter) in type_parameters.iter().enumerate() {
+                if let Some(template_name) = class_metadata.get_template_name_for_index(index) {
+                    bounds.add_lower_bound(
+                        template_name,
+                        GenericParent::ClassLike(class_metadata.name),
+                        parameter.clone(),
+                    );
+                }
+            }
+
+            for parameter in signature.get_parameters_mut() {
+                if let Some(parameter_type) = parameter.get_type_signature_mut() {
+                    *parameter_type = inferred_type_replacer::replace(parameter_type, &bounds, codebase);
+                }
+            }
+
+            if let Some(return_type) = signature.get_return_type_mut() {
+                *return_type = inferred_type_replacer::replace(return_type, &bounds, codebase);
+            }
+
+            return Some(Cow::Owned(TCallable::Signature(signature)));
+        }
+
+        if codebase.get_class_like_by_name(method_identifier.get_class_name()).is_some_and(|c| c.kind.is_trait()) {
+            return Some(Cow::Owned(TCallable::Alias(FunctionLikeIdentifier::Method(object_name, method_name))));
+        }
+
         return Some(Cow::Owned(TCallable::Alias(method_identifier.into())));
     }
 

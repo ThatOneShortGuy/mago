@@ -42,6 +42,7 @@ use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::get_string;
 use mago_codex::ttype::get_undefined_null;
+use mago_codex::ttype::intersect_read_types;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
@@ -161,7 +162,7 @@ where
             Issue::error(format!(
                 "Cannot use `null` as an array index to access element{}.",
                 match extended_var_id {
-                    Some(var) => format!("of variable {var}"),
+                    Some(var) => format!(" of variable {var}"),
                     None => String::new(),
                 }
             ))
@@ -179,7 +180,7 @@ where
             Issue::warning(format!(
                 "Possibly using `null` as an array index to access element{}.",
                 match extended_var_id {
-                    Some(var) => format!("of variable {var}"),
+                    Some(var) => format!(" of variable {var}"),
                     None => String::new(),
                 }
             ))
@@ -287,7 +288,9 @@ where
                 has_valid_expected_index = true;
             }
             TAtomic::Null | TAtomic::Void => {
-                if !array_like_type.ignore_nullable_issues() && !in_assignment {
+                if !array_like_type.ignore_nullable_issues()
+                    && (!in_assignment || block_context.flags.inside_reference())
+                {
                     value_type = Some(add_optional_union_type(get_null(), value_type.as_ref(), context.codebase));
                 }
 
@@ -438,6 +441,29 @@ where
         }
     }
 
+    if in_assignment
+        && index_type.is_mixed()
+        && has_valid_expected_index
+        && (array_like_type.has_array() || array_like_type.is_null() || array_like_type.is_mixed())
+    {
+        let index_type_str = index_type.get_id();
+        let array_like_type_str = array_like_type.get_id();
+
+        context.collector.report_with_code(
+            IssueCode::MixedArrayIndex,
+            Issue::error(format!(
+                "Invalid index type `{index_type_str}` used in array assignment on `{array_like_type_str}`."
+            ))
+            .with_annotation(Annotation::primary(access_index_span).with_message(format!(
+                "This index has type `{index_type_str}` which is not guaranteed to be a valid key."
+            )))
+            .with_note(
+                "In PHP, array keys must be strings or integers. A `mixed` index may hold a value that cannot be used as an array key at runtime.",
+            )
+            .with_help("Ensure the index expression evaluates to a string or an integer."),
+        );
+    }
+
     if !has_valid_expected_index {
         let index_type_str = index_type.get_id();
         let array_like_type_str = array_like_type.get_id();
@@ -549,7 +575,11 @@ where
 
             // Report warning for possibly undefined array keys when accessing union types
             // Only report if we detected that some variants have the key while others don't
-            if has_union_key_mismatch && !block_context.flags.inside_isset() && !in_assignment {
+            if has_union_key_mismatch
+                && !block_context.flags.inside_isset()
+                && !block_context.flags.inside_unset()
+                && !in_assignment
+            {
                 // Determine if this is likely a string or integer key based on the index type
                 let is_likely_string_key =
                     index_type.types.iter().any(|t| matches!(t, TAtomic::Scalar(TScalar::String(_))));
@@ -599,6 +629,14 @@ where
     }
 }
 
+/// An array or object used as an array offset throws a `TypeError`.
+fn can_throw_as_offset(index_type: &TUnion) -> bool {
+    index_type
+        .types
+        .iter()
+        .any(|atomic| matches!(atomic, TAtomic::Array(_) | TAtomic::Object(_) | TAtomic::Iterable(_)))
+}
+
 pub(crate) fn handle_array_access_on_list<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
     block_context: &BlockContext<'ctx>,
@@ -636,6 +674,7 @@ where
     // not be present at runtime.
     let expected_contained_by_index = !index_type_contained_by_expected
         && !expected_key_type.is_never()
+        && !can_throw_as_offset(dim_type)
         && is_contained_by(
             context.codebase,
             &expected_key_type,
@@ -698,6 +737,10 @@ where
                 return resulting_type;
             }
 
+            if in_assignment && block_context.flags.inside_reference() && type_param.is_never() {
+                return get_null();
+            }
+
             if !in_assignment {
                 if type_param.is_never()
                     && let Some(span) = span
@@ -731,6 +774,29 @@ where
 
                 return resulting_type;
             }
+        }
+
+        if !in_assignment
+            && type_param.is_never()
+            && !block_context.flags.inside_isset()
+            && !block_context.flags.inside_unset()
+            && !dim_type.types.is_empty()
+            && dim_type.types.iter().all(|atomic| {
+                matches!(atomic, TAtomic::Scalar(TScalar::Integer(integer)) if known_elements
+                    .keys()
+                    .all(|index| i64::try_from(*index).is_ok_and(|index| !integer.overlaps(TInteger::literal(index)))))
+            })
+        {
+            if let Some(span) = span {
+                context.collector.report_with_code(
+                    IssueCode::UndefinedIntArrayIndex,
+                    Issue::error(format!("No index of type `{}` exists on `{}`.", dim_type.get_id(), list.get_id()))
+                        .with_annotation(Annotation::primary(span).with_message("None of these keys exist."))
+                        .with_help("Ensure the index exists before accessing it, or adjust the list access logic."),
+                );
+            }
+
+            return get_null();
         }
 
         for (_, known_item) in known_elements.values() {
@@ -975,6 +1041,7 @@ where
     // array like `[]` with any key.
     let expected_contained_by_index = !index_type_contained_by_expected
         && !key_parameter.is_never()
+        && !can_throw_as_offset(index_type)
         && is_contained_by(
             context.codebase,
             &key_parameter,
@@ -1007,6 +1074,10 @@ where
             }
 
             let result = if in_assignment && has_value_parameter && !value_parameter.is_mixed() {
+                if block_context.flags.inside_reference() {
+                    *has_possibly_undefined = true;
+                }
+
                 // Assignment to a new key on an array with explicit generic parameters - allow it without error
                 // This handles cases like $_SERVER (which has ...<non-empty-string, string>)
                 // But NOT unsealed arrays with just `...` (which have mixed as value type)
@@ -1091,9 +1162,19 @@ where
                 // Inside isset() but array has NO generic parameters - key definitely doesn't exist
                 // However, if we're processing a union type, check if ANY other member has this key
                 // Only report error if NONE of the union members have the key (type narrowing is valid otherwise)
-                let should_report_error = if array_like_type.types.len() > 1 {
+                let mut variants = Vec::new();
+                let mut pending: Vec<&TAtomic> = array_like_type.types.iter().collect();
+                while let Some(atomic_type) = pending.pop() {
+                    if let TAtomic::GenericParameter(parameter) = atomic_type {
+                        pending.extend(parameter.constraint.types.iter());
+                    } else {
+                        variants.push(atomic_type);
+                    }
+                }
+
+                let should_report_error = if variants.len() > 1 {
                     // This is a union type - check if any other atomic type has this key
-                    !array_like_type.types.iter().any(|atomic_type| {
+                    !variants.iter().any(|atomic_type| {
                         match atomic_type {
                             TAtomic::Array(TArray::Keyed(other_keyed)) => {
                                 // Array with generic parameters might have any key
@@ -1152,15 +1233,20 @@ where
 
         let possible_keys: Vec<ArrayKey> = index_type.types.iter().filter_map(TAtomic::to_array_key).collect();
 
+        let mut key_possibly_missing = false;
         if !possible_keys.is_empty() && possible_keys.len() == index_type.types.len() {
             for key in &possible_keys {
-                if let Some((_, known_item)) = known_items.get(key) {
+                if let Some((optional, known_item)) = known_items.get(key) {
+                    key_possibly_missing |= *optional;
                     value_parameter = Cow::Owned(add_array_access_union_type(
                         value_parameter.into_owned(),
                         known_item,
                         context.codebase,
                         preserve_array_shapes,
                     ));
+                } else {
+                    key_possibly_missing =
+                        !value_parameter.is_never() || possible_keys.iter().any(|key| known_items.contains_key(key));
                 }
             }
         } else {
@@ -1191,7 +1277,7 @@ where
 
         *has_possibly_undefined = true;
 
-        if context.settings.strict_array_index_existence
+        if (context.settings.strict_array_index_existence || (key_possibly_missing && !has_value_parameter))
             && !in_assignment
             && !block_context.flags.inside_isset()
             && !block_context.flags.inside_unset()
@@ -1253,14 +1339,14 @@ where
                     )
                 };
 
-            if !in_assignment && !key_is_definitely_defined {
+            if (!in_assignment || block_context.flags.inside_reference()) && !key_is_definitely_defined {
                 *has_possibly_undefined = true;
 
                 let inside_isset_or_unset = block_context.flags.inside_isset() || block_context.flags.inside_unset();
                 let lax_warn = !context.settings.allow_possibly_undefined_array_keys;
                 let strict = context.settings.strict_array_index_existence;
 
-                if !inside_isset_or_unset && (lax_warn || strict) {
+                if !in_assignment && !inside_isset_or_unset && (lax_warn || strict) {
                     let single_key = index_type.get_single_array_key();
                     if strict || single_key.is_some() {
                         let index_type_str = index_type.get_id();
@@ -1305,12 +1391,58 @@ where
             }
 
             value_parameter.into_owned()
-        } else if in_assignment {
+        } else if in_assignment && !block_context.flags.inside_reference() {
             get_never()
         } else {
             get_null()
         }
     }
+}
+
+pub(crate) fn get_primary_array_access_parameters<A>(
+    context: &Context<'_, '_, A>,
+    atomic: &TAtomic,
+    for_assignment: bool,
+) -> Option<(TUnion, TUnion)>
+where
+    A: Arena,
+{
+    let TAtomic::Object(TObject::Named(named_object)) = atomic else {
+        return None;
+    };
+
+    let array_access = word(b"ArrayAccess");
+    if !context.codebase.is_instance_of(named_object.name.as_bytes(), array_access.as_bytes()) {
+        return None;
+    }
+
+    let metadata = context.codebase.get_class_like(named_object.name.as_bytes())?;
+    let array_access_metadata = context.codebase.get_class_like(array_access.as_bytes())?;
+    let key_template = array_access_metadata.template_types.first().map(|(name, _)| *name)?;
+    let value_template = array_access_metadata.template_types.get_index(1).map(|(name, _)| *name)?;
+    let key = get_specialized_template_type(
+        context.codebase,
+        key_template,
+        array_access,
+        metadata,
+        named_object.get_type_parameters(),
+    )
+    .unwrap_or_else(get_mixed);
+
+    let value = get_array_access_method_value_type(context, metadata, named_object, for_assignment)
+        .filter(|value| for_assignment || !value.is_mixed())
+        .unwrap_or_else(|| {
+            get_specialized_template_type(
+                context.codebase,
+                value_template,
+                array_access,
+                metadata,
+                named_object.get_type_parameters(),
+            )
+            .unwrap_or_else(get_mixed)
+        });
+
+    Some((key, value))
 }
 
 pub(crate) fn handle_array_access_on_named_object<A>(
@@ -1325,106 +1457,58 @@ pub(crate) fn handle_array_access_on_named_object<A>(
 where
     A: Arena,
 {
-    fn get_array_access_classes<'ctx, A>(
-        context: &mut Context<'ctx, '_, A>,
+    fn visit_array_access_parameters<A>(
+        context: &Context<'_, '_, A>,
         atomic: &TAtomic,
         for_assignment: bool,
-    ) -> Option<(Vec<&'ctx ClassLikeMetadata>, TUnion, TUnion)>
-    where
+        visitor: &mut impl FnMut(TUnion, TUnion),
+    ) where
         A: Arena,
     {
-        let mut parameters = vec![];
-        let metadata = 'metadata: {
-            let TAtomic::Object(TObject::Named(named_object)) = atomic else {
-                break 'metadata None;
-            };
-
-            let array_access = word(b"ArrayAccess");
-            if !context.codebase.is_instance_of(named_object.name.as_bytes(), array_access.as_bytes()) {
-                break 'metadata None;
-            }
-
-            let Some(metadata) = context.codebase.get_class_like(named_object.name.as_bytes()) else {
-                break 'metadata None;
-            };
-
-            let Some(array_access_metadata) = context.codebase.get_class_like(array_access.as_bytes()) else {
-                break 'metadata None;
-            };
-
-            let Some(key_template_name) = array_access_metadata.template_types.first().map(|(name, _)| *name) else {
-                break 'metadata None;
-            };
-
-            let Some(value_template_name) = array_access_metadata.template_types.get_index(1).map(|(name, _)| *name)
-            else {
-                break 'metadata None;
-            };
-
-            let key_type = get_specialized_template_type(
-                context.codebase,
-                key_template_name,
-                array_access,
-                metadata,
-                named_object.get_type_parameters(),
-            )
-            .unwrap_or_else(get_mixed);
-
-            let value_type = for_assignment
-                .then(|| get_array_access_assignment_value_type(context, metadata, named_object))
-                .flatten()
-                .unwrap_or_else(|| {
-                    get_specialized_template_type(
-                        context.codebase,
-                        value_template_name,
-                        array_access,
-                        metadata,
-                        named_object.get_type_parameters(),
-                    )
-                    .unwrap_or_else(get_mixed)
-                });
-
-            parameters.push((key_type, value_type));
-
-            Some(metadata)
-        };
-
-        let mut class_likes = vec![];
-
-        if let Some(metadata) = metadata {
-            class_likes.push(metadata);
+        if let Some((key, value)) = get_primary_array_access_parameters(context, atomic, for_assignment) {
+            visitor(key, value);
         }
 
-        if let Some(intersection_types) = atomic.get_intersection_types() {
-            for intersection_type in intersection_types {
-                if let Some(intersections) = get_array_access_classes(context, intersection_type, for_assignment) {
-                    class_likes.extend(intersections.0);
-
-                    parameters.push((intersections.1, intersections.2));
-                }
-            }
+        for intersection in atomic.get_intersection_types().unwrap_or_default() {
+            visit_array_access_parameters(context, intersection, for_assignment, visitor);
         }
-
-        let mut key_type = None;
-        let mut value_type = None;
-
-        for (key_parameter_type, value_parameter_type) in parameters {
-            key_type = Some(add_optional_union_type(key_parameter_type, key_type.as_ref(), context.codebase));
-
-            value_type = Some(add_optional_union_type(value_parameter_type, value_type.as_ref(), context.codebase));
-        }
-
-        if class_likes.is_empty() {
-            return None;
-        }
-
-        Some((class_likes, key_type.unwrap_or_else(get_mixed), value_type.unwrap_or_else(get_mixed)))
     }
 
+    let parameters = if !named_object.has_intersection_types() {
+        get_primary_array_access_parameters(context, named_object, assign_value_type.is_some())
+    } else {
+        let mut keys = None;
+        let mut fallback = None;
+        let mut read_type = None;
+        visit_array_access_parameters(context, named_object, assign_value_type.is_some(), &mut |key, value| {
+            if assign_value_type.is_none()
+                && is_contained_by(
+                    context.codebase,
+                    index_type,
+                    &key,
+                    false,
+                    false,
+                    false,
+                    &mut ComparisonResult::new(),
+                )
+            {
+                read_type = Some(match read_type.take() {
+                    Some(previous) => intersect_read_types(&previous, &value, context.codebase),
+                    None => value,
+                });
+                fallback = None;
+            } else if read_type.is_none() {
+                fallback = Some(add_optional_union_type(value, fallback.as_ref(), context.codebase));
+            }
+
+            keys = Some(add_optional_union_type(key, keys.as_ref(), context.codebase));
+        });
+
+        keys.map(|key| (key, read_type.or(fallback).unwrap_or_else(get_mixed)))
+    };
+
     // TODO: we should analyze calls to `offsetSet` and `offsetGet` here.
-    let Some((_array_access_classes, expected_key_type, mut resulting_value_type)) =
-        get_array_access_classes(context, named_object, assign_value_type.is_some())
-    else {
+    let Some((expected_key_type, mut resulting_value_type)) = parameters else {
         context.collector.report_with_code(
             IssueCode::InvalidArrayAccess,
             Issue::error(format!(
@@ -1495,20 +1579,30 @@ where
     resulting_value_type
 }
 
-fn get_array_access_assignment_value_type<A>(
+/// The value type `offsetSet()` takes (for a write) or `offsetGet()` returns (for a read).
+fn get_array_access_method_value_type<A>(
     context: &Context<'_, '_, A>,
     class_metadata: &ClassLikeMetadata,
     named_object: &TNamedObject,
+    for_assignment: bool,
 ) -> Option<TUnion>
 where
     A: Arena,
 {
+    let method_name = word(if for_assignment { b"offsetSet".as_slice() } else { b"offsetGet" });
     let method_id =
-        context.codebase.get_declaring_method_identifier(&MethodIdentifier::new(named_object.name, word(b"offsetSet")));
+        context.codebase.get_declaring_method_identifier(&MethodIdentifier::new(named_object.name, method_name));
     let method = context.codebase.get_method_by_id(&method_id)?;
-    let parameter = method.parameters.get(1)?;
-    let mut value_type =
-        parameter.get_type_metadata().map(|metadata| metadata.type_union.clone()).unwrap_or_else(get_mixed);
+    let mut value_type = if for_assignment {
+        method
+            .parameters
+            .get(1)?
+            .get_type_metadata()
+            .map(|metadata| metadata.type_union.clone())
+            .unwrap_or_else(get_mixed)
+    } else {
+        method.return_type_metadata.as_ref()?.type_union.clone()
+    };
 
     if value_type.has_template_types() {
         let mut template_result = TemplateResult::default();

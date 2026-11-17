@@ -5,9 +5,9 @@ nav_order = 70
 nav_section = "Tools"
 nav_subsection = "Linter"
 +++
-Le linter de Mago propose 190 règles réparties sur 9 catégories. Cliquez sur une règle pour afficher sa description, ses prérequis, sa configuration par défaut et ses exemples.
+Le linter de Mago propose 193 règles réparties sur 9 catégories. Cliquez sur une règle pour afficher sa description, ses prérequis, sa configuration par défaut et ses exemples.
 
-<div class="rule-index" role="navigation" aria-label="Catégories de règles"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarté</span><span class="rule-index__count">22 règles</span><span class="rule-index__blurb">Règles qui rendent l'intention explicite et réduisent l'effort de lecture. Elles signalent des constructions techniquement valides mais qui obscurcissent ce que fait le code.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Bonnes pratiques</span><span class="rule-index__count">47 règles</span><span class="rule-index__blurb">Patterns idiomatiques et conventions largement adoptées. Ces règles orientent le code vers la manière dont le PHP moderne est écrit par celles et ceux qui en livrent beaucoup.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Cohérence</span><span class="rule-index__count">27 règles</span><span class="rule-index__blurb">Uniformité stylistique sur l'ensemble du code. Choisissez une façon de faire, ces règles aident tout le monde à s'y tenir.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Obsolescence</span><span class="rule-index__count">7 règles</span><span class="rule-index__blurb">Fonctionnalités et API PHP marquées comme obsolètes en amont, et qui finiront par être supprimées. Migrez avant qu'elles ne cassent.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintenabilité</span><span class="rule-index__count">11 règles</span><span class="rule-index__blurb">Du code difficile à maintenir dans la durée, trop complexe, trop emmêlé, trop fragile. Ces règles font remonter le coût tôt.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redondance</span><span class="rule-index__count">31 règles</span><span class="rule-index__blurb">Code mort, valeurs inutilisées, constructions sans effet observable. Les retirer garde le code honnête.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Sécurité</span><span class="rule-index__count">15 règles</span><span class="rule-index__blurb">Règles qui signalent des vulnérabilités, vecteurs d'injection, désérialisation non sûre, données non fiables atteignant des points dangereux.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Sûreté</span><span class="rule-index__count">9 règles</span><span class="rule-index__blurb">Constructions qui compilent mais explosent à l'exécution. Ces règles attrapent les pièges avant les utilisateurs.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correction</span><span class="rule-index__count">21 règles</span><span class="rule-index__blurb">Bugs et erreurs de logique. Les règles de cette catégorie attrapent du code qui fait probablement autre chose que ce que l'auteur voulait.</span></a></div>
+<div class="rule-index" role="navigation" aria-label="Catégories de règles"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarté</span><span class="rule-index__count">22 règles</span><span class="rule-index__blurb">Règles qui rendent l'intention explicite et réduisent l'effort de lecture. Elles signalent des constructions techniquement valides mais qui obscurcissent ce que fait le code.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Bonnes pratiques</span><span class="rule-index__count">49 règles</span><span class="rule-index__blurb">Patterns idiomatiques et conventions largement adoptées. Ces règles orientent le code vers la manière dont le PHP moderne est écrit par celles et ceux qui en livrent beaucoup.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Cohérence</span><span class="rule-index__count">27 règles</span><span class="rule-index__blurb">Uniformité stylistique sur l'ensemble du code. Choisissez une façon de faire, ces règles aident tout le monde à s'y tenir.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Obsolescence</span><span class="rule-index__count">7 règles</span><span class="rule-index__blurb">Fonctionnalités et API PHP marquées comme obsolètes en amont, et qui finiront par être supprimées. Migrez avant qu'elles ne cassent.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintenabilité</span><span class="rule-index__count">11 règles</span><span class="rule-index__blurb">Du code difficile à maintenir dans la durée, trop complexe, trop emmêlé, trop fragile. Ces règles font remonter le coût tôt.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redondance</span><span class="rule-index__count">32 règles</span><span class="rule-index__blurb">Code mort, valeurs inutilisées, constructions sans effet observable. Les retirer garde le code honnête.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Sécurité</span><span class="rule-index__count">15 règles</span><span class="rule-index__blurb">Règles qui signalent des vulnérabilités, vecteurs d'injection, désérialisation non sûre, données non fiables atteignant des points dangereux.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Sûreté</span><span class="rule-index__count">9 règles</span><span class="rule-index__blurb">Constructions qui compilent mais explosent à l'exécution. Ces règles attrapent les pièges avant les utilisateurs.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correction</span><span class="rule-index__count">21 règles</span><span class="rule-index__blurb">Bugs et erreurs de logique. Les règles de cette catégorie attrapent du code qui fait probablement autre chose que ce que l'auteur voulait.</span></a></div>
 
 <h2 id="integration-specific-rules">Règles spécifiques aux intégrations</h2>
 
@@ -3638,6 +3638,58 @@ function process($condition) {
 
 </details>
 
+<details class="rule" name="rule" id="prefer-null-coalescing-assignment">
+<summary><code class="rule__code">prefer-null-coalescing-assignment</code><a class="rule__anchor" href="#prefer-null-coalescing-assignment" aria-label="Lien permanent vers prefer-null-coalescing-assignment">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Suggests the null coalescing assignment operator (`??=`) when the right operand
+of `??` assigns to the same variable or property as its left operand.
+
+`$value ?? ($value = $default)` and `$value ??= $default` do the same work, but
+the latter names the target once.
+
+<blockquote class="rule-requirement">Cette règle requiert PHP <code>7.4.0</code> ou supérieur.</blockquote>
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+
+```php
+<?php
+
+return $this->ids ?? ($this->ids = $this->readIds());
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+
+```php
+<?php
+
+return $this->ids ??= $this->readIds();
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Défaut |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `true` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
 <details class="rule" name="rule" id="prefer-pre-increment">
 <summary><code class="rule__code">prefer-pre-increment</code><a class="rule__anchor" href="#prefer-pre-increment" aria-label="Lien permanent vers prefer-pre-increment">¶</a><span class="rule__level rule__level--help">help</span></summary>
 
@@ -3675,6 +3727,87 @@ $count--;
 
 ++$i;
 --$count;
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Défaut |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
+<details class="rule" name="rule" id="prefer-self">
+<summary><code class="rule__code">prefer-self</code><a class="rule__anchor" href="#prefer-self" aria-label="Lien permanent vers prefer-self">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Suggests using `self` when a class refers to itself by name.
+
+Using `self` keeps the code working when the class is renamed, and makes it
+obvious that the reference points at the enclosing class.
+
+A static call through the class name does not forward late static binding, while
+a call through `self` does. In a class that can be extended, replacing the name in
+a static method call or first-class callable can therefore change what `static`
+resolves to in the called method, so those fixes are marked as potentially unsafe.
+The same applies inside closures, which can be rebound to another class scope.
+
+References inside traits, anonymous classes, and attribute arguments are ignored.
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+
+```php
+<?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new Box(Box::DEFAULT_SIZE);
+    }
+}
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+
+```php
+<?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new self(self::DEFAULT_SIZE);
+    }
+}
 ```
 
 </div>
@@ -5083,7 +5216,8 @@ Enforces that PHP keywords (like `if`, `else`, `return`, `function`, etc.) be wr
 in lowercase. Using uppercase or mixed case is discouraged for consistency and readability.
 
 When the `drupal` integration is enabled, `TRUE`, `FALSE`, and `NULL` are exempted to
-match Drupal's coding standards (and the `drupal` formatter preset).
+match Drupal's coding standards (and the `drupal` formatter preset). Drupal projects
+should use the official `drupal/mago` extension instead, which sets this rule up for them.
 
 <hr class="rule__separator">
 
@@ -7401,6 +7535,9 @@ to keep the codebase clean and maintainable.
 Detects loops (`for`, `foreach`, `while`, `do-while`) that have an empty body. An empty
 loop body does not perform any actions and is likely a mistake or redundant code.
 
+The fix is marked as unsafe because removing the loop also removes the evaluation of its
+header (function calls, assignments, increments), which can change behavior.
+
 <hr class="rule__separator">
 
 <div class="rule-examples">
@@ -8624,6 +8761,85 @@ function gen(): Generator {
 
 </details>
 
+<details class="rule" name="rule" id="no-unused-return-value">
+<summary><code class="rule__code">no-unused-return-value</code><a class="rule__anchor" href="#no-unused-return-value" aria-label="Lien permanent vers no-unused-return-value">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Detects private methods whose return value is thrown away at every call site.
+
+Only the class itself can call a private method, so when each call is a bare
+statement, nothing reads the value the method returns. Declaring the method
+`void` makes that clear.
+
+The rule stays silent when the class uses a trait, calls methods by a dynamic
+name, takes the method as a callable, or mentions its name in a string.
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+
+```php
+<?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this->advance();
+    }
+
+    private function advance(): int
+    {
+        return ++$this->count;
+    }
+}
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+
+```php
+<?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this->advance();
+    }
+
+    private function advance(): void
+    {
+        ++$this->count;
+    }
+}
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Défaut |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `true` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
 <details class="rule" name="rule" id="redundant-static">
 <summary><code class="rule__code">redundant-static</code><a class="rule__anchor" href="#redundant-static" aria-label="Lien permanent vers redundant-static">¶</a><span class="rule__level rule__level--help">help</span></summary>
 
@@ -8761,6 +8977,9 @@ Detects insecure comparison of passwords or tokens using `==`, `!=`, `===`, or `
 
 These operators are vulnerable to timing attacks, which can expose sensitive information.
 Instead, use `hash_equals` for comparing strings or `password_verify` for validating hashes.
+
+Sensitive data is identified by names, such as variables, array keys, and properties.
+String literal values such as `'refresh_token'` do not by themselves indicate sensitive data.
 
 <hr class="rule__separator">
 

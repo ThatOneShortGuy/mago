@@ -4,6 +4,7 @@ use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use mago_allocator::Arena;
+use std::borrow::Cow;
 
 use mago_bytes::BytesDisplay;
 use mago_codex::context::ScopeContext;
@@ -16,8 +17,11 @@ use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::reference::ReferenceOrigin;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::TypeRef;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::combine_union_types;
@@ -26,6 +30,7 @@ use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::template::GenericTemplate;
@@ -46,11 +51,15 @@ use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
+use mago_syntax::cst::TraitUseAdaptation;
+use mago_syntax::cst::TraitUseMethodReference;
+use mago_syntax::cst::TraitUseSpecification;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
@@ -64,8 +73,10 @@ use crate::error::AnalysisError;
 use crate::plugin::context::HookContext;
 use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
-use crate::statement::function_like::report_undefined_type_references;
+use crate::statement::function_like::check_type_metadata;
 use crate::utils::missing_type_hints;
+use crate::utils::template::check_template_arguments;
+use crate::utils::template::check_template_definitions;
 
 pub mod constant;
 pub mod enum_case;
@@ -312,6 +323,21 @@ fn check_unused_template_parameters<'ctx, A>(
             }
         }
 
+        for type_alias in class_like_metadata.type_aliases.values() {
+            if type_contains_template_param(&type_alias.type_union, *template_name, class_name) {
+                continue 'templates;
+            }
+        }
+
+        if class_like_metadata
+            .mixins
+            .iter()
+            .chain(class_like_metadata.magic_properties.values().filter_map(|property| property.type_metadata.as_ref()))
+            .any(|type_metadata| type_contains_template_param(&type_metadata.type_union, *template_name, class_name))
+        {
+            continue 'templates;
+        }
+
         for property_metadata in class_like_metadata.properties.values() {
             if let Some(type_metadata) = &property_metadata.type_metadata
                 && type_contains_template_param(&type_metadata.type_union, *template_name, class_name)
@@ -338,6 +364,28 @@ fn check_unused_template_parameters<'ctx, A>(
                 {
                     continue 'templates;
                 }
+            }
+
+            if function_like
+                .parameters
+                .iter()
+                .filter_map(|parameter| parameter.out_type.as_ref())
+                .chain(function_like.thrown_types.iter())
+                .any(|type_metadata| {
+                    type_contains_template_param(&type_metadata.type_union, *template_name, class_name)
+                })
+                || function_like
+                    .assertions
+                    .values()
+                    .chain(function_like.if_true_assertions.values())
+                    .chain(function_like.if_false_assertions.values())
+                    .flatten()
+                    .filter_map(|assertion| assertion.get_type())
+                    .any(|atomic| {
+                        type_contains_template_param(&TUnion::from_atomic(atomic.clone()), *template_name, class_name)
+                    })
+            {
+                continue 'templates;
             }
 
             // Check return type
@@ -449,9 +497,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         let should_check_unused = 'check_unused: {
             if !context.settings.find_unused_definitions {
@@ -572,9 +618,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         // Call plugin on_leave_interface hooks
         if context.plugin_registry.has_interface_hooks() {
@@ -653,9 +697,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Trait<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         // Call plugin on_leave_trait hooks
         if context.plugin_registry.has_trait_hooks() {
@@ -716,9 +758,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
 
         check_duplicate_enum_case_values(context, artifacts, name, self);
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         if context.settings.find_unused_definitions
             && !class_like_metadata.flags.is_unchecked()
@@ -859,8 +899,11 @@ where
     for member in members {
         if let ClassLikeMember::TraitUse(used_trait) = member {
             check_class_like_use(context, class_like_metadata, used_trait);
+            check_trait_use_adaptations(context, class_like_metadata, used_trait);
         }
     }
+
+    check_trait_method_collisions(context, class_like_metadata);
 
     let has_complete_hierarchy = !class_like_metadata.has_incomplete_hierarchy();
 
@@ -879,21 +922,30 @@ where
                 }
             }
 
-            let Some(declaring_class_like_metadata) =
-                context.codebase.get_class_like_by_name(method_id.get_class_name())
-            else {
+            let Some(mut function_like) = context.codebase.get_method_by_id(method_id) else {
                 continue;
             };
 
-            let Some(function_like) = context.codebase.get_method_by_id(method_id) else {
-                continue;
-            };
+            let mut method_id = method_id;
+            if function_like.flags.is_magic_method()
+                && let Some((abstract_id, abstract_method)) =
+                    abstract_method_behind_pseudo_method(context.codebase, class_like_metadata, *method_name)
+            {
+                method_id = abstract_id;
+                function_like = abstract_method;
+            }
 
             let Some(method_metadata) = function_like.method_metadata.as_ref() else {
                 continue;
             };
 
-            if method_metadata.is_abstract {
+            if method_metadata.is_abstract && !function_like.flags.is_magic_method() {
+                let Some(declaring_class_like_metadata) =
+                    context.codebase.get_class_like_by_name(method_id.get_class_name())
+                else {
+                    continue;
+                };
+
                 let fqcn = declaring_class_like_metadata.original_name;
                 let method_span = function_like.name_span.unwrap_or(function_like.span);
 
@@ -1047,7 +1099,9 @@ where
         check_unused_template_parameters(context, class_like_metadata);
     }
     check_class_like_properties(context, class_like_metadata);
+    override_attribute::check_property_override_attributes(class_like_metadata, context);
     check_docblock_declared_members(context, class_like_metadata, declaration_span);
+    check_template_definitions(context, &class_like_metadata.template_types, name_span.unwrap_or(declaration_span));
 
     let mut scope = ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, mago_word::empty_word())));
     scope.set_class_like(Some(class_like_metadata));
@@ -1107,12 +1161,12 @@ where
                     if let Some(prop_meta) = class_like_metadata.properties.get(&property_name)
                         && let Some(type_meta) = &prop_meta.type_metadata
                     {
-                        report_undefined_type_references(context, type_meta);
+                        check_type_metadata(context, type_meta);
 
                         if type_meta.from_docblock
                             && let Some(type_decl_meta) = &prop_meta.type_declaration_metadata
                         {
-                            report_undefined_type_references(context, type_decl_meta);
+                            check_type_metadata(context, type_decl_meta);
                         }
                     }
                 }
@@ -1177,13 +1231,43 @@ fn check_class_like_extends<'ctx, 'arena, A>(
     let using_name = class_like_metadata.original_name;
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
+    let extends_itself = extends.types.iter().any(|extended_type| {
+        context.resolved_names.get(&extended_type).eq_ignore_ascii_case(class_like_metadata.name.as_bytes())
+    });
+
+    if !extends_itself
+        && (class_like_metadata.all_parent_classes.contains(&class_like_metadata.name)
+            || class_like_metadata.all_parent_interfaces.contains(&class_like_metadata.name))
+    {
+        context.collector.report_with_code(
+            IssueCode::InvalidExtend,
+            Issue::error(format!("{using_kind_capitalized} `{using_name}` extends itself through its parents."))
+                .with_annotation(Annotation::primary(using_class_span).with_message("This inheritance forms a cycle"))
+                .with_note("PHP cannot declare a type that is its own ancestor."),
+        );
+    }
+
+    let mut seen = HashSet::default();
     for extended_type in &extends.types {
         let extended_type_str = context.resolved_names.get(&extended_type);
+        if !seen.insert(extended_type_str.to_ascii_lowercase()) {
+            context.collector.report_with_code(
+                IssueCode::InvalidExtend,
+                Issue::error(format!(
+                    "{using_kind_capitalized} `{using_name}` extends `{}` more than once.",
+                    BytesDisplay(extended_type_str)
+                ))
+                .with_annotation(Annotation::primary(extended_type.span()).with_message("Listed again here")),
+            );
+
+            continue;
+        }
+
         let extended_class_metadata = context.codebase.get_class_like(extended_type_str);
 
         // Case: The extended type does not exist.
         let Some(extended_class_metadata) = extended_class_metadata else {
-            let extended_name = BytesDisplay(extended_type.value());
+            let extended_name = BytesDisplay(extended_type_str);
 
             context.collector.report_with_code(
                 IssueCode::NonExistentClassLike,
@@ -1369,8 +1453,22 @@ fn check_class_like_implements<'ctx, 'arena, A>(
     let using_name = class_like_metadata.original_name;
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
+    let mut seen = HashSet::default();
     for implemented_type in &implements.types {
         let implemented_type_str = context.resolved_names.get(&implemented_type);
+        if !seen.insert(implemented_type_str.to_ascii_lowercase()) {
+            context.collector.report_with_code(
+                IssueCode::InvalidImplement,
+                Issue::error(format!(
+                    "{using_kind_capitalized} `{using_name}` implements `{}` more than once.",
+                    BytesDisplay(implemented_type_str)
+                ))
+                .with_annotation(Annotation::primary(implemented_type.span()).with_message("Listed again here")),
+            );
+
+            continue;
+        }
+
         let implemented_interface_metadata = context.codebase.get_class_like(implemented_type_str);
 
         if let Some(implemented_metadata) = implemented_interface_metadata {
@@ -1451,7 +1549,8 @@ fn check_class_like_implements<'ctx, 'arena, A>(
 
             check_interface_method_signatures(context, class_like_metadata, implemented_metadata, checked_signatures);
         } else {
-            let implemented_name = BytesDisplay(implemented_type.value());
+            let implemented_type_str = context.resolved_names.get(&implemented_type);
+            let implemented_name = BytesDisplay(implemented_type_str);
 
             context.collector.report_with_code(
                 IssueCode::NonExistentClassLike,
@@ -1483,7 +1582,7 @@ fn check_class_like_use<'ctx, 'arena, A>(
         let used_trait_metadata = context.codebase.get_class_like(used_type_str);
 
         let Some(used_trait_metadata) = used_trait_metadata else {
-            let used_name = BytesDisplay(used_type.value());
+            let used_name = BytesDisplay(used_type_str);
 
             context.collector.report_with_code(
                 IssueCode::NonExistentClassLike,
@@ -1728,6 +1827,8 @@ fn check_template_parameters<'ctx, A>(
                 continue;
             };
 
+            check_template_arguments(context, TypeRef::Union(&extended_type), inheritance.span());
+
             let mut template_type = parent_template.constraint.clone();
 
             expand_union(
@@ -1960,62 +2061,105 @@ fn check_template_variance_positions<'ctx, A>(
             continue;
         }
 
-        for parameter in &method.parameters {
-            let Some(type_metadata) = &parameter.type_metadata else {
-                continue;
-            };
+        let positions = method
+            .parameters
+            .iter()
+            .filter_map(|parameter| Some((parameter.type_metadata.as_ref()?, parameter.span, true)))
+            .chain(method.return_type_metadata.as_ref().map(|return_type| (return_type, return_type.span, false)));
 
-            for atomic in type_metadata.type_union.types.as_ref() {
-                let TAtomic::GenericParameter(generic) = atomic else {
-                    continue;
+        for (type_metadata, span, is_input) in positions {
+            let mut misplaced = Vec::new();
+            collect_misplaced_templates(
+                context.codebase,
+                &type_metadata.type_union,
+                is_input,
+                &own_entity,
+                &covariant_templates,
+                &contravariant_templates,
+                &mut misplaced,
+            );
+
+            for template_name in misplaced {
+                let (variance, tag, position) = if covariant_templates.contains(&template_name) {
+                    ("Covariant", "@template-covariant", "an input")
+                } else {
+                    ("Contravariant", "@template-contravariant", "an output")
                 };
 
-                if generic.defining_entity != own_entity || !covariant_templates.contains(&generic.parameter_name) {
-                    continue;
-                }
-
-                let template_name = generic.parameter_name;
                 context.collector.report_with_code(
                     IssueCode::InvalidTemplateParameter,
                     Issue::error(format!(
-                        "Covariant template parameter `{template_name}` cannot appear in a parameter position."
+                        "{variance} template parameter `{template_name}` cannot appear in {position} position."
                     ))
-                    .with_annotation(Annotation::primary(parameter.span).with_message(format!(
-                        "`{template_name}` is declared covariant (`@template-covariant`) on `{class_name}`"
-                    )))
-                    .with_note("A method parameter is a contravariant position; a covariant template parameter may only appear in covariant positions, such as a return type.")
+                    .with_annotation(
+                        Annotation::primary(span)
+                            .with_message(format!("`{template_name}` is declared with `{tag}` on `{class_name}`")),
+                    )
+                    .with_note("A method parameter is an input position and a return type an output position; a callable parameter inside either one flips it.")
                     .with_help(format!(
-                        "Declare `{template_name}` as invariant (`@template`), or remove it from parameter positions."
+                        "Declare `{template_name}` as invariant (`@template`), or move it out of {position} position."
                     )),
                 );
             }
         }
+    }
+}
 
-        if let Some(return_type) = &method.return_type_metadata {
-            for atomic in return_type.type_union.types.as_ref() {
-                let TAtomic::GenericParameter(generic) = atomic else {
-                    continue;
-                };
+/// Collects the templates of the class that sit in a position their variance
+/// forbids: covariant ones in an input position, contravariant ones in an output
+/// position. A callable's parameters flip the position; arrays and iterables
+/// keep it. Generic objects are not entered: `compare(Option<T> $other)` in a
+/// covariant `Option<T>` is the accepted comparable pattern.
+fn collect_misplaced_templates(
+    codebase: &CodebaseMetadata,
+    union: &TUnion,
+    is_input: bool,
+    own_entity: &GenericParent,
+    covariant_templates: &[Word],
+    contravariant_templates: &[Word],
+    misplaced: &mut Vec<Word>,
+) {
+    let recurse = |union: &TUnion, is_input: bool, misplaced: &mut Vec<Word>| {
+        collect_misplaced_templates(
+            codebase,
+            union,
+            is_input,
+            own_entity,
+            covariant_templates,
+            contravariant_templates,
+            misplaced,
+        );
+    };
 
-                if generic.defining_entity != own_entity || !contravariant_templates.contains(&generic.parameter_name) {
-                    continue;
+    for atomic in union.types.as_ref() {
+        match atomic {
+            TAtomic::GenericParameter(generic) if &generic.defining_entity == own_entity => {
+                let forbidden = if is_input { covariant_templates } else { contravariant_templates };
+                if forbidden.contains(&generic.parameter_name) && !misplaced.contains(&generic.parameter_name) {
+                    misplaced.push(generic.parameter_name);
+                }
+            }
+            TAtomic::Array(array) => {
+                let (key, value) = get_array_parameters(array, codebase);
+                recurse(&key, is_input, misplaced);
+                recurse(&value, is_input, misplaced);
+            }
+            TAtomic::Iterable(iterable) => {
+                recurse(&iterable.key_type, is_input, misplaced);
+                recurse(&iterable.value_type, is_input, misplaced);
+            }
+            TAtomic::Callable(TCallable::Signature(signature)) => {
+                for parameter in signature.get_parameters() {
+                    if let Some(parameter_type) = parameter.get_type_signature() {
+                        recurse(parameter_type, !is_input, misplaced);
+                    }
                 }
 
-                let template_name = generic.parameter_name;
-                context.collector.report_with_code(
-                    IssueCode::InvalidTemplateParameter,
-                    Issue::error(format!(
-                        "Contravariant template parameter `{template_name}` cannot appear in a return position."
-                    ))
-                    .with_annotation(Annotation::primary(return_type.span).with_message(format!(
-                        "`{template_name}` is declared contravariant (`@template-contravariant`) on `{class_name}`"
-                    )))
-                    .with_note("A method return type is a covariant position; a contravariant template parameter may only appear in contravariant positions, such as a method parameter.")
-                    .with_help(format!(
-                        "Declare `{template_name}` as invariant (`@template`), or remove it from return positions."
-                    )),
-                );
+                if let Some(return_type) = signature.get_return_type() {
+                    recurse(return_type, is_input, misplaced);
+                }
             }
+            _ => {}
         }
     }
 }
@@ -2130,6 +2274,10 @@ fn check_abstract_method_signatures<'ctx, A>(
         let overridden_declaring_classes: Vec<Word> =
             overridden_method_ids.values().map(|id| id.get_class_name()).collect();
 
+        let has_real_parent = overridden_method_ids.values().any(|id| {
+            context.codebase.get_method_by_id(id).is_some_and(|parent_method| !parent_method.flags.is_magic_method())
+        });
+
         for parent_declaring_method_id in overridden_method_ids.values() {
             let declaring_class_name = parent_declaring_method_id.get_class_name();
             let declaring_class_name_str = declaring_class_name.as_ref();
@@ -2142,6 +2290,15 @@ fn check_abstract_method_signatures<'ctx, A>(
                 *other != declaring_class_name
                     && context.codebase.is_instance_of(other.as_bytes(), declaring_class_name_str)
             }) {
+                continue;
+            }
+
+            if has_real_parent
+                && context
+                    .codebase
+                    .get_method_by_id(parent_declaring_method_id)
+                    .is_some_and(|parent_method| parent_method.flags.is_magic_method())
+            {
                 continue;
             }
 
@@ -2198,13 +2355,44 @@ fn check_abstract_method_signatures<'ctx, A>(
             let substituted_appearing_method =
                 get_substituted_method(appearing_method, class_like_metadata, method_fqcn, context.codebase);
 
-            let issues = method_signature::validate_method_signature_compatibility(
+            let overridden_scope = if overridden_class.kind.is_trait() {
+                class_like_metadata
+                    .direct_parent_class
+                    .and_then(|parent_name| context.codebase.get_class_like_by_name(parent_name))
+                    .and_then(|parent| parent.appearing_method_ids.get(method_name_atom))
+                    .map_or(declaring_class_name, MethodIdentifier::get_class_name)
+            } else {
+                declaring_class_name
+            };
+
+            let mut issues = method_signature::validate_method_signature_compatibility(
                 context.codebase,
-                class_like_metadata.name,
+                if appearing_class.kind.is_trait() || returns_static(overridden_method) {
+                    class_like_metadata.name
+                } else {
+                    method_fqcn
+                },
+                overridden_scope,
                 &substituted_appearing_method,
                 &substituted_overridden_method,
                 final_parent_class.is_some(),
             );
+
+            if context.settings.check_throw_type_covariance
+                && let Some(issue) = method_signature::validate_method_throw_type_covariance(
+                    context.codebase,
+                    class_like_metadata
+                        .appearing_method_ids
+                        .get(method_name_atom)
+                        .map_or(method_fqcn, MethodIdentifier::get_class_name),
+                    class_like_metadata.name,
+                    overridden_scope,
+                    &substituted_appearing_method,
+                    &substituted_overridden_method,
+                )
+            {
+                issues.push(issue);
+            }
 
             if issues.is_empty() {
                 continue;
@@ -2289,6 +2477,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                             let issues = method_signature::validate_method_signature_compatibility(
                                 context.codebase,
                                 class_like_metadata.name,
+                                class_like_metadata.name,
                                 second_method,
                                 first_method,
                                 false,
@@ -2346,6 +2535,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                             if first_is_abstract || second_is_abstract {
                                 let issues = method_signature::validate_method_signature_compatibility(
                                     context.codebase,
+                                    class_like_metadata.name,
                                     class_like_metadata.name,
                                     second_method,
                                     first_method,
@@ -2617,27 +2807,27 @@ fn report_trait_property_conflict<A>(
     );
 }
 
-/// Apply template parameter substitution to a method's parameter and return types
+/// Apply template parameter substitution to a method's parameter, return, and throw types
 ///
 /// For example, if interface has `K` and `V` template parameters, and the implementation
 /// maps them to `TKey` and `TValue`, this function replaces all occurrences of `K` with `TKey`
-/// and `V` with `TValue` in the method signature.
+/// and `V` with `TValue` in the method signature and throw contract.
 ///
 /// Gets the substituted method by applying template parameter mapping from the class.
 /// Returns the original method if no template substitution is needed.
 #[inline]
-fn get_substituted_method(
-    method: &FunctionLikeMetadata,
+fn get_substituted_method<'method>(
+    method: &'method FunctionLikeMetadata,
     class_like_metadata: &ClassLikeMetadata,
     parent_class_name: Word,
     codebase: &CodebaseMetadata,
-) -> FunctionLikeMetadata {
+) -> Cow<'method, FunctionLikeMetadata> {
     let parameterizations: Vec<&IndexMap<Word, TUnion, RandomState>> =
         match class_like_metadata.template_extended_parameter_paths.get(&parent_class_name) {
             Some(paths) if !paths.is_empty() => paths.iter().collect(),
             _ => match class_like_metadata.template_extended_parameters.get(&parent_class_name) {
                 Some(mapping) if !mapping.is_empty() => vec![mapping],
-                _ => return method.clone(),
+                _ => return Cow::Borrowed(method),
             },
         };
 
@@ -2655,14 +2845,14 @@ fn get_substituted_method(
     });
 
     let Some(mut merged) = substituted.next() else {
-        return method.clone();
+        return Cow::Borrowed(method);
     };
 
     for other in substituted {
         merge_method_signature_into(&mut merged, &other, codebase);
     }
 
-    merged
+    Cow::Owned(merged)
 }
 
 /// Folds one parameterization of an inherited method into the running merge:
@@ -2693,6 +2883,57 @@ fn merge_method_signature_into(
         other.return_type_declaration_metadata.as_ref(),
         codebase,
     );
+
+    let merged_throw_type = get_declared_method_throw_type(merged, codebase);
+    let other_throw_type = get_declared_method_throw_type(other, codebase);
+    let merged_throw_type = match (merged_throw_type, other_throw_type) {
+        (Some(merged), Some(other)) => {
+            let type_union =
+                intersect_union_types(&merged.type_union, &other.type_union, codebase).unwrap_or_else(get_never);
+
+            let mut merged_type = merged;
+            merged_type.type_union = type_union;
+
+            Some(merged_type)
+        }
+        (Some(merged), None) => Some(merged),
+        (None, Some(other)) => Some(other),
+        (None, None) => None,
+    };
+
+    merged.thrown_types = merged_throw_type.into_iter().collect();
+}
+
+/// Combines explicit throw annotations into a single effective contract.
+///
+/// An absent annotation is represented by `None` and means `Throwable`; an explicit `@throws void`
+/// is represented by `Some(never)`. The caller intersects contracts from separate inheritance paths.
+fn get_declared_method_throw_type(method: &FunctionLikeMetadata, codebase: &CodebaseMetadata) -> Option<TypeMetadata> {
+    let inherits_docs = method.flags.inherits_docs();
+    let mut declared_throw_types =
+        method.thrown_types.iter().filter(|thrown_type| !thrown_type.inferred || inherits_docs);
+    let first_throw_type = declared_throw_types.next()?;
+    let mut throw_type = get_never();
+
+    for thrown_type in std::iter::once(first_throw_type).chain(declared_throw_types) {
+        let mut thrown_type_union = thrown_type.type_union.clone();
+        if thrown_type_union.is_void() {
+            continue;
+        }
+
+        thrown_type_union.types.to_mut().retain(|atomic| !atomic.is_void());
+        if thrown_type_union.is_never() {
+            continue;
+        }
+
+        throw_type = combine_union_types(&throw_type, &thrown_type_union, codebase, CombinerOptions::default());
+    }
+
+    let mut throw_type_metadata = first_throw_type.clone();
+    throw_type_metadata.type_union = throw_type;
+    throw_type_metadata.inferred = false;
+
+    Some(throw_type_metadata)
 }
 
 fn join_type_metadata(target: Option<&mut TypeMetadata>, other: Option<&TypeMetadata>, codebase: &CodebaseMetadata) {
@@ -2729,6 +2970,10 @@ fn apply_template_substitution_to_method(
 
     if let Some(return_type) = &mut substituted_method.return_type_metadata {
         return_type.type_union = inferred_type_replacer::replace(&return_type.type_union, template_result, codebase);
+    }
+
+    for thrown_type in &mut substituted_method.thrown_types {
+        thrown_type.type_union = inferred_type_replacer::replace(&thrown_type.type_union, template_result, codebase);
     }
 
     substituted_method
@@ -2773,6 +3018,19 @@ fn check_interface_method_signatures<'ctx, A>(
             continue;
         }
 
+        if interface_method.flags.is_magic_method()
+            && class_like_metadata.overridden_method_ids.get(method_name_atom).is_some_and(|entries| {
+                entries.values().any(|id| {
+                    context
+                        .codebase
+                        .get_method_by_id(id)
+                        .is_some_and(|parent_method| !parent_method.flags.is_magic_method())
+                })
+            })
+        {
+            continue;
+        }
+
         if !checked_signatures.insert((interface_method_id.get_class_name(), *method_name_atom)) {
             continue;
         }
@@ -2791,13 +3049,38 @@ fn check_interface_method_signatures<'ctx, A>(
             context.codebase,
         );
 
-        let issues = method_signature::validate_method_signature_compatibility(
+        let method_scope = if returns_static(interface_method)
+            || context.codebase.get_class_like_by_name(class_fqcn_word).is_some_and(|c| c.kind.is_trait())
+        {
+            class_like_metadata.name
+        } else {
+            class_fqcn_word
+        };
+
+        let mut issues = method_signature::validate_method_signature_compatibility(
             context.codebase,
-            class_like_metadata.name,
+            method_scope,
+            interface_fqcn_word,
             &substituted_class_method,
             &substituted_interface_method,
             false,
         );
+
+        if context.settings.check_throw_type_covariance
+            && let Some(issue) = method_signature::validate_method_throw_type_covariance(
+                context.codebase,
+                class_like_metadata
+                    .appearing_method_ids
+                    .get(method_name_atom)
+                    .map_or(class_fqcn_word, MethodIdentifier::get_class_name),
+                class_like_metadata.name,
+                interface_fqcn_word,
+                &substituted_class_method,
+                &substituted_interface_method,
+            )
+        {
+            issues.push(issue);
+        }
 
         for incompatibility in issues {
             // Use the method span as primary location (where the issue actually is)
@@ -2924,6 +3207,7 @@ fn report_signature_compatibility_issue<'ctx, A>(
             let param_name: String = parent_method
                 .parameters
                 .get(parameter_index)
+                .or_else(|| parent_method.parameters.last().filter(|parameter| parameter.flags.is_variadic()))
                 .map_or_else(|| "unknown".to_string(), |p| p.name.0.to_string());
 
             context.collector.report_with_code(
@@ -2946,6 +3230,35 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .with_help("Change the parameter type to be compatible with the parent method."),
             );
         }
+        SignatureCompatibilityIssue::ParameterByReferenceMismatch { parameter_index, child_is_by_reference } => {
+            let param_name: String = parent_method
+                .parameters
+                .get(parameter_index)
+                .or_else(|| parent_method.parameters.last().filter(|parameter| parameter.flags.is_variadic()))
+                .map_or_else(|| "unknown".to_string(), |p| p.name.0.to_string());
+            let (child_passing, parent_passing) =
+                if child_is_by_reference { ("by reference", "by value") } else { ("by value", "by reference") };
+
+            context.collector.report_with_code(
+                IssueCode::IncompatibleParameterType,
+                Issue::error(format!(
+                    "Parameter `{param_name}` of `{child_name}::{method_name}()` is passed {child_passing} but parent `{parent_name}::{method_name}()` takes it {parent_passing}"
+                ))
+                .with_annotation(Annotation::primary(primary_span).with_message(format!(
+                    "Parameter `{param_name}` is passed {child_passing} here"
+                )))
+                .with_annotation(
+                    Annotation::secondary(parent_class_span).with_message(format!(
+                        "Parent method `{parent_name}::{method_name}()` takes it {parent_passing}"
+                    )),
+                )
+                .with_annotation(
+                    Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
+                )
+                .with_note("PHP requires an overriding method to pass each parameter the same way as the parent: this is a fatal error.")
+                .with_help(format!("Pass `{param_name}` {parent_passing}, as the parent method does.")),
+            );
+        }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {
             context.collector.report_with_code(
                 IssueCode::IncompatibleReturnType,
@@ -2964,6 +3277,32 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 )
                 .with_note("Return types must be covariant: child must return equal or narrower types than parent.")
                 .with_help("Change the return type to be compatible with the parent method."),
+            );
+        }
+        SignatureCompatibilityIssue::IncompatibleThrowType { child_type, parent_type, child_is_implicit } => {
+            let child_contract = if child_is_implicit { "Implicit throw type" } else { "Throw type" };
+            let child_explanation = if child_is_implicit {
+                "Without an `@throws` tag, this method may throw any `Throwable`"
+            } else {
+                "This method declares a throw type broader than its parent contract"
+            };
+
+            context.collector.report_with_code(
+                IssueCode::IncompatibleThrowType,
+                Issue::error(format!(
+                    "{child_contract} `{child_type}` of `{child_name}::{method_name}()` is incompatible with parent throw type `{parent_type}` of `{parent_name}::{method_name}()`"
+                ))
+                .with_annotation(Annotation::primary(primary_span).with_message(child_explanation))
+                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
+                    "Parent throw contract is declared by `{parent_name}::{method_name}()`"
+                )))
+                .with_annotation(
+                    Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
+                )
+                .with_note("Throw types must be covariant: an overriding method can declare only exception types compatible with the parent method's throw contract.")
+                .with_help(format!(
+                    "Declare a throw type compatible with `{parent_type}`, or use `@throws void` if `{child_name}::{method_name}()` does not throw."
+                )),
             );
         }
         SignatureCompatibilityIssue::MissingReturnTypeDeclaration { parent_type } => {
@@ -3033,6 +3372,10 @@ fn check_docblock_declared_members<A>(
 ) where
     A: Arena,
 {
+    for alias in class_like_metadata.type_aliases.values() {
+        check_template_arguments(context, TypeRef::Union(&alias.type_union), alias.span);
+    }
+
     for pseudo_method_name in &class_like_metadata.pseudo_methods {
         let Some(metadata) = context.codebase.function_likes.get(&(class_like_metadata.name, *pseudo_method_name))
         else {
@@ -3040,12 +3383,12 @@ fn check_docblock_declared_members<A>(
         };
 
         if let Some(return_type) = &metadata.return_type_metadata {
-            report_undefined_type_references(context, return_type);
+            check_type_metadata(context, return_type);
         }
 
         for parameter in &metadata.parameters {
             if let Some(parameter_type) = &parameter.type_declaration_metadata {
-                report_undefined_type_references(context, parameter_type);
+                check_type_metadata(context, parameter_type);
             }
         }
     }
@@ -3058,7 +3401,7 @@ fn check_docblock_declared_members<A>(
         for type_metadata in
             [&property_metadata.type_metadata, &property_metadata.write_type_metadata].into_iter().flatten()
         {
-            report_undefined_type_references(context, type_metadata);
+            check_type_metadata(context, type_metadata);
         }
     }
 
@@ -3069,7 +3412,7 @@ fn check_docblock_declared_members<A>(
 
     for mixin in &class_like_metadata.mixins {
         if docblocks.iter().any(|docblock| docblock.contains(&mixin.span)) {
-            report_undefined_type_references(context, mixin);
+            check_type_metadata(context, mixin);
         }
     }
 }
@@ -3095,6 +3438,46 @@ fn check_class_like_properties<'ctx, A>(
         if declaring_fqcn != &class_like_metadata.name {
             // Property is inherited, not declared in this class
             continue;
+        }
+
+        if let (Some(effective), Some(native)) =
+            (&property_metadata.type_metadata, &property_metadata.type_declaration_metadata)
+            && effective.from_docblock
+        {
+            let expansion_options =
+                TypeExpansionOptions { self_class: Some(class_like_metadata.original_name), ..Default::default() };
+            let mut effective_type = effective.type_union.clone();
+            expand_union(context.codebase, &mut effective_type, &expansion_options);
+            let mut native_type = native.type_union.clone();
+            expand_union(context.codebase, &mut native_type, &expansion_options);
+
+            if !effective_type.any_child_node(|node| matches!(node, TypeRef::Atomic(TAtomic::Reference(_))))
+                && !union_comparator::is_contained_by_with_erased_template_arguments(
+                    context.codebase,
+                    &effective_type,
+                    &native_type,
+                    &mut ComparisonResult::default(),
+                )
+            {
+                let docblock_type_str = effective_type.get_id();
+                let native_type_str = native.type_union.get_id();
+                let class_name = class_like_metadata.original_name;
+
+                context.collector.report_with_code(
+                    IssueCode::DocblockTypeMismatch,
+                    Issue::error(format!(
+                        "Docblock type `{docblock_type_str}` for property `{class_name}::{property_name}` is incompatible with native type `{native_type_str}`."
+                    ))
+                    .with_annotation(Annotation::primary(native.span).with_message(format!("Native type is `{native_type_str}`...")))
+                    .with_annotation(
+                        Annotation::secondary(effective.span).with_message(format!("...but docblock declares `{docblock_type_str}`")),
+                    )
+                    .with_note("The docblock type must be compatible with the native type declaration.")
+                    .with_help(format!(
+                        "Either change the docblock type to match `{native_type_str}`, or update the native type to be compatible with `{docblock_type_str}`."
+                    )),
+                );
+            }
         }
 
         // Validate set hook parameter type is supertype of property type
@@ -3129,13 +3512,13 @@ fn check_class_like_properties<'ctx, A>(
             }
         }
 
-        // Validate docblock param type >= native param type
+        // A `@param` docblock type refines the native set hook parameter type, so it must fit inside it.
         if let Some(set_hook) = property_metadata.hooks.get(&word("set"))
             && let Some(param) = &set_hook.parameter
             && let Some(native_type) = param.type_declaration_metadata.as_ref()
             && let Some(effective_type) = param.type_metadata.as_ref()
             && effective_type.from_docblock
-            && !is_type_compatible(context.codebase, &native_type.type_union, &effective_type.type_union)
+            && !is_type_compatible(context.codebase, &effective_type.type_union, &native_type.type_union)
         {
             let native_type_str = native_type.type_union.get_id();
             let docblock_type_str = effective_type.type_union.get_id();
@@ -3143,17 +3526,17 @@ fn check_class_like_properties<'ctx, A>(
             context.collector.report_with_code(
                     IssueCode::DocblockTypeMismatch,
                     Issue::error(format!(
-                        "Docblock type `{docblock_type_str}` is narrower than native parameter type `{native_type_str}`."
+                        "Docblock type `{docblock_type_str}` is incompatible with native parameter type `{native_type_str}`."
                     ))
                     .with_annotation(
                         Annotation::primary(effective_type.span)
-                            .with_message(format!("Docblock type `{docblock_type_str}` cannot narrow native type `{native_type_str}`")),
+                            .with_message(format!("Docblock type `{docblock_type_str}` does not fit native type `{native_type_str}`")),
                     )
                     .with_note(
-                        "The @param docblock type must be a supertype of the native type. It can widen the type (e.g., int to int|string) but not narrow it.",
+                        "The @param docblock type refines the native type, so it must be the same type or a narrower one.",
                     )
                     .with_help(format!(
-                        "Change the docblock type to `{native_type_str}` or a wider type.",
+                        "Change the docblock type to `{native_type_str}` or a narrower type.",
                     )),
                 );
         }
@@ -3458,6 +3841,7 @@ fn check_class_like_properties<'ctx, A>(
             if !has_type_incompatibility
                 && let Some(declaring_type) = &property_metadata.type_metadata
                 && declaring_type.from_docblock
+                && !declaring_type.inferred
                 && let Some(parent_type) = &parent_property.type_metadata
                 && let Some(localized_parent_type) = &localized_parent_type
                 && is_property_type_variance_invalid(
@@ -3851,6 +4235,177 @@ fn check_readonly_class_trait_properties<'ctx, 'arena, A>(
             }
         }
     }
+}
+
+/// A `@method` tag implements nothing: finds the abstract method it hides when no
+/// real method implements it.
+fn abstract_method_behind_pseudo_method<'ctx>(
+    codebase: &'ctx CodebaseMetadata,
+    class_like_metadata: &'ctx ClassLikeMetadata,
+    method_name: Word,
+) -> Option<(&'ctx MethodIdentifier, &'ctx FunctionLikeMetadata)> {
+    let mut abstract_method = None;
+    for parent_method_id in class_like_metadata.overridden_method_ids.get(&method_name)?.values() {
+        let Some(parent_method) = codebase.get_method_by_id(parent_method_id) else {
+            continue;
+        };
+
+        if parent_method.flags.is_magic_method() {
+            continue;
+        }
+
+        if parent_method.method_metadata.as_ref().is_some_and(|metadata| metadata.is_abstract) {
+            abstract_method.get_or_insert((parent_method_id, parent_method));
+        } else {
+            return None;
+        }
+    }
+
+    abstract_method
+}
+
+fn check_trait_method_collisions<A>(context: &mut Context<'_, '_, A>, class_like_metadata: &ClassLikeMetadata)
+where
+    A: Arena,
+{
+    let mut providers: IndexMap<Word, Vec<(Word, MethodIdentifier)>> = IndexMap::default();
+    for trait_name in class_like_metadata.direct_trait_names() {
+        let Some(trait_metadata) = context.codebase.get_class_like_by_name(trait_name) else {
+            continue;
+        };
+
+        for (method_name, declaring_id) in &trait_metadata.declaring_method_ids {
+            if class_like_metadata.excludes_trait_method(trait_metadata.name, *method_name, context.codebase)
+                || context.codebase.get_method_by_id(declaring_id).is_none_or(|method| {
+                    method.flags.is_magic_method()
+                        || method.method_metadata.as_ref().is_none_or(|method| method.is_abstract)
+                })
+            {
+                continue;
+            }
+
+            providers.entry(*method_name).or_default().push((trait_metadata.original_name, *declaring_id));
+        }
+    }
+
+    for (method_name, traits) in providers {
+        let [(first_trait, first_id), (second_trait, second_id), ..] = traits.as_slice() else {
+            continue;
+        };
+
+        if first_id == second_id
+            || class_like_metadata
+                .declaring_method_ids
+                .get(&method_name)
+                .is_some_and(|declaring| declaring.get_class_name() == class_like_metadata.name)
+        {
+            continue;
+        }
+
+        let method = context.codebase.get_method_by_id(first_id).map_or(method_name, |method| method.original_name);
+
+        context.collector.report_with_code(
+            IssueCode::InvalidTraitUse,
+            Issue::error(format!(
+                "Trait method `{second_trait}::{method}` collides with `{first_trait}::{method}` in `{}`.",
+                class_like_metadata.original_name
+            ))
+            .with_annotation(
+                Annotation::primary(class_like_metadata.name_span.unwrap_or(class_like_metadata.span))
+                    .with_message(format!("`{method}` comes from both `{first_trait}` and `{second_trait}`")),
+            )
+            .with_note("PHP refuses to compile a class that gets the same method from two traits.")
+            .with_help(format!(
+                "Pick one with `{first_trait}::{method} insteadof {second_trait};`, or define `{method}` in the class."
+            )),
+        );
+    }
+}
+
+fn check_trait_use_adaptations<A>(
+    context: &mut Context<'_, '_, A>,
+    class_like_metadata: &ClassLikeMetadata,
+    trait_use: &TraitUse<'_>,
+) where
+    A: Arena,
+{
+    let TraitUseSpecification::Concrete(specification) = &trait_use.specification else {
+        return;
+    };
+
+    let used_traits: Vec<Word> = class_like_metadata.direct_trait_names().collect();
+    let resolve = |context: &Context<'_, '_, A>, name: &Identifier<'_>| {
+        ascii_lowercase_word(&context.scope.resolve(NameKind::Default, name.value()).0)
+    };
+
+    let report = |context: &mut Context<'_, '_, A>, span: Span, message: String| {
+        context.collector.report_with_code(
+            IssueCode::InvalidTraitUse,
+            Issue::error(message)
+                .with_annotation(Annotation::primary(span).with_message("PHP refuses to compile this adaptation")),
+        );
+    };
+
+    for adaptation in &specification.adaptations {
+        let (trait_names, method_name) = match adaptation {
+            TraitUseAdaptation::Precedence(precedence) => (
+                std::iter::once(&precedence.method_reference.trait_name)
+                    .chain(precedence.trait_names.iter())
+                    .collect::<Vec<_>>(),
+                &precedence.method_reference.method_name,
+            ),
+            TraitUseAdaptation::Alias(alias) => match &alias.method_reference {
+                TraitUseMethodReference::Absolute(reference) => (vec![&reference.trait_name], &reference.method_name),
+                TraitUseMethodReference::Identifier(identifier) => (vec![], identifier),
+            },
+        };
+
+        let method = ascii_lowercase_word(method_name.value);
+        let has_method = |context: &Context<'_, '_, A>, trait_name: Word| {
+            context
+                .codebase
+                .get_class_like_by_name(trait_name)
+                .is_none_or(|metadata| metadata.declaring_method_ids.contains_key(&method))
+        };
+
+        for trait_name in &trait_names {
+            let resolved = resolve(context, trait_name);
+            if !used_traits.contains(&resolved) {
+                report(
+                    context,
+                    trait_name.span(),
+                    format!(
+                        "Trait `{}` is not used by `{}`.",
+                        BytesDisplay(trait_name.value()),
+                        class_like_metadata.original_name
+                    ),
+                );
+            }
+        }
+
+        let exists = match trait_names.first() {
+            Some(source) => has_method(context, resolve(context, source)),
+            None => used_traits.iter().any(|trait_name| has_method(context, *trait_name)),
+        };
+
+        if !exists {
+            report(
+                context,
+                method_name.span(),
+                format!("No used trait defines a method `{}`.", BytesDisplay(method_name.value)),
+            );
+        }
+    }
+}
+
+fn returns_static(method: &FunctionLikeMetadata) -> bool {
+    [&method.return_type_metadata, &method.return_type_declaration_metadata].into_iter().flatten().any(|return_type| {
+        return_type
+            .type_union
+            .types
+            .iter()
+            .any(|atomic| matches!(atomic, TAtomic::Object(TObject::Named(named_object)) if named_object.is_static))
+    })
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::unary::cast_type_to_string;
+use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::resolver::property::PropertyResolutionResult;
 use crate::resolver::property::ResolvedProperty;
@@ -29,6 +30,7 @@ use crate::resolver::property::report_deprecated_property;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
 use crate::visibility::check_static_property_read_visibility;
+use crate::visibility::private_member_scope;
 
 /// Resolves all possible static properties from a class expression and a member selector.
 pub fn resolve_static_properties<'ctx, 'ast, 'arena, A>(
@@ -133,6 +135,16 @@ where
         };
 
         for property_name in &property_names {
+            let fqcn = std::iter::once(fqcn)
+                .chain(resolved_classname.intersections.iter().filter_map(|intersection| intersection.fqcn))
+                .find(|class_id| {
+                    context
+                        .codebase
+                        .get_class_like(class_id.as_bytes())
+                        .is_some_and(|metadata| metadata.declaring_property_ids.contains_key(property_name))
+                })
+                .unwrap_or(fqcn);
+
             if let Some(resolved_property) = find_static_property_in_class(
                 context,
                 block_context,
@@ -187,7 +199,10 @@ where
             return None;
         }
 
-        // Error reporting for non-existent class is handled by `resolve_classnames_from_expression`.
+        if matches!(class_expr, Expression::Identifier(_)) && !block_context.flags.inside_isset() {
+            report_non_existent_class_like(context, class_expr.span(), class_id);
+        }
+
         result.has_invalid_path = true;
         return None;
     };
@@ -195,6 +210,16 @@ where
     let declaring_class_id = context
         .codebase
         .get_declaring_property_class(class_id.as_bytes(), property_name.as_bytes())
+        .or_else(|| {
+            let scope_metadata =
+                private_member_scope(context.codebase, class_metadata.name, block_context.scope.get_class_like_name())?;
+
+            scope_metadata
+                .properties
+                .get(&property_name)
+                .is_some_and(|property| property.read_visibility.is_private())
+                .then_some(scope_metadata.original_name)
+        })
         .unwrap_or(class_metadata.original_name);
 
     let Some(declaring_class_metadata) = context.codebase.get_class_like(declaring_class_id.as_bytes()) else {

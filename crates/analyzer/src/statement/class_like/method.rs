@@ -2,7 +2,6 @@ use mago_allocator::Arena;
 use mago_codex::context::ScopeContext;
 use mago_word::ascii_lowercase_word;
 use mago_word::concat_word;
-use mago_word::word;
 
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::reference::ReferenceOrigin;
@@ -20,6 +19,7 @@ use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
+use crate::statement::function_like::check_function_like_types;
 use crate::statement::function_like::check_unused_function_template_parameters;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::missing_type_hints;
@@ -51,7 +51,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             return Ok(());
         };
 
-        let method_name = word(self.name.value);
         let lowercase_method_name = ascii_lowercase_word(self.name.value);
         if context.settings.diff
             && context.codebase.safe_symbol_members.contains(&(class_like_metadata.name, lowercase_method_name))
@@ -95,17 +94,18 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
                 &self.parameter_list,
                 FunctionLikeBody::Statements(concrete_body.statements.as_slice(), concrete_body.span()),
                 None,
+                None,
             )?;
 
             let method_key = (class_like_metadata.name, lowercase_method_name);
 
             artifacts
                 .method_initialized_properties
-                .insert(method_key, method_block_context.definitely_initialized_properties.clone());
+                .insert(method_key, std::mem::take(&mut method_block_context.definitely_initialized_properties));
 
             artifacts
                 .method_calls_this_methods
-                .insert(method_key, method_block_context.definitely_called_methods.clone());
+                .insert(method_key, std::mem::take(&mut method_block_context.definitely_called_methods));
 
             if method_block_context.flags.calls_parent_constructor() {
                 artifacts.method_calls_parent_constructor.insert(method_key, true);
@@ -116,7 +116,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             }
 
             if context.settings.find_unused_parameters
-                && !context.codebase.method_is_overriding(class_like_metadata.name.as_bytes(), method_name.as_bytes())
+                && !context.codebase.method_is_overriding(class_like_metadata.name.as_bytes(), self.name.value)
             {
                 unused_parameter::check_unused_params(
                     method_metadata,
@@ -125,15 +125,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
                     context,
                 );
             }
+        } else {
+            check_function_like_types(context, method_metadata);
         }
 
-        check_unused_function_template_parameters(
-            context,
-            method_metadata,
-            self.name.span(),
-            "method",
-            concat_word!(&class_like_metadata.original_name, "::", &method_name),
-        );
+        check_unused_function_template_parameters(context, method_metadata, self.name.span(), "method", || {
+            concat_word!(&class_like_metadata.original_name, "::", self.name.value)
+        });
 
         // Check for missing type hints
         for (i, parameter) in self.parameter_list.parameters.iter().enumerate() {

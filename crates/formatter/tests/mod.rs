@@ -539,6 +539,9 @@ test_case!(idempotency_comment_before_call_args);
 test_case!(idempotency_mixed_breaking_logical_chain);
 test_case!(idempotency_negated_logical_group, PHPVersion::PHP85);
 test_case!(idempotency_preserved_logical_groups);
+test_case!(idempotency_parenthesized_comparison_operand);
+test_case!(idempotency_formatter_added_comparison_operand_parentheses);
+test_case!(idempotency_inherited_inline_chain_preserved_break);
 test_case!(idempotency_hugged_condition, PHPVersion::PHP85);
 test_case!(idempotency_cast_comparison, PHPVersion::PHP85);
 test_case!(idempotency_binary_continuation, PHPVersion::PHP85);
@@ -549,6 +552,16 @@ test_case!(issue_2491_concat_arrow);
 test_case!(issue_2491_concat_rhs);
 test_case!(issue_2491_arrow_comment);
 test_case!(issue_2491_logical_assignment);
+test_case!(issue_2524_argument_list);
+test_case!(issue_2524_binary_expression);
+test_case!(issue_2584);
+test_case!(issue_2587);
+test_case!(issue_2588);
+test_case!(issue_2634);
+test_case!(issue_2643);
+test_case!(issue_2645);
+test_case!(issue_2646);
+test_case!(issue_2668);
 test_case!(idempotency_docblock_before_parameter);
 test_case!(idempotency_html_echo_ternary_break);
 test_case!(idempotency_inline_echo_mid_line_call);
@@ -567,9 +580,19 @@ test_case!(idempotency_corpus_phparkitect_arch_rule);
 test_case!(idempotency_corpus_apiplatform_schema_property);
 test_case!(idempotency_corpus_apiplatform_type_factory);
 test_case!(idempotency_corpus_symfony_json_streamer);
+test_case!(idempotency_align_assignment_like);
+test_case!(idempotency_align_parameters);
+test_case!(idempotency_blank_lines_in_lists);
+test_case!(idempotency_concatenation_without_spaces);
+test_case!(idempotency_end_of_line_cr);
+test_case!(idempotency_narrow_print_width);
+test_case!(idempotency_operator_at_line_end);
+test_case!(idempotency_pint_preset);
+test_case!(idempotency_preserved_chain_first_method);
+test_case!(idempotency_sort_class_methods);
 
 #[test]
-fn issue_2475_and_2491_settings() {
+fn issue_2475_2491_and_2524_settings() {
     let cases: &[(&str, &[u8])] = &[
         ("condition", include_bytes!("cases/issue_2475_condition/before.php")),
         ("condition_controls", include_bytes!("cases/issue_2475_condition_controls/before.php")),
@@ -578,6 +601,8 @@ fn issue_2475_and_2491_settings() {
         ("concat_rhs", include_bytes!("cases/issue_2491_concat_rhs/before.php")),
         ("arrow_comment", include_bytes!("cases/issue_2491_arrow_comment/before.php")),
         ("logical_assignment", include_bytes!("cases/issue_2491_logical_assignment/before.php")),
+        ("argument_list", include_bytes!("cases/issue_2524_argument_list/before.php")),
+        ("binary_expression", include_bytes!("cases/issue_2524_binary_expression/before.php")),
     ];
 
     for print_width in [80, 120, 160] {

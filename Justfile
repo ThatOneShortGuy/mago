@@ -1,5 +1,3 @@
-template_dir := `mktemp -d`
-
 # Lists all available commands.
 list:
     @just --list
@@ -52,6 +50,16 @@ test:
 test-sdk:
     vendor/bin/phpunit --configuration composer/phpunit.xml
 
+# Check formatted templates with the Twig runtime.
+test-twig-runtime:
+    cargo build --bin mago --locked
+    php crates/twig-formatter/tests/runtime.php
+
+# Check Twig lint fixes with the Twig runtime.
+test-twig-linter-runtime:
+    cargo build --bin mago --locked
+    php crates/twig-linter/tests/runtime.php
+
 # Fuzz the PHP lexer. Seeds are drawn from the syntax/analyzer/formatter PHP fixtures.
 fuzz-php-lexer:
     cd crates/syntax/fuzz && cargo +nightly fuzz run lexer \
@@ -76,9 +84,18 @@ fuzz-twig-lexer:
 fuzz-twig-parser:
     cd crates/twig-syntax/fuzz && cargo +nightly fuzz run parser corpus/parser seeds/parser
 
+# Fuzz Twig formatting and idempotence.
+fuzz-twig-formatter:
+    cd crates/twig-formatter/fuzz && cargo +nightly fuzz run formatter corpus/formatter ../tests/cases
+
+# Fuzz Twig lint rules and their fixes.
+fuzz-twig-linter:
+    cd crates/twig-linter/fuzz && cargo +nightly fuzz run linter corpus/linter ../tests/fixtures ../tests/runtime/cases ../../twig-formatter/tests/cases
+
 # Publishes all crates to crates.io in the correct order.
-publish:
+publish $CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE="allow":
     # Note: the order of publishing is important, as some crates depend on others.
+    # Each crate needs the siblings published just before it, so the publish-age cooldown is off here.
     cargo publish -p mago-bytes
     cargo publish -p mago-word
     cargo publish -p mago-allocator
@@ -96,7 +113,9 @@ publish:
     cargo publish -p mago-hir
     cargo publish -p mago-collector
     cargo publish -p mago-composer
+    cargo publish -p mago-formatter-core
     cargo publish -p mago-formatter
+    cargo publish -p mago-twig-formatter
     cargo publish -p mago-names
     cargo publish -p mago-semantics
     cargo publish -p mago-fingerprint
@@ -107,6 +126,7 @@ publish:
     cargo publish -p mago-extension
     cargo publish -p mago-analyzer
     cargo publish -p mago-linter
+    cargo publish -p mago-twig-linter
     cargo publish -p mago-orchestrator
     cargo publish -p mago-wasm
     cargo publish -p mago-server

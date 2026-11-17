@@ -5,9 +5,9 @@ nav_order = 70
 nav_section = "Tools"
 nav_subsection = "Linter"
 +++
-Mago's linter ships 190 rules across 9 categories. Click any rule to expand its description, requirements, default configuration, and examples.
+Mago's linter ships 193 rules across 9 categories. Click any rule to expand its description, requirements, default configuration, and examples.
 
-<div class="rule-index" role="navigation" aria-label="Rule categories"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarity</span><span class="rule-index__count">22 rules</span><span class="rule-index__blurb">Rules that make intent explicit and reduce reader effort. They flag patterns that are technically valid but obscure what the code is doing.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Best practices</span><span class="rule-index__count">47 rules</span><span class="rule-index__blurb">Idiomatic PHP patterns and widely-accepted conventions. These rules nudge code toward the way modern PHP is written by people who've shipped a lot of it.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Consistency</span><span class="rule-index__count">27 rules</span><span class="rule-index__blurb">Stylistic uniformity across a codebase. Pick one way to do a thing, these rules help everyone stick to it.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Deprecation</span><span class="rule-index__count">7 rules</span><span class="rule-index__blurb">PHP features and APIs that have been deprecated upstream and will eventually be removed. Migrate before they break.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintainability</span><span class="rule-index__count">11 rules</span><span class="rule-index__blurb">Code that is hard to keep alive over time, too complex, too tangled, too fragile. These rules surface the cost early.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redundancy</span><span class="rule-index__count">31 rules</span><span class="rule-index__blurb">Dead code, unused values, and constructs that have no observable effect. Trimming them keeps the codebase honest.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Security</span><span class="rule-index__count">15 rules</span><span class="rule-index__blurb">Rules that flag security vulnerabilities, injection vectors, unsafe deserialisation, untrusted input flowing into dangerous sinks.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Safety</span><span class="rule-index__count">9 rules</span><span class="rule-index__blurb">Patterns that compile but blow up at runtime. These rules catch the foot-guns before users do.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correctness</span><span class="rule-index__count">21 rules</span><span class="rule-index__blurb">Bugs and logic errors. Rules in this category catch code that does something the author probably did not intend.</span></a></div>
+<div class="rule-index" role="navigation" aria-label="Rule categories"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarity</span><span class="rule-index__count">22 rules</span><span class="rule-index__blurb">Rules that make intent explicit and reduce reader effort. They flag patterns that are technically valid but obscure what the code is doing.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Best practices</span><span class="rule-index__count">49 rules</span><span class="rule-index__blurb">Idiomatic PHP patterns and widely-accepted conventions. These rules nudge code toward the way modern PHP is written by people who've shipped a lot of it.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Consistency</span><span class="rule-index__count">27 rules</span><span class="rule-index__blurb">Stylistic uniformity across a codebase. Pick one way to do a thing, these rules help everyone stick to it.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Deprecation</span><span class="rule-index__count">7 rules</span><span class="rule-index__blurb">PHP features and APIs that have been deprecated upstream and will eventually be removed. Migrate before they break.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintainability</span><span class="rule-index__count">11 rules</span><span class="rule-index__blurb">Code that is hard to keep alive over time, too complex, too tangled, too fragile. These rules surface the cost early.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redundancy</span><span class="rule-index__count">32 rules</span><span class="rule-index__blurb">Dead code, unused values, and constructs that have no observable effect. Trimming them keeps the codebase honest.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Security</span><span class="rule-index__count">15 rules</span><span class="rule-index__blurb">Rules that flag security vulnerabilities, injection vectors, unsafe deserialisation, untrusted input flowing into dangerous sinks.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Safety</span><span class="rule-index__count">9 rules</span><span class="rule-index__blurb">Patterns that compile but blow up at runtime. These rules catch the foot-guns before users do.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correctness</span><span class="rule-index__count">21 rules</span><span class="rule-index__blurb">Bugs and logic errors. Rules in this category catch code that does something the author probably did not intend.</span></a></div>
 
 <h2 id="integration-specific-rules">Integration-specific rules</h2>
 
@@ -3638,6 +3638,58 @@ function process($condition) {
 
 </details>
 
+<details class="rule" name="rule" id="prefer-null-coalescing-assignment">
+<summary><code class="rule__code">prefer-null-coalescing-assignment</code><a class="rule__anchor" href="#prefer-null-coalescing-assignment" aria-label="Permalink to prefer-null-coalescing-assignment">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Suggests the null coalescing assignment operator (`??=`) when the right operand
+of `??` assigns to the same variable or property as its left operand.
+
+`$value ?? ($value = $default)` and `$value ??= $default` do the same work, but
+the latter names the target once.
+
+<blockquote class="rule-requirement">This rule requires PHP version <code>7.4.0</code> or newer.</blockquote>
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">Avoid</div>
+
+```php
+<?php
+
+return $this->ids ?? ($this->ids = $this->readIds());
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">Prefer</div>
+
+```php
+<?php
+
+return $this->ids ??= $this->readIds();
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Default |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `true` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
 <details class="rule" name="rule" id="prefer-pre-increment">
 <summary><code class="rule__code">prefer-pre-increment</code><a class="rule__anchor" href="#prefer-pre-increment" aria-label="Permalink to prefer-pre-increment">¶</a><span class="rule__level rule__level--help">help</span></summary>
 
@@ -3675,6 +3727,87 @@ $count--;
 
 ++$i;
 --$count;
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Default |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
+<details class="rule" name="rule" id="prefer-self">
+<summary><code class="rule__code">prefer-self</code><a class="rule__anchor" href="#prefer-self" aria-label="Permalink to prefer-self">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Suggests using `self` when a class refers to itself by name.
+
+Using `self` keeps the code working when the class is renamed, and makes it
+obvious that the reference points at the enclosing class.
+
+A static call through the class name does not forward late static binding, while
+a call through `self` does. In a class that can be extended, replacing the name in
+a static method call or first-class callable can therefore change what `static`
+resolves to in the called method, so those fixes are marked as potentially unsafe.
+The same applies inside closures, which can be rebound to another class scope.
+
+References inside traits, anonymous classes, and attribute arguments are ignored.
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">Avoid</div>
+
+```php
+<?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new Box(Box::DEFAULT_SIZE);
+    }
+}
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">Prefer</div>
+
+```php
+<?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new self(self::DEFAULT_SIZE);
+    }
+}
 ```
 
 </div>
@@ -5083,7 +5216,8 @@ Enforces that PHP keywords (like `if`, `else`, `return`, `function`, etc.) be wr
 in lowercase. Using uppercase or mixed case is discouraged for consistency and readability.
 
 When the `drupal` integration is enabled, `TRUE`, `FALSE`, and `NULL` are exempted to
-match Drupal's coding standards (and the `drupal` formatter preset).
+match Drupal's coding standards (and the `drupal` formatter preset). Drupal projects
+should use the official `drupal/mago` extension instead, which sets this rule up for them.
 
 <hr class="rule__separator">
 
@@ -7401,6 +7535,9 @@ to keep the codebase clean and maintainable.
 Detects loops (`for`, `foreach`, `while`, `do-while`) that have an empty body. An empty
 loop body does not perform any actions and is likely a mistake or redundant code.
 
+The fix is marked as unsafe because removing the loop also removes the evaluation of its
+header (function calls, assignments, increments), which can change behavior.
+
 <hr class="rule__separator">
 
 <div class="rule-examples">
@@ -8624,6 +8761,85 @@ function gen(): Generator {
 
 </details>
 
+<details class="rule" name="rule" id="no-unused-return-value">
+<summary><code class="rule__code">no-unused-return-value</code><a class="rule__anchor" href="#no-unused-return-value" aria-label="Permalink to no-unused-return-value">¶</a><span class="rule__level rule__level--help">help</span></summary>
+
+<div class="rule__body">
+
+Detects private methods whose return value is thrown away at every call site.
+
+Only the class itself can call a private method, so when each call is a bare
+statement, nothing reads the value the method returns. Declaring the method
+`void` makes that clear.
+
+The rule stays silent when the class uses a trait, calls methods by a dynamic
+name, takes the method as a callable, or mentions its name in a string.
+
+<hr class="rule__separator">
+
+<div class="rule-examples">
+
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">Avoid</div>
+
+```php
+<?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this->advance();
+    }
+
+    private function advance(): int
+    {
+        return ++$this->count;
+    }
+}
+```
+
+</div>
+
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">Prefer</div>
+
+```php
+<?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this->advance();
+    }
+
+    private function advance(): void
+    {
+        ++$this->count;
+    }
+}
+```
+
+</div>
+
+</div>
+
+<hr class="rule__separator">
+
+| Option | Type | Default |
+| :--- | :--- | :--- |
+| `enabled` | `boolean` | `true` |
+| `level` | `string` | `"help"` |
+
+</div>
+
+</details>
+
 <details class="rule" name="rule" id="redundant-static">
 <summary><code class="rule__code">redundant-static</code><a class="rule__anchor" href="#redundant-static" aria-label="Permalink to redundant-static">¶</a><span class="rule__level rule__level--help">help</span></summary>
 
@@ -8761,6 +8977,9 @@ Detects insecure comparison of passwords or tokens using `==`, `!=`, `===`, or `
 
 These operators are vulnerable to timing attacks, which can expose sensitive information.
 Instead, use `hash_equals` for comparing strings or `password_verify` for validating hashes.
+
+Sensitive data is identified by names, such as variables, array keys, and properties.
+String literal values such as `'refresh_token'` do not by themselves indicate sensitive data.
 
 <hr class="rule__separator">
 

@@ -27,6 +27,7 @@ use super::merge::merge_metadata_from_parent_class_like;
 use super::merge::merge_metadata_from_required_class_like;
 use super::merge::merge_metadata_from_required_interface;
 use super::merge::merge_metadata_from_trait;
+use super::methods::OverrideSeeds;
 
 #[inline]
 fn sorted_atoms(iter: impl Iterator<Item = Word>) -> Vec<Word> {
@@ -103,6 +104,7 @@ pub fn populate_class_like_metadata_iterative(
     classlike_name: Word,
     codebase: &mut CodebaseMetadata,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
     if let Some(metadata) = codebase.class_likes.get(&classlike_name)
         && metadata.flags.is_populated()
@@ -114,7 +116,7 @@ pub fn populate_class_like_metadata_iterative(
         return;
     };
 
-    populate_class_like_metadata(classlike_name, &mut metadata, codebase, symbol_references);
+    populate_class_like_metadata(classlike_name, &mut metadata, codebase, symbol_references, seeds);
     populate_method_type_aliases(classlike_name, &metadata, codebase);
     codebase.class_likes.insert(classlike_name, metadata);
 }
@@ -124,6 +126,7 @@ fn populate_class_like_metadata(
     metadata: &mut ClassLikeMetadata,
     codebase: &CodebaseMetadata,
     symbol_references: &mut SymbolReferences,
+    seeds: &mut OverrideSeeds,
 ) {
     for attribute_metadata in &metadata.attributes {
         symbol_references.add_symbol_reference_to_symbol(metadata.name, attribute_metadata.name, true);
@@ -140,16 +143,22 @@ fn populate_class_like_metadata(
     }
 
     for trait_name in sorted_atoms(metadata.used_traits.iter().copied()) {
-        merge_metadata_from_trait(metadata, codebase, trait_name, symbol_references);
+        merge_metadata_from_trait(metadata, codebase, trait_name, symbol_references, seeds);
     }
 
     if let Some(parent_classname) = metadata.direct_parent_class {
-        merge_metadata_from_parent_class_like(metadata, codebase, parent_classname, symbol_references);
+        merge_metadata_from_parent_class_like(metadata, codebase, parent_classname, symbol_references, seeds);
     }
 
     let direct_parent_interfaces = sorted_atoms(metadata.direct_parent_interfaces.iter().copied());
     for direct_parent_interface in direct_parent_interfaces {
-        merge_interface_metadata_from_parent_interface(metadata, codebase, direct_parent_interface, symbol_references);
+        merge_interface_metadata_from_parent_interface(
+            metadata,
+            codebase,
+            direct_parent_interface,
+            symbol_references,
+            seeds,
+        );
     }
 
     for required_class in sorted_atoms(metadata.require_extends.iter().copied()) {
@@ -157,7 +166,7 @@ fn populate_class_like_metadata(
     }
 
     for required_interface in sorted_atoms(metadata.require_implements.iter().copied()) {
-        merge_metadata_from_required_interface(metadata, codebase, required_interface, symbol_references);
+        merge_metadata_from_required_interface(metadata, codebase, required_interface, symbol_references, seeds);
     }
 
     if metadata.flags.is_readonly() {
@@ -253,15 +262,19 @@ pub fn populate_class_likes_parallel(
     sorted_classes: &[Word],
     codebase: &mut CodebaseMetadata,
     symbol_references: &mut SymbolReferences,
+    retain_references: bool,
 ) {
+    let mut seeds = OverrideSeeds::default();
     if sorted_classes.len() < 128 || rayon::current_num_threads() == 1 {
         for &name in sorted_classes {
-            populate_class_like_metadata_iterative(name, codebase, symbol_references);
+            populate_class_like_metadata_iterative(name, codebase, symbol_references, &mut seeds);
         }
         return;
     }
 
     let positions: WordMap<usize> = sorted_classes.iter().enumerate().map(|(index, name)| (*name, index)).collect();
+    let mut dependencies: Option<Vec<ClassDependencies>> =
+        Some(sorted_classes.par_iter().map(|name| class_dependencies(*name, codebase, &positions)).collect());
     let mut levels = vec![0; sorted_classes.len()];
     let mut layers: Vec<Vec<usize>> = Vec::new();
     let mut segment_start = 0;
@@ -269,30 +282,18 @@ pub fn populate_class_likes_parallel(
     let mut serial_dependencies = WordSet::default();
 
     for (index, &name) in sorted_classes.iter().enumerate() {
-        let mut level = 0;
-        let independent = codebase.class_likes.get(&name).is_some_and(|metadata| {
-            if metadata.name != name {
-                return false;
-            }
+        let class_dependencies = match &mut dependencies {
+            Some(dependencies) => std::mem::take(&mut dependencies[index]),
+            None => class_dependencies(name, codebase, &positions),
+        };
 
-            let trait_requirements = metadata
-                .used_traits
-                .iter()
-                .filter_map(|name| codebase.get_class_like_by_word(*name))
-                .flat_map(|trait_metadata| trait_metadata.require_implements.iter().copied());
-            let inherited_requirements = metadata
-                .require_extends
-                .iter()
-                .filter_map(|name| codebase.get_class_like_by_word(*name))
-                .flat_map(|required_metadata| required_metadata.all_parent_interfaces.iter().copied());
-            hierarchy_dependencies(metadata).chain(trait_requirements).chain(inherited_requirements).all(|dependency| {
-                let Some(dependency) = codebase.resolve_class_like_word(dependency) else {
-                    return true;
-                };
+        let mut level = 0;
+        let independent = class_dependencies.is_some_and(|class_dependencies| {
+            class_dependencies.into_iter().all(|(dependency, dependency_index)| {
                 if serial_dependencies.contains(&dependency) {
                     return false;
                 }
-                let Some(&dependency_index) = positions.get(&dependency) else {
+                let Some(dependency_index) = dependency_index else {
                     return true;
                 };
                 if dependency_index >= index {
@@ -307,11 +308,19 @@ pub fn populate_class_likes_parallel(
 
         if !independent {
             serial_dependencies.insert(name);
-            parallel_classes +=
-                populate_hierarchy_segment(sorted_classes, segment_start, index, &layers, codebase, symbol_references);
+            parallel_classes += populate_hierarchy_segment(
+                sorted_classes,
+                segment_start,
+                index,
+                &layers,
+                codebase,
+                symbol_references,
+                retain_references,
+            );
             layers.clear();
-            populate_class_like_metadata_iterative(name, codebase, symbol_references);
+            populate_class_like_metadata_iterative(name, codebase, symbol_references, &mut seeds);
             segment_start = index + 1;
+            dependencies = None;
             continue;
         }
 
@@ -329,6 +338,7 @@ pub fn populate_class_likes_parallel(
         &layers,
         codebase,
         symbol_references,
+        retain_references,
     );
 
     tracing::trace!(
@@ -336,6 +346,31 @@ pub fn populate_class_likes_parallel(
         serial_classes = sorted_classes.len() - parallel_classes,
         "Class hierarchy populated."
     );
+}
+
+type ClassDependencies = Option<Vec<(Word, Option<usize>)>>;
+
+fn class_dependencies(name: Word, codebase: &CodebaseMetadata, positions: &WordMap<usize>) -> ClassDependencies {
+    let metadata = codebase.class_likes.get(&name).filter(|metadata| metadata.name == name)?;
+    let trait_requirements = metadata
+        .used_traits
+        .iter()
+        .filter_map(|name| codebase.get_class_like_by_word(*name))
+        .flat_map(|trait_metadata| trait_metadata.require_implements.iter().copied());
+    let inherited_requirements = metadata
+        .require_extends
+        .iter()
+        .filter_map(|name| codebase.get_class_like_by_word(*name))
+        .flat_map(|required_metadata| required_metadata.all_parent_interfaces.iter().copied());
+
+    Some(
+        hierarchy_dependencies(metadata)
+            .chain(trait_requirements)
+            .chain(inherited_requirements)
+            .filter_map(|dependency| codebase.resolve_class_like_word(dependency))
+            .map(|dependency| (dependency, positions.get(&dependency).copied()))
+            .collect(),
+    )
 }
 
 fn hierarchy_dependencies(metadata: &ClassLikeMetadata) -> impl Iterator<Item = Word> + '_ {
@@ -356,48 +391,91 @@ fn populate_hierarchy_segment(
     layers: &[Vec<usize>],
     codebase: &mut CodebaseMetadata,
     symbol_references: &mut SymbolReferences,
+    retain_references: bool,
 ) -> usize {
     if end - start < 128 || !layers.iter().any(|layer| layer.len() >= rayon::current_num_threads()) {
+        let mut seeds = OverrideSeeds::default();
         for &name in &sorted_classes[start..end] {
-            populate_class_like_metadata_iterative(name, codebase, symbol_references);
+            populate_class_like_metadata_iterative(name, codebase, symbol_references, &mut seeds);
         }
         return 0;
     }
 
-    let mut references = Vec::with_capacity(end - start);
+    let mut references = Vec::new();
+    let mut spare: Vec<Box<ClassLikeMetadata>> = Vec::new();
     for layer in layers {
+        // Placeholders are never modified, so those of the previous layer only need a new identity.
+        let mut recycled: Vec<Option<Box<ClassLikeMetadata>>> =
+            spare.drain(spare.len().saturating_sub(layer.len())..).map(Some).collect();
+        recycled.resize_with(layer.len(), || None);
+        let placeholders: Vec<Option<Box<ClassLikeMetadata>>> = layer
+            .par_iter()
+            .zip(recycled)
+            .map(|(&index, recycled)| {
+                let metadata = codebase.class_likes.get(&sorted_classes[index])?;
+                let mut placeholder = match recycled {
+                    Some(mut placeholder) => {
+                        placeholder.name = metadata.name;
+                        placeholder.original_name = metadata.original_name;
+                        placeholder.span = metadata.span;
+                        placeholder.name_span = metadata.name_span;
+                        placeholder.flags = metadata.flags;
+                        placeholder
+                    }
+                    None => Box::new(ClassLikeMetadata::new(
+                        metadata.name,
+                        metadata.original_name,
+                        metadata.span,
+                        metadata.name_span,
+                        metadata.flags,
+                    )),
+                };
+                // Keep the kind for stale method IDs; other metadata reads use earlier layers.
+                placeholder.kind = metadata.kind;
+                Some(placeholder)
+            })
+            .collect();
+
         let mut pending = Vec::with_capacity(layer.len());
-        pending.extend(layer.iter().filter_map(|&index| {
-            let name = sorted_classes[index];
-            let metadata = codebase.class_likes.get_mut(&name)?;
-            let mut placeholder = ClassLikeMetadata::new(
-                metadata.name,
-                metadata.original_name,
-                metadata.span,
-                metadata.name_span,
-                metadata.flags,
-            );
-            // Keep the kind for stale method IDs; other metadata reads use earlier layers.
-            placeholder.kind = metadata.kind;
-            Some((index, std::mem::replace(metadata, Box::new(placeholder)), SymbolReferences::new()))
-        }));
-
-        pending.par_iter_mut().for_each(|(index, metadata, references)| {
-            populate_class_like_metadata(sorted_classes[*index], metadata, codebase, references);
-        });
-
-        for (index, metadata, class_references) in pending {
-            if let Some(target) = codebase.class_likes.get_mut(&sorted_classes[index]) {
-                *target = metadata;
+        for (&index, placeholder) in layer.iter().zip(placeholders) {
+            if let Some(placeholder) = placeholder
+                && let Some(metadata) = codebase.class_likes.get_mut(&sorted_classes[index])
+            {
+                pending.push((index, std::mem::replace(metadata, placeholder)));
             }
-            references.push((index, class_references));
+        }
+
+        references.par_extend(
+            pending
+                .par_iter_mut()
+                .fold(
+                    || (SymbolReferences::new(), OverrideSeeds::default()),
+                    |(mut references, mut seeds), (index, metadata)| {
+                        populate_class_like_metadata(
+                            sorted_classes[*index],
+                            metadata,
+                            codebase,
+                            &mut references,
+                            &mut seeds,
+                        );
+                        (references, seeds)
+                    },
+                )
+                .map(|(references, _)| references),
+        );
+
+        for (index, metadata) in pending {
+            if let Some(target) = codebase.class_likes.get_mut(&sorted_classes[index]) {
+                spare.push(std::mem::replace(target, metadata));
+            }
         }
     }
 
-    references.sort_unstable_by_key(|(index, _)| *index);
-    for (index, references) in references {
-        symbol_references.extend(references);
-        let name = sorted_classes[index];
+    spare.into_par_iter().for_each(drop);
+
+    super::keep_references(symbol_references, references, retain_references);
+
+    for &name in &sorted_classes[start..end] {
         if let Some(metadata) = codebase.class_likes.remove(&name) {
             populate_method_type_aliases(name, &metadata, codebase);
             // Replay the serial remove/insert order: table order can affect trait aliases.
@@ -533,7 +611,7 @@ pub fn populate_class_like_types(
     }
 
     for template in metadata.template_types.values_mut() {
-        if template.constraint.needs_population() || force_repopulation {
+        if force_repopulation || template.constraint.needs_population() {
             populate_union_type(
                 &mut template.constraint,
                 codebase_symbols,
@@ -544,7 +622,7 @@ pub fn populate_class_like_types(
         }
 
         if let Some(default) = template.default.as_mut()
-            && (default.needs_population() || force_repopulation)
+            && (force_repopulation || default.needs_population())
         {
             populate_union_type(
                 default,
@@ -557,7 +635,7 @@ pub fn populate_class_like_types(
     }
 
     for template in &mut metadata.template_extended_offsets.values_mut().flatten() {
-        if template.needs_population() || force_repopulation {
+        if force_repopulation || template.needs_population() {
             populate_union_type(
                 template,
                 codebase_symbols,
@@ -569,7 +647,7 @@ pub fn populate_class_like_types(
     }
 
     for p in metadata.template_extended_parameters.values_mut().flat_map(|m| m.values_mut()) {
-        if p.needs_population() || force_repopulation {
+        if force_repopulation || p.needs_population() {
             populate_union_type(p, codebase_symbols, None, symbol_references, force_repopulation);
         }
     }
@@ -580,7 +658,7 @@ pub fn populate_class_like_types(
         .flat_map(|paths| paths.iter_mut())
         .flat_map(|m| m.values_mut())
     {
-        if p.needs_population() || force_repopulation {
+        if force_repopulation || p.needs_population() {
             populate_union_type(p, codebase_symbols, None, symbol_references, force_repopulation);
         }
     }
@@ -597,7 +675,7 @@ pub fn populate_class_like_types(
 
     let declared_mixins = metadata.declared_mixin_count();
     for (index, mixin_type) in metadata.mixins.iter_mut().enumerate() {
-        if mixin_type.type_union.needs_population() || force_repopulation {
+        if force_repopulation || mixin_type.type_union.needs_population() {
             populate_union_type(
                 &mut mixin_type.type_union,
                 codebase_symbols,
@@ -619,7 +697,7 @@ pub fn populate_class_like_types(
             );
         }
 
-        if let Some(signature) = &mut constant.type_metadata {
+        for signature in [&mut constant.type_declaration, &mut constant.type_metadata].into_iter().flatten() {
             populate_union_type(
                 &mut signature.type_union,
                 codebase_symbols,

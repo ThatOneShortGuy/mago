@@ -4,6 +4,8 @@ namespace {
     class PDOException extends RuntimeException
     {
         public ?array $errorInfo;
+
+        /** @var int|string */
         protected $code;
     }
 
@@ -410,6 +412,8 @@ namespace {
         ) {}
 
         /**
+         * @ignore-falsable-return
+         *
          * @throws PDOException
          */
         public function prepare(string $query, array $options = []): PDOStatement|false {}

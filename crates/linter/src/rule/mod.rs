@@ -198,6 +198,13 @@ macro_rules! define_rules {
                     }
                 }
             )*
+
+            for (code, settings) in &rules.extensions {
+                if let Ok(value) = serde_json::to_value(settings) {
+                    map.insert(code.clone(), value);
+                }
+            }
+
             map
         }
     }
@@ -216,6 +223,7 @@ define_rules! {
     BlockStatement(block_statement @ BlockStatementRule),
     BracedStringInterpolation(braced_string_interpolation @ BracedStringInterpolationRule),
     ClassName(class_name @ ClassNameRule),
+    NoLegacyConstructor(no_legacy_constructor @ NoLegacyConstructorRule),
     CombineConsecutiveIssets(combine_consecutive_issets @ CombineConsecutiveIssetsRule),
     ConstantName(constant_name @ ConstantNameRule),
     CyclomaticComplexity(cyclomatic_complexity @ CyclomaticComplexityRule),
@@ -277,6 +285,7 @@ define_rules! {
     NoUnusedClosureCapture(no_unused_closure_capture @ NoUnusedClosureCaptureRule),
     NoRedundantYieldFrom(no_redundant_yield_from @ NoRedundantYieldFromRule),
     NoSelfAssignment(no_self_assignment @ NoSelfAssignmentRule),
+    NoUnusedReturnValue(no_unused_return_value @ NoUnusedReturnValueRule),
     NoProtectedInFinal(no_protected_in_final @ NoProtectedInFinalRule),
     RedundantStatic(redundant_static @ RedundantStaticRule),
     NoPhpTagTerminator(no_php_tag_terminator @ NoPhpTagTerminatorRule),
@@ -390,6 +399,8 @@ define_rules! {
     NoAlternativeSyntax(no_alternative_syntax @ NoAlternativeSyntaxRule),
     PreferPreIncrement(prefer_pre_increment @ PreferPreIncrementRule),
     PreferSelfReturnType(prefer_self_return_type @ PreferSelfReturnTypeRule),
+    PreferSelf(prefer_self @ PreferSelfRule),
+    PreferNullCoalescingAssignment(prefer_null_coalescing_assignment @ PreferNullCoalescingAssignmentRule),
     SwitchContinueToBreak(switch_continue_to_break @ SwitchContinueToBreakRule),
     MissingDocs(missing_docs @ MissingDocsRule),
     NoNullPropertyInit(no_null_property_init @ NoNullPropertyInitRule),

@@ -36,6 +36,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::statement::function_like::hint_returned_closure;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::get_type_diff;
@@ -54,6 +55,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
     {
         let inferred_return_type = if let Some(return_value) = self.value.as_ref() {
             block_context.flags.set_inside_return(true);
+            hint_returned_closure(context, block_context, artifacts, return_value);
             return_value.analyze(context, block_context, artifacts)?;
             block_context.flags.set_inside_return(false);
 
@@ -148,7 +150,7 @@ pub fn handle_return_value<'ctx, A>(
         check_constructor_early_return(context, block_context, return_span, class_name);
     }
 
-    let mut expansion_options = TypeExpansionOptions {
+    let expansion_options = TypeExpansionOptions {
         self_class: block_context.scope.get_class_like_name(),
         static_class_type: if let Some(calling_class) = block_context.scope.get_class_like_name() {
             StaticClassType::Name(calling_class)
@@ -178,12 +180,6 @@ pub fn handle_return_value<'ctx, A>(
     else {
         // Global return, no function context, exiting.
         return;
-    };
-
-    expansion_options.function_is_final = if let Some(method_metadata) = &function_like_metadata.method_metadata {
-        method_metadata.is_final
-    } else {
-        false
     };
 
     if inferred_return_type.is_expandable() {
@@ -240,11 +236,6 @@ pub fn handle_return_value<'ctx, A>(
                     } else {
                         StaticClassType::None
                     },
-                    function_is_final: if let Some(method_metadata) = &function_like_metadata.method_metadata {
-                        method_metadata.is_final
-                    } else {
-                        false
-                    },
                     ..Default::default()
                 },
             );
@@ -271,7 +262,7 @@ pub fn handle_return_value<'ctx, A>(
                 let type_declaration_span = function_like_metadata
                     .return_type_metadata
                     .as_ref()
-                    .map_or_else(|| function_like_metadata.span, |signature| signature.span);
+                    .map_or(function_like_metadata.span, |signature| signature.span);
 
                 if let Some(return_value) = return_value {
                     context.collector.report_with_code(
@@ -303,6 +294,8 @@ pub fn handle_return_value<'ctx, A>(
 
     if return_value.is_some() {
         artifacts.inferred_return_types.push(Rc::clone(&inferred_return_type));
+    } else {
+        artifacts.has_bare_return = true;
     }
 
     if let Some(return_value) = return_value {
@@ -492,11 +485,6 @@ pub fn handle_return_value<'ctx, A>(
             .with_annotation(
                 Annotation::primary(return_value.span())
                     .with_message(format!("This has type `{inferred_return_type_str}`"))
-            )
-            .with_note(
-                format!(
-                    "The type `{inferred_return_type_str}` returned here is not compatible with the declared return type `{expected_return_type_str}`."
-                )
             )
             .with_help(
                 format!(
@@ -1379,9 +1367,5 @@ mod tests {
                 return new ScalarType();
             }
         "},
-        issues = [
-            // TypeInterface: T is only used in @assert annotation, not in property/param/return
-            IssueCode::UnusedTemplateParameter,
-        ]
     }
 }

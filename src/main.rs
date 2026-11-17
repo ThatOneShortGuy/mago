@@ -72,6 +72,7 @@ mod error;
 mod extensions;
 mod language_server;
 mod macros;
+mod prelude;
 mod service;
 mod updater;
 mod utils;
@@ -87,6 +88,12 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+#[cfg(all(
+    feature = "dhat-heap",
+    any(target_os = "macos", target_os = "windows", target_env = "musl", target_env = "gnu")
+))]
+use mimalloc as _;
 
 /// Exit code for tool errors (configuration errors, parse errors, etc.)
 ///
@@ -150,7 +157,27 @@ pub fn main() -> ExitCode {
         trace!("total process time: {:?}", main_start.elapsed());
     }
 
+    #[cfg(all(unix, not(any(feature = "dhat-heap", mago_instrumented))))]
+    exit_without_teardown(code);
+
     code
+}
+
+/// Exits right away, leaving memory and other process resources for the OS to reclaim.
+#[cfg(all(unix, not(any(feature = "dhat-heap", mago_instrumented))))]
+fn exit_without_teardown(code: ExitCode) {
+    use std::io::Write;
+
+    let Some(status) = (0..=u8::MAX).find(|status| ExitCode::from(*status) == code) else {
+        return;
+    };
+
+    if std::io::stdout().flush().is_err() || std::io::stderr().flush().is_err() {
+        return;
+    }
+
+    // SAFETY: standard streams are flushed and no other state needs to outlive the process.
+    unsafe { libc::_exit(i32::from(status)) }
 }
 
 /// Core application logic for the Mago CLI.
@@ -282,7 +309,9 @@ pub fn run(main_start: Instant) -> Result<ExitCode, Error> {
         MagoCommand::Extension(cmd) => cmd.execute(configuration),
         MagoCommand::ListFiles(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Lint(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
+        MagoCommand::TwigLint(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Format(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
+        MagoCommand::TwigFormat(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Fix(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Cst(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Analyze(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),

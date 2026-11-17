@@ -14,6 +14,7 @@ use crate::identifier::method::MethodIdentifier;
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::class_like::ClassLikeMetadata;
 use crate::metadata::function_like::FunctionLikeMetadata;
+use crate::ttype::GenericParent;
 use crate::ttype::TType;
 use crate::ttype::TypeRef;
 use crate::ttype::atomic::TAtomic;
@@ -46,6 +47,8 @@ use crate::ttype::atomic::scalar::int::TInteger;
 use crate::ttype::atomic::scalar::string::TString;
 use crate::ttype::atomic::scalar::string::TStringLiteral;
 use crate::ttype::combiner;
+use crate::ttype::template::TemplateResult;
+use crate::ttype::template::inferred_type_replacer;
 use crate::ttype::union::TUnion;
 
 thread_local! {
@@ -187,25 +190,21 @@ fn expand_shared_union(codebase: &CodebaseMetadata, return_type: &mut Arc<TUnion
 fn expand_union_inner(codebase: &CodebaseMetadata, return_type: &mut TUnion, options: &TypeExpansionOptions) {
     let mut types = std::mem::take(&mut return_type.types).into_owned();
     let mut new_return_type_parts: Vec<TAtomic> = Vec::new();
-    let mut skip_mask: u64 = 0;
+    let mut has_skipped = false;
 
-    for (i, return_type_part) in types.iter_mut().enumerate() {
+    types.retain_mut(|return_type_part| {
         let mut skip_key = false;
         expand_atomic(return_type_part, codebase, options, &mut skip_key, &mut new_return_type_parts);
 
-        if skip_key && i < 64 {
-            skip_mask |= 1u64 << i;
+        if skip_key {
+            has_skipped = true;
+            false
+        } else {
+            true
         }
-    }
+    });
 
-    if skip_mask != 0 {
-        let mut idx = 0usize;
-        types.retain(|_| {
-            let retain = idx >= 64 || (skip_mask & (1u64 << idx)) == 0;
-            idx += 1;
-            retain
-        });
-
+    if has_skipped {
         new_return_type_parts.append(&mut types);
 
         if new_return_type_parts.is_empty() {
@@ -323,6 +322,19 @@ pub(crate) fn expand_atomic(
         TAtomic::Reference(TReference::Global { selector }) => {
             *skip_key = true;
             expand_global_reference(selector, codebase, options, new_return_type_parts);
+        }
+        TAtomic::Reference(TReference::Symbol { name, parameters: None, intersection_types: None, .. }) => {
+            if codebase.get_class_like_by_name(*name).is_none()
+                && let Some(constant_name) = codebase.get_constant_name_of_type_reference(name.as_bytes())
+            {
+                *skip_key = true;
+                expand_global_reference(
+                    &TGlobalReferenceSelector::Identifier(constant_name),
+                    codebase,
+                    options,
+                    new_return_type_parts,
+                );
+            }
         }
         TAtomic::Callable(TCallable::Alias(id)) => {
             if let Some(value) = get_atomic_of_function_like_identifier(id, codebase) {
@@ -530,6 +542,16 @@ fn expand_member_reference(
     options: &TypeExpansionOptions,
     new_return_type_parts: &mut Vec<TAtomic>,
 ) {
+    let class_like_name = if class_like_name.as_bytes().eq_ignore_ascii_case(b"parent") {
+        options
+            .self_class
+            .and_then(|name| codebase.get_class_like_by_name(name))
+            .and_then(|metadata| metadata.direct_parent_class)
+            .unwrap_or(class_like_name)
+    } else {
+        class_like_name
+    };
+
     if let TReferenceMemberSelector::Identifier(member_name) = member_selector
         && member_name.as_bytes().eq_ignore_ascii_case(b"class")
     {
@@ -613,6 +635,9 @@ fn expand_global_reference(
 ) {
     let (constant, constants) = match selector {
         TGlobalReferenceSelector::Identifier(name) => (codebase.constants.get_key_value(name), None),
+        TGlobalReferenceSelector::Fallback { name, fallback } => {
+            (codebase.constants.get_key_value(name).or_else(|| codebase.constants.get_key_value(fallback)), None)
+        }
         _ => (None, Some(&codebase.constants)),
     };
 
@@ -628,9 +653,13 @@ fn expand_global_reference(
             continue;
         };
 
-        if let Some(inferred_type) = constant.inferred_type.as_ref() {
+        let inferred_type = constant.inferred_type.as_ref().map(|inferred_type| {
             let mut inferred_type = inferred_type.clone();
             expand_union(codebase, &mut inferred_type, options);
+            inferred_type
+        });
+
+        if let Some(inferred_type) = inferred_type.filter(|inferred_type| !inferred_type.is_mixed()) {
             new_return_type_parts.extend(inferred_type.types.into_owned());
         } else if let Some(type_metadata) = constant.type_metadata.as_ref() {
             let mut constant_type = type_metadata.type_union.clone();
@@ -653,7 +682,17 @@ fn expand_object(object: &mut TObject, codebase: &CodebaseMetadata, options: &Ty
         return;
     };
 
-    let class_metadata = codebase.get_class_like_by_name(named.name);
+    let mut class_metadata = codebase.get_class_like_by_name(named.name);
+
+    // A trait is not a type: `self` in a trait method names the class using the trait.
+    if let Some(self_class) = options.self_class
+        && class_metadata.is_some_and(|metadata| metadata.kind.is_trait())
+        && codebase.class_uses_trait(self_class.as_bytes(), named.name.as_bytes())
+    {
+        named.name = self_class;
+        class_metadata = codebase.get_class_like_by_name(self_class);
+    }
+
     if named.intersection_types.is_none()
         && let Some(class_metadata) = class_metadata
         && class_metadata.kind.is_enum()
@@ -850,6 +889,7 @@ fn resolve_static_type(
         StaticClassType::Exact(static_class)
             if !check_compatibility || codebase.is_instance_of(static_class.as_bytes(), named.name.as_bytes()) =>
         {
+            use_own_template_bounds(named, *static_class, codebase);
             named.name = *static_class;
             named.is_static = false;
             named.is_this = false;
@@ -885,16 +925,19 @@ fn resolve_static_type(
                 || (static_obj.type_parameters.is_some() && should_use_static_type_params(named, static_obj, codebase))
             {
                 named.type_parameters.clone_from(&static_obj.type_parameters);
+            } else if static_obj.type_parameters.is_none() {
+                use_own_template_bounds(named, static_obj.name, codebase);
             }
 
             named.name = static_obj.name;
             let effectively_final = is_effectively_final(&static_obj.name, codebase, options);
-            named.is_static = !effectively_final;
-            named.is_this = !effectively_final && is_this_type;
+            named.is_static = !effectively_final && (static_obj.is_static || crosses_mixin);
+            named.is_this = named.is_static && is_this_type;
         }
         StaticClassType::Name(static_class)
             if (!check_compatibility || codebase.is_instance_of(static_class.as_bytes(), named.name.as_bytes())) =>
         {
+            use_own_template_bounds(named, *static_class, codebase);
             named.name = *static_class;
             let effectively_final = is_effectively_final(static_class, codebase, options);
             named.is_static = !effectively_final;
@@ -902,6 +945,18 @@ fn resolve_static_type(
         }
         _ => {}
     }
+}
+
+/// Replaces the type arguments of a class with the template bounds of the subclass `static` resolves to.
+fn use_own_template_bounds(named: &mut TNamedObject, static_class: Word, codebase: &CodebaseMetadata) {
+    if named.type_parameters.is_none() || named.name.as_bytes().eq_ignore_ascii_case(static_class.as_bytes()) {
+        return;
+    }
+
+    named.type_parameters = codebase.get_class_like_by_name(static_class).and_then(|metadata| {
+        (!metadata.template_types.is_empty())
+            .then(|| metadata.template_types.values().map(|template| template.constraint.clone()).collect())
+    });
 }
 
 /// Checks whether a class is effectively final for the purpose of `$this`/`static` resolution.
@@ -1016,17 +1071,30 @@ fn expand_or_fill_type_parameters(
 
         if supplied_count < template_count {
             let mut params = named.type_parameters.take().unwrap_or_default().into_vec();
-            params.extend(class_metadata.template_types.values().skip(supplied_count).map(|template| {
-                if let Some(default) = &template.default {
-                    let mut default = default.clone();
-                    default.set_from_template_default(true);
-                    default
-                } else {
-                    let mut constraint = template.constraint.clone();
-                    constraint.set_from_unspecified_template(true);
-                    constraint
+            for template in class_metadata.template_types.values().skip(supplied_count) {
+                let mut filled = template.default.as_ref().unwrap_or(&template.constraint).clone();
+                if filled.has_template_types() {
+                    let mut earlier_arguments = TemplateResult::default();
+                    for (parameter_name, argument) in class_metadata.template_types.keys().zip(&params) {
+                        earlier_arguments.add_lower_bound(
+                            *parameter_name,
+                            GenericParent::ClassLike(class_metadata.name),
+                            argument.clone(),
+                        );
+                    }
+
+                    filled = inferred_type_replacer::replace(&filled, &earlier_arguments, codebase);
                 }
-            }));
+
+                if template.default.is_some() {
+                    filled.set_from_template_default(true);
+                } else {
+                    filled.set_from_unspecified_template(true);
+                }
+
+                params.push(filled);
+            }
+
             named.type_parameters = Some(params.into_boxed_slice());
         }
     }
@@ -1079,13 +1147,59 @@ fn get_signature_of_function_like_identifier_with_options(
         ),
     };
 
-    Some(get_signature_of_function_like_metadata_with_options(
+    let mut signature = get_signature_of_function_like_metadata_with_options(
         function_like_identifier,
         function_like_metadata,
         codebase,
         &options,
         preserve_parameter_dependencies,
-    ))
+    );
+
+    if let FunctionLikeIdentifier::Method(classlike_name, method_name) = function_like_identifier
+        && let declaring_class = codebase
+            .get_declaring_method_identifier(&MethodIdentifier::new(*classlike_name, *method_name))
+            .get_class_name()
+        && let Some(declaring_trait) =
+            codebase.get_class_like_by_name(declaring_class).filter(|metadata| metadata.kind.is_trait())
+    {
+        let mut candidate = codebase.get_class_like_by_name(*classlike_name);
+        while let Some(candidate_metadata) = candidate
+            && !candidate_metadata.direct_trait_names().any(|name| name == declaring_trait.name)
+        {
+            candidate =
+                candidate_metadata.direct_parent_class.and_then(|parent| codebase.get_class_like_by_name(parent));
+        }
+
+        if let Some(trait_user) = candidate {
+            let rename = |union: &mut TUnion| {
+                let mut renamed = false;
+                for atomic in union.types.to_mut() {
+                    if let TAtomic::Object(TObject::Named(named)) = atomic
+                        && named.name.as_bytes().eq_ignore_ascii_case(declaring_trait.name.as_bytes())
+                    {
+                        named.name = trait_user.original_name;
+                        renamed = true;
+                    }
+                }
+
+                if renamed {
+                    expand_union(codebase, union, &options);
+                }
+            };
+
+            for parameter in signature.get_parameters_mut() {
+                if let Some(parameter_type) = parameter.get_type_signature_mut() {
+                    rename(parameter_type);
+                }
+            }
+
+            if let Some(return_type) = signature.get_return_type_mut() {
+                rename(return_type);
+            }
+        }
+    }
+
+    Some(signature)
 }
 
 #[must_use]
@@ -1205,9 +1319,13 @@ fn expand_value_of(
     let mut target_type = return_type_value_of.get_target_type().clone();
     expand_union(codebase, &mut target_type, options);
 
-    let Some(new_return_types) = TValueOf::get_value_of_targets(&target_type.types, codebase, false) else {
+    let Some(mut new_return_types) = TValueOf::get_value_of_targets(&target_type.types, codebase, false) else {
         return vec![TAtomic::Derived(TDerived::ValueOf(return_type_value_of.clone()))];
     };
+
+    if new_return_types.is_expandable() {
+        expand_union(codebase, &mut new_return_types, options);
+    }
 
     new_return_types.types.into_owned()
 }
@@ -1280,8 +1398,7 @@ fn expand_int_mask(int_mask: &TIntMask, codebase: &CodebaseMetadata, options: &T
         return vec![TAtomic::Scalar(TScalar::int())];
     }
 
-    let combinations = TIntMask::calculate_mask_combinations(&literal_values);
-    combinations.into_iter().map(|v| TAtomic::Scalar(TScalar::literal_int(v))).collect()
+    mask_combinations(&literal_values)
 }
 
 #[cold]
@@ -1304,7 +1421,16 @@ fn expand_int_mask_of(
         return vec![TAtomic::Scalar(TScalar::int())];
     }
 
-    let combinations = TIntMask::calculate_mask_combinations(&literal_values);
+    mask_combinations(&literal_values)
+}
+
+fn mask_combinations(literal_values: &[i64]) -> Vec<TAtomic> {
+    let generalization_limit = usize::from(combiner::CombinerOptions::default().integer_combination_threshold) + 1;
+    let mut combinations = TIntMask::calculate_smallest_mask_combinations(literal_values, generalization_limit);
+    if !combinations.contains(&0) {
+        combinations.push(0);
+    }
+
     combinations.into_iter().map(|v| TAtomic::Scalar(TScalar::literal_int(v))).collect()
 }
 
@@ -1785,7 +1911,7 @@ mod tests {
 
         assert!(actual.types.iter().any(|t| {
             if let TAtomic::Object(TObject::Named(named)) = t {
-                named.name == ascii_lowercase_word(b"foo") && named.is_static && !named.is_this
+                named.name == ascii_lowercase_word(b"foo") && !named.is_static && !named.is_this
             } else {
                 false
             }
@@ -3225,6 +3351,53 @@ mod tests {
                     false
                 }
             }));
+        }
+    }
+
+    #[test]
+    fn bounded_mask_combinations_combine_like_all_combinations() {
+        use crate::ttype::atomic::mixed::truthiness::TMixedTruthiness;
+
+        let codebase = CodebaseMetadata::default();
+        let literal = |value| TAtomic::Scalar(TScalar::literal_int(value));
+        let neighbours: Vec<Vec<TAtomic>> = vec![
+            vec![],
+            vec![TAtomic::Mixed(TMixed::new())],
+            vec![TAtomic::Mixed(TMixed::truthy())],
+            vec![TAtomic::Mixed(TMixed::new().with_truthiness(TMixedTruthiness::Falsy))],
+            vec![TAtomic::Mixed(TMixed::new().with_is_non_null(true))],
+            vec![TAtomic::Mixed(TMixed::isset_from_loop())],
+            vec![TAtomic::Scalar(TScalar::int())],
+            vec![TAtomic::Scalar(TScalar::Integer(TInteger::positive()))],
+            vec![literal(3), literal(-7)],
+            (0..200)
+                .map(|value| TAtomic::Scalar(TScalar::Integer(TInteger::from_bounds(Some(value), Some(value + 10)))))
+                .collect(),
+            vec![TAtomic::Scalar(TScalar::string())],
+            vec![TAtomic::Scalar(TScalar::literal_string(word("a")))],
+            vec![TAtomic::Scalar(TScalar::ArrayKey)],
+            vec![TAtomic::Scalar(TScalar::Numeric)],
+            vec![TAtomic::Scalar(TScalar::Generic)],
+            vec![TAtomic::Scalar(TScalar::bool())],
+            vec![TAtomic::Null],
+            vec![TAtomic::Never],
+        ];
+
+        for values in [&[1, 2, 4, 8, 16, 32, 64, 128, 256][..], &[-1024, -512, 1, 2, 4, 8, 16, 32, 64, 128]] {
+            let all: Vec<TAtomic> = TIntMask::calculate_mask_combinations(values).into_iter().map(literal).collect();
+            let bounded = mask_combinations(values);
+            assert!(bounded.len() < all.len());
+
+            for before in &neighbours {
+                for after in &neighbours {
+                    let combine = |mask: &[TAtomic]| {
+                        let types = before.iter().chain(mask).chain(after).cloned().collect();
+                        combiner::combine(types, &codebase, combiner::CombinerOptions::default())
+                    };
+
+                    assert_eq!(combine(&bounded), combine(&all), "{values:?} {before:?} {after:?}");
+                }
+            }
         }
     }
 }

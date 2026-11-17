@@ -130,6 +130,8 @@ impl AnalyzerStrictnessPreset {
                 find_unused_expressions: false,
                 analyze_dead_code: false,
                 check_throws: false,
+                check_dead_catch: false,
+                check_throw_type_covariance: false,
                 allow_possibly_undefined_array_keys: true,
                 check_missing_override: false,
                 find_unused_parameters: false,
@@ -137,6 +139,7 @@ impl AnalyzerStrictnessPreset {
                 strict_list_index_checks: false,
                 strict_array_index_existence: false,
                 allow_array_truthy_operand: false,
+                allow_operator_overloading: false,
                 no_boolean_literal_comparison: false,
                 check_missing_type_hints: false,
                 register_super_globals: true,
@@ -147,6 +150,8 @@ impl AnalyzerStrictnessPreset {
                 find_unused_expressions: false,
                 analyze_dead_code: false,
                 check_throws: false,
+                check_dead_catch: false,
+                check_throw_type_covariance: false,
                 allow_possibly_undefined_array_keys: true,
                 check_missing_override: false,
                 find_unused_parameters: false,
@@ -154,6 +159,7 @@ impl AnalyzerStrictnessPreset {
                 strict_list_index_checks: false,
                 strict_array_index_existence: false,
                 allow_array_truthy_operand: false,
+                allow_operator_overloading: false,
                 no_boolean_literal_comparison: false,
                 check_missing_type_hints: false,
                 register_super_globals: true,
@@ -164,6 +170,8 @@ impl AnalyzerStrictnessPreset {
                 find_unused_expressions: true,
                 analyze_dead_code: false,
                 check_throws: true,
+                check_dead_catch: false,
+                check_throw_type_covariance: false,
                 allow_possibly_undefined_array_keys: false,
                 check_missing_override: true,
                 find_unused_parameters: true,
@@ -171,6 +179,7 @@ impl AnalyzerStrictnessPreset {
                 strict_list_index_checks: true,
                 strict_array_index_existence: false,
                 allow_array_truthy_operand: false,
+                allow_operator_overloading: false,
                 no_boolean_literal_comparison: false,
                 check_missing_type_hints: false,
                 register_super_globals: true,
@@ -181,6 +190,8 @@ impl AnalyzerStrictnessPreset {
                 find_unused_expressions: true,
                 analyze_dead_code: true,
                 check_throws: true,
+                check_dead_catch: false,
+                check_throw_type_covariance: false,
                 allow_possibly_undefined_array_keys: false,
                 check_missing_override: true,
                 find_unused_parameters: true,
@@ -188,6 +199,7 @@ impl AnalyzerStrictnessPreset {
                 strict_list_index_checks: true,
                 strict_array_index_existence: true,
                 allow_array_truthy_operand: false,
+                allow_operator_overloading: false,
                 no_boolean_literal_comparison: true,
                 check_missing_type_hints: true,
                 register_super_globals: true,
@@ -402,6 +414,10 @@ struct InitializationAnalyzerSettings {
     analyze_dead_code: bool,
     /// Whether to check for unhandled thrown exceptions
     check_throws: bool,
+    /// Whether to report catch clauses that cannot catch a known exception
+    check_dead_catch: bool,
+    /// Whether to check covariance of declared `@throws` types
+    check_throw_type_covariance: bool,
     /// Whether to allow access to potentially undefined array keys
     allow_possibly_undefined_array_keys: bool,
     /// Whether to check for missing #[Override] attributes
@@ -416,6 +432,8 @@ struct InitializationAnalyzerSettings {
     strict_array_index_existence: bool,
     /// Whether to allow arrays as operands of `&&`, `||`, and `xor` without `invalid-operand`
     allow_array_truthy_operand: bool,
+    /// Whether to allow operators on classes that overload them, such as `BcMath\Number` and `GMP`
+    allow_operator_overloading: bool,
     /// Whether to disallow comparisons with boolean literals
     no_boolean_literal_comparison: bool,
     /// Whether to check for missing type hints
@@ -658,6 +676,14 @@ fn setup_analyzer(theme: &ColorfulTheme) -> Result<InitializationAnalyzerSetting
             .with_prompt(" │  Check for unhandled thrown exceptions?")
             .default(settings.check_throws)
             .interact()?;
+        settings.check_dead_catch = Confirm::with_theme(theme)
+            .with_prompt(" │  Check catch clauses with no known matching exception? (requires check-throws)")
+            .default(settings.check_dead_catch)
+            .interact()?;
+        settings.check_throw_type_covariance = Confirm::with_theme(theme)
+            .with_prompt(" │  Check @throws covariance on method overrides and implementations?")
+            .default(settings.check_throw_type_covariance)
+            .interact()?;
         settings.check_missing_type_hints = Confirm::with_theme(theme)
             .with_prompt(" │  Check for missing type hints?")
             .default(settings.check_missing_type_hints)
@@ -699,6 +725,10 @@ fn setup_analyzer(theme: &ColorfulTheme) -> Result<InitializationAnalyzerSetting
         settings.memoize_properties = Confirm::with_theme(theme)
             .with_prompt(" │  Track literal values of class properties?")
             .default(settings.memoize_properties)
+            .interact()?;
+        settings.allow_operator_overloading = Confirm::with_theme(theme)
+            .with_prompt(" │  Allow operators on classes that overload them, such as `BcMath\\Number` and `GMP`?")
+            .default(settings.allow_operator_overloading)
             .interact()?;
         settings.register_super_globals = Confirm::with_theme(theme)
             .with_prompt(" │  Register superglobals ($_GET, $_POST, etc.)?")
@@ -956,6 +986,8 @@ fn build_analyzer_settings_string(settings: &InitializationAnalyzerSettings) -> 
     lines.push(format!("memoize-properties = {}", settings.memoize_properties));
     lines.push(format!("allow-possibly-undefined-array-keys = {}", settings.allow_possibly_undefined_array_keys));
     lines.push(format!("check-throws = {}", settings.check_throws));
+    lines.push(format!("check-dead-catch = {}", settings.check_dead_catch));
+    lines.push(format!("check-throw-type-covariance = {}", settings.check_throw_type_covariance));
     lines.push("unchecked-exceptions = [\"Error\", \"LogicException\"]".to_string());
     lines.push("unchecked-exception-classes = []".to_string());
     lines.push(format!("check-missing-override = {}", settings.check_missing_override));
@@ -963,6 +995,7 @@ fn build_analyzer_settings_string(settings: &InitializationAnalyzerSettings) -> 
     lines.push(format!("strict-list-index-checks = {}", settings.strict_list_index_checks));
     lines.push(format!("strict-array-index-existence = {}", settings.strict_array_index_existence));
     lines.push(format!("allow-array-truthy-operand = {}", settings.allow_array_truthy_operand));
+    lines.push(format!("allow-operator-overloading = {}", settings.allow_operator_overloading));
     lines.push(format!("no-boolean-literal-comparison = {}", settings.no_boolean_literal_comparison));
     lines.push(format!("check-missing-type-hints = {}", settings.check_missing_type_hints));
     lines.push(format!("register-super-globals = {}", settings.register_super_globals));
@@ -983,6 +1016,8 @@ mod tests {
             find_unused_expressions: false,
             analyze_dead_code: false,
             check_throws: false,
+            check_dead_catch: false,
+            check_throw_type_covariance: false,
             allow_possibly_undefined_array_keys: true,
             check_missing_override: false,
             find_unused_parameters: false,
@@ -990,6 +1025,7 @@ mod tests {
             strict_list_index_checks: false,
             strict_array_index_existence: false,
             allow_array_truthy_operand: false,
+            allow_operator_overloading: false,
             no_boolean_literal_comparison: false,
             check_missing_type_hints: false,
             register_super_globals: true,
@@ -1071,6 +1107,8 @@ mod tests {
             find_unused_expressions: true,
             analyze_dead_code: true,
             check_throws: true,
+            check_dead_catch: false,
+            check_throw_type_covariance: false,
             allow_possibly_undefined_array_keys: false,
             check_missing_override: false,
             find_unused_parameters: false,
@@ -1078,6 +1116,7 @@ mod tests {
             strict_list_index_checks: true,
             strict_array_index_existence: true,
             allow_array_truthy_operand: true,
+            allow_operator_overloading: true,
             no_boolean_literal_comparison: true,
             check_missing_type_hints: true,
             register_super_globals: false,
@@ -1126,6 +1165,7 @@ mod tests {
         assert!(output.contains("memoize-properties = true"));
         assert!(output.contains("allow-possibly-undefined-array-keys = true"));
         assert!(output.contains("check-throws = false"));
+        assert!(output.contains("check-throw-type-covariance = false"));
         assert!(output.contains("unchecked-exceptions = [\"Error\", \"LogicException\"]"));
         assert!(output.contains("unchecked-exception-classes = []"));
         assert!(output.contains("check-missing-override = false"));
@@ -1134,6 +1174,11 @@ mod tests {
         assert!(output.contains("no-boolean-literal-comparison = false"));
         assert!(output.contains("check-missing-type-hints = false"));
         assert!(output.contains("register-super-globals = true"));
+
+        let mut enabled_settings = create_default_analyzer_settings();
+        enabled_settings.check_throw_type_covariance = true;
+        let enabled_output = build_analyzer_settings_string(&enabled_settings);
+        assert!(enabled_output.contains("check-throw-type-covariance = true"));
     }
 
     #[test]
@@ -1144,6 +1189,7 @@ mod tests {
         assert!(!relaxed.find_unused_expressions);
         assert!(!relaxed.analyze_dead_code);
         assert!(!relaxed.check_throws);
+        assert!(!relaxed.check_throw_type_covariance);
         assert!(relaxed.allow_possibly_undefined_array_keys);
 
         // Test Balanced preset
@@ -1151,6 +1197,7 @@ mod tests {
         assert!(balanced.find_unused_definitions);
         assert!(!balanced.find_unused_expressions);
         assert!(!balanced.check_throws);
+        assert!(!balanced.check_throw_type_covariance);
         assert!(balanced.allow_possibly_undefined_array_keys);
 
         // Test Strict preset
@@ -1158,6 +1205,7 @@ mod tests {
         assert!(strict.find_unused_definitions);
         assert!(strict.find_unused_expressions);
         assert!(strict.check_throws);
+        assert!(!strict.check_throw_type_covariance);
         assert!(!strict.allow_possibly_undefined_array_keys);
         assert!(strict.check_missing_override);
         assert!(strict.find_unused_parameters);
@@ -1168,6 +1216,7 @@ mod tests {
         assert!(maximum.find_unused_expressions);
         assert!(maximum.analyze_dead_code);
         assert!(maximum.check_throws);
+        assert!(!maximum.check_throw_type_covariance);
         assert!(!maximum.allow_possibly_undefined_array_keys);
         assert!(maximum.check_missing_type_hints);
         assert!(maximum.no_boolean_literal_comparison);

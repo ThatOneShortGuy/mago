@@ -55,6 +55,12 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Foreach<'arena> {
         let (always_enters_loop, mut key_type, mut value_type) =
             r#loop::analyze_iterator(context, block_context, artifacts, iterator, iterator_variable_id, self)?;
 
+        if !context.settings.analyze_dead_code
+            && artifacts.get_expression_type(iterator).is_some_and(TUnion::is_empty_array)
+        {
+            return Ok(());
+        }
+
         if key_type.is_never() {
             key_type = get_mixed();
         }
@@ -66,6 +72,48 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Foreach<'arena> {
         let mut loop_block_context = block_context.clone();
         loop_block_context.flags.set_inside_loop(true);
         loop_block_context.break_types.push(BreakContext::Loop(self.span()));
+        let value_expression = match self.target.value() {
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => operand,
+            value => value,
+        };
+
+        let value_expression_id = get_block_expression_id(value_expression, context, block_context);
+
+        value_type.set_by_reference(is_by_reference);
+
+        if is_by_reference && let Expression::Variable(Variable::Direct(direct_variable)) = value_expression {
+            loop_block_context.references_to_external_scope.remove(&Word::from(direct_variable.name));
+            loop_block_context.references_possibly_from_confusing_scope.remove(&Word::from(direct_variable.name));
+        }
+
+        let source_value_type = value_type.clone();
+        let assigned = assign_to_expression(
+            context,
+            &mut loop_block_context,
+            artifacts,
+            value_expression,
+            value_expression_id,
+            None,
+            Rc::new(value_type),
+            false,
+            if is_by_reference { PropertyWriteKind::Mutation } else { PropertyWriteKind::Direct },
+        )?;
+
+        if !assigned {
+            context.collector.report_with_code(
+                IssueCode::InvalidForeachValue,
+                Issue::error("The value expression in `foreach` is not assignable.")
+                    .with_annotation(
+                        Annotation::primary(value_expression.span())
+                            .with_message("This expression cannot be assigned to"),
+                    )
+                    .with_note("The value expression must be writable.")
+                    .with_help(
+                        "Ensure the value expression is a valid variable, array, or an object property. If using a complex expression, consider assigning it to a variable first.",
+                    ),
+            );
+        }
+
         let mut key_expression_id = None;
         if let Some(key_expression) = self.target.key() {
             key_expression_id = get_block_expression_id(key_expression, context, block_context);
@@ -98,46 +146,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Foreach<'arena> {
             }
         }
 
-        let value_expression = match self.target.value() {
-            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => operand,
-            value => value,
-        };
-
-        let value_expression_id = get_block_expression_id(value_expression, context, block_context);
-
-        value_type.set_by_reference(is_by_reference);
-
-        if is_by_reference && let Expression::Variable(Variable::Direct(direct_variable)) = value_expression {
-            loop_block_context.references_to_external_scope.remove(&Word::from(direct_variable.name));
-        }
-
-        let source_value_type = value_type.clone();
-        let assigned = assign_to_expression(
-            context,
-            &mut loop_block_context,
-            artifacts,
-            value_expression,
-            value_expression_id,
-            None,
-            Rc::new(value_type),
-            false,
-            if is_by_reference { PropertyWriteKind::Mutation } else { PropertyWriteKind::Direct },
-        )?;
-
-        if !assigned {
-            context.collector.report_with_code(
-                IssueCode::InvalidForeachValue,
-                Issue::error("The value expression in `foreach` is not assignable.")
-                    .with_annotation(
-                        Annotation::primary(value_expression.span())
-                            .with_message("This expression cannot be assigned to"),
-                    )
-                    .with_note("The value expression must be writable.")
-                    .with_help(
-                        "Ensure the value expression is a valid variable, array, or an object property. If using a complex expression, consider assigning it to a variable first.",
-                    ),
-            );
-        }
+        loop_block_context.foreach_variables.extend(value_expression_id.into_iter().chain(key_expression_id));
 
         if is_by_reference && let Expression::Variable(Variable::Direct(direct_variable)) = value_expression {
             loop_block_context.references_to_external_scope.insert(Word::from(direct_variable.name));
@@ -159,9 +168,22 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Foreach<'arena> {
             None
         };
 
+        let reference_entry = if is_by_reference
+            && matches!(iterator, Expression::Variable(Variable::Direct(_)))
+            && matches!(value_expression, Expression::Variable(Variable::Direct(_)))
+        {
+            iterator_variable_id.zip(value_expression_id)
+        } else {
+            None
+        };
+
         let mut loop_scope = LoopScope::new(self.span(), block_context.locals.clone(), None);
         if let Some((_, _, _, entry_id, entry_type)) = &foreach_entry {
             loop_scope.parent_context_variables.insert(*entry_id, Rc::clone(entry_type));
+            loop_scope.tracks_assignment_targets = true;
+        }
+
+        if reference_entry.is_some() {
             loop_scope.tracks_assignment_targets = true;
         }
 
@@ -195,6 +217,26 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Foreach<'arena> {
         } else {
             None
         };
+
+        let refined_entry = refined_entry.or_else(|| {
+            let (iterator_id, value_id) = reference_entry?;
+            if loop_scope.final_actions.contains(ControlAction::Break)
+                || loop_scope.final_actions.contains(ControlAction::Continue)
+                || loop_scope.assignment_targets.iter().any(|target| var_has_root(*target, iterator_id))
+            {
+                return None;
+            }
+
+            let value_type = inner_loop_block_context.locals.get(&value_id)?;
+            if value_type.is_mixed() {
+                return None;
+            }
+
+            let mut value_type = (**value_type).clone();
+            value_type.set_by_reference(false);
+
+            Some((iterator_id, Rc::new(value_type)))
+        });
 
         r#loop::inherit_loop_block_context(
             context,

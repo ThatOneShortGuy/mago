@@ -10,10 +10,14 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::comments::docblock::get_docblock_before_position;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::AnonymousClass;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::Assignment;
+use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Closure;
 use mago_syntax::cst::Constant;
 use mago_syntax::cst::Enum;
@@ -28,11 +32,13 @@ use mago_syntax::cst::Namespace;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::Return;
+use mago_syntax::cst::StaticMethodCall;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::Trivia;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Use;
+use mago_syntax::cst::Variable;
 use mago_syntax::walker::MutWalker;
 use mago_syntax::walker::walk_anonymous_class_mut;
 use mago_syntax::walker::walk_class_mut;
@@ -43,8 +49,8 @@ use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
 use mago_word::ascii_lowercase_word;
+use mago_word::concat_word;
 use mago_word::empty_word;
-use mago_word::word;
 
 use crate::identifier::method::MethodIdentifier;
 use crate::metadata::CodebaseMetadata;
@@ -62,6 +68,8 @@ use crate::scanner::function_like::scan_closure;
 use crate::scanner::function_like::scan_function;
 use crate::scanner::function_like::scan_method;
 use crate::scanner::property::scan_promoted_property;
+use crate::ttype::combine_union_types;
+use crate::ttype::combiner::CombinerOptions;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::ttype::template::GenericTemplate;
 
@@ -151,6 +159,24 @@ where
         self.get_docblock_before(node.span().start.offset)
     }
 
+    /// The docblock of a closure, or of the `$name = ` assignment it is the value of.
+    pub fn get_closure_docblock(&self, node: impl HasSpan) -> Option<&'arena Trivia<'arena>> {
+        let start = node.span().start.offset;
+        if let Some(docblock) = self.get_docblock_before(start) {
+            return Some(docblock);
+        }
+
+        let before = self.file.contents.get(..start as usize)?.trim_ascii_end().strip_suffix(b"=")?.trim_ascii_end();
+        let name_start =
+            before.iter().rposition(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'_' || *byte >= 0x80))?;
+        if before[name_start] != b'$' || name_start + 1 == before.len() {
+            return None;
+        }
+
+        self.get_docblock_before(name_start as u32)
+            .filter(|docblock| memchr::memmem::find(docblock.value, b"@var").is_none())
+    }
+
     pub fn get_docblock_before(&self, start_offset: u32) -> Option<&'arena Trivia<'arena>> {
         get_docblock_before_position(self.program.trivia.as_slice(), start_offset)
     }
@@ -179,6 +205,7 @@ struct Scanner {
     has_constructor: bool,
     file_type_aliases: WordSet,
     file_imported_aliases: WordMap<(Word, Word)>,
+    alias_scopes: Vec<(WordSet, WordMap<(Word, Word)>)>,
     polyfill_depth: u32,
     return_docblock_starts: Vec<Option<u32>>,
     function_like_stack: Vec<Option<(Word, Word)>>,
@@ -227,6 +254,13 @@ fn is_polyfill_existence_check(expr: &Expression<'_>) -> bool {
 impl Scanner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn leave_alias_scope(&mut self) {
+        if let Some((type_aliases, imported_aliases)) = self.alias_scopes.pop() {
+            self.file_type_aliases = type_aliases;
+            self.file_imported_aliases = imported_aliases;
+        }
     }
 
     fn get_current_type_resolution_context(&self) -> TypeResolutionContext {
@@ -463,7 +497,13 @@ where
 
     #[inline]
     fn walk_in_constant(&mut self, constant: &'arena Constant<'arena>, context: &mut Context<'ctx, 'arena, A>) {
-        let constants = scan_constant(constant, context, &self.get_current_type_resolution_context(), &self.scope);
+        let constants = scan_constant(
+            constant,
+            context,
+            &self.get_current_type_resolution_context(),
+            &self.scope,
+            &self.codebase.constants,
+        );
 
         for mut constant_metadata in constants {
             if self.polyfill_depth > 0 {
@@ -485,7 +525,7 @@ where
         };
 
         let function_name = identifier.value();
-        let bare_name = function_name.strip_prefix(b"\\").unwrap_or(function_name);
+        let bare_name = function_name.trim_prefix(b"\\");
         if matches!(bare_name.len(), 12 | 13)
             && (bare_name.eq_ignore_ascii_case(b"func_get_args")
                 || bare_name.eq_ignore_ascii_case(b"func_get_arg")
@@ -530,9 +570,13 @@ where
             return;
         }
 
-        let Some(mut constant_metadata) =
-            scan_defined_constant(function_call, context, &self.get_current_type_resolution_context(), &self.scope)
-        else {
+        let Some(mut constant_metadata) = scan_defined_constant(
+            function_call,
+            context,
+            &self.get_current_type_resolution_context(),
+            &self.scope,
+            &self.codebase.constants,
+        ) else {
             return;
         };
 
@@ -540,7 +584,53 @@ where
             constant_metadata.flags |= MetadataFlags::POLYFILL;
         }
 
-        self.codebase.constants.entry(constant_metadata.name).or_insert(constant_metadata);
+        let name = constant_metadata.name;
+        let Some(existing) = self.codebase.constants.get(&name) else {
+            self.codebase.constants.insert(name, constant_metadata);
+
+            return;
+        };
+
+        if let (Some(existing_type), Some(new_type)) = (&existing.inferred_type, &constant_metadata.inferred_type) {
+            let combined = combine_union_types(existing_type, new_type, &self.codebase, CombinerOptions::default());
+            if let Some(existing) = self.codebase.constants.get_mut(&name) {
+                existing.inferred_type = Some(combined);
+            }
+        }
+    }
+
+    #[inline]
+    fn walk_in_assignment(&mut self, assignment: &'arena Assignment<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
+        if let Some(Some((class, method))) = self.function_like_stack.last()
+            && method.as_bytes() == b"__construct"
+            && let AssignmentOperator::Assign(_) | AssignmentOperator::Coalesce(_) = assignment.operator
+            && let Expression::Access(Access::Property(access)) = assignment.lhs
+            && let Expression::Variable(Variable::Direct(variable)) = access.object
+            && variable.name == b"$this"
+            && let ClassLikeMemberSelector::Identifier(property) = &access.property
+            && let Some(metadata) = self.codebase.class_likes.get_mut(class)
+        {
+            let property = concat_word!(b"$", property.value);
+            if !metadata.properties.contains_key(&property) {
+                metadata.constructor_assigned_inherited_properties.insert(property);
+            }
+        }
+    }
+
+    #[inline]
+    fn walk_in_static_method_call(
+        &mut self,
+        static_method_call: &'arena StaticMethodCall<'arena>,
+        _context: &mut Context<'ctx, 'arena, A>,
+    ) {
+        if let Expression::Parent(_) = static_method_call.class
+            && let ClassLikeMemberSelector::Identifier(method) = &static_method_call.method
+            && method.value.eq_ignore_ascii_case(b"__construct")
+            && let Some(Some(enclosing)) = self.function_like_stack.last()
+            && let Some(metadata) = self.codebase.function_likes.get_mut(enclosing)
+        {
+            metadata.flags |= MetadataFlags::CALLS_PARENT_CONSTRUCTOR;
+        }
     }
 
     #[inline]
@@ -559,6 +649,7 @@ where
             register_anonymous_class(&mut self.codebase, anonymous_class, docblock_start, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
+            self.alias_scopes.push((self.file_type_aliases.clone(), self.file_imported_aliases.clone()));
             self.file_type_aliases.extend(type_aliases);
             self.file_imported_aliases.extend(imported_aliases);
             self.stack.push(id);
@@ -584,6 +675,7 @@ where
             register_class(&mut self.codebase, class, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
+            self.alias_scopes.push((self.file_type_aliases.clone(), self.file_imported_aliases.clone()));
             self.file_type_aliases.extend(type_aliases);
             self.file_imported_aliases.extend(imported_aliases);
             self.stack.push(id);
@@ -599,6 +691,7 @@ where
             register_trait(&mut self.codebase, r#trait, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
+            self.alias_scopes.push((self.file_type_aliases.clone(), self.file_imported_aliases.clone()));
             self.file_type_aliases.extend(type_aliases);
             self.file_imported_aliases.extend(imported_aliases);
             self.stack.push(id);
@@ -614,6 +707,7 @@ where
             register_enum(&mut self.codebase, r#enum, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
+            self.alias_scopes.push((self.file_type_aliases.clone(), self.file_imported_aliases.clone()));
             self.file_type_aliases.extend(type_aliases);
             self.file_imported_aliases.extend(imported_aliases);
             self.stack.push(id);
@@ -629,6 +723,7 @@ where
             register_interface(&mut self.codebase, interface, context, &self.scope)
         {
             self.apply_polyfill_flag_to_class_like(id);
+            self.alias_scopes.push((self.file_type_aliases.clone(), self.file_imported_aliases.clone()));
             self.file_type_aliases.extend(type_aliases);
             self.file_imported_aliases.extend(imported_aliases);
             self.stack.push(id);
@@ -722,7 +817,7 @@ where
                 class_like_metadata.add_property_metadata(property_metadata);
             }
         } else {
-            is_clone = name == word("__clone");
+            is_clone = name.as_bytes() == b"__clone";
         }
 
         class_like_metadata.methods.insert(name);
@@ -782,6 +877,7 @@ where
     ) {
         self.stack.pop().expect("Expected class stack to be non-empty");
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
+        self.leave_alias_scope();
     }
 
     #[inline]
@@ -815,6 +911,7 @@ where
 
     let class_like_id = scanner.stack.pop().expect("Expected class stack to be non-empty");
     scanner.template_constraints.pop().expect("Expected template stack to be non-empty");
+    scanner.leave_alias_scope();
 
     if has_constructor {
         return;
@@ -826,6 +923,8 @@ where
 
     if class_like_metadata.flags.has_consistent_constructor()
         && !context.file.file_type.is_patch()
+        && class_like_metadata.direct_parent_class.is_none()
+        && class_like_metadata.used_traits.is_empty()
         && let Some(constructor) = class_like_metadata.add_implicit_constructor()
     {
         scanner.codebase.function_likes.insert((class_like_metadata.name, constructor.name), Box::new(constructor));

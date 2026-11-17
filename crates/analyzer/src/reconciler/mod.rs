@@ -2,10 +2,8 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::LazyLock;
 
 use foldhash::HashSet;
-use regex::Regex;
 
 use mago_algebra::AssertionMap;
 use mago_algebra::assertion_set::AssertionSet;
@@ -50,7 +48,9 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
+use crate::resolver::class_name::get_class_name_from_atomic;
 use crate::resolver::property::resolve_declared_property;
+use crate::utils::expression::array::get_primary_array_access_parameters;
 
 pub mod assertion_reconciler;
 pub mod negated_assertion_reconciler;
@@ -120,7 +120,7 @@ pub fn reconcile_keyed_types<'ctx, A>(
         }
     }
 
-    add_nested_assertions(&mut new_types, &mut active_new_types, block_context);
+    add_nested_assertions(&mut new_types, &mut active_new_types, block_context, context.codebase);
     if new_types.len() > 1 {
         new_types
             .to_mut()
@@ -144,7 +144,11 @@ pub fn reconcile_keyed_types<'ctx, A>(
             continue;
         }
 
-        if memchr::memmem::find(key_str, b"::").is_some() && !key_str.contains(&b'$') && !key_str.contains(&b'[') {
+        if memchr::memmem::find(key_str, b"::").is_some()
+            && !key_str.contains(&b'$')
+            && !key_str.contains(&b'[')
+            && (key_str.len() < 7 || key_str[key_str.len() - 7..].eq_ignore_ascii_case(b"::class"))
+        {
             continue;
         }
 
@@ -213,6 +217,24 @@ pub fn reconcile_keyed_types<'ctx, A>(
             )
             .map(Rc::new)
         });
+
+        let undefined_reads_as_null = !has_isset
+            && !has_inverted_isset
+            && !has_empty
+            && block_context.possibly_undefined_variable_ids.contains(key)
+            && before_adjustment
+                .as_ref()
+                .is_some_and(|existing| existing.possibly_undefined() && !existing.possibly_undefined_from_try());
+
+        let before_adjustment = if undefined_reads_as_null {
+            before_adjustment.map(|existing| {
+                let mut existing = Rc::unwrap_or_clone(existing).as_nullable();
+                existing.set_possibly_undefined(false, None);
+                Rc::new(existing)
+            })
+        } else {
+            before_adjustment
+        };
 
         let mut result_type = before_adjustment.as_deref().map(Cow::Borrowed);
         for (i, new_type_part_parts) in new_type_parts.iter().enumerate() {
@@ -291,17 +313,21 @@ pub fn reconcile_keyed_types<'ctx, A>(
             }
         }
 
-        let result_type = result_type.map(Cow::into_owned).unwrap_or_else(get_never);
+        let mut result_type = result_type.map(Cow::into_owned).unwrap_or_else(get_never);
+        if undefined_reads_as_null {
+            result_type.set_possibly_undefined(result_type.has_null() || result_type.has_nullable_mixed(), None);
+        }
 
         if !did_type_exist && result_type.is_never() {
             // Even when the type doesn't exist and result is never, we still need to
             // update parent array types for negated isset/key_exists to remove the key
             if key_str.ends_with(b"]") && (has_inverted_isset || has_inverted_key_exists) {
-                adjust_array_type_remove_key(
+                adjust_array_type_for_missing_key(
                     borrow_path_parts(key_str),
                     block_context,
                     changed_var_ids,
                     context.codebase,
+                    false,
                 );
             }
 
@@ -346,11 +372,12 @@ pub fn reconcile_keyed_types<'ctx, A>(
                         true,
                     );
                 } else {
-                    adjust_array_type_remove_key(
+                    adjust_array_type_for_missing_key(
                         borrow_path_parts(key_str),
                         block_context,
                         changed_var_ids,
                         context.codebase,
+                        has_inverted_isset && !has_inverted_key_exists,
                     );
                 }
             } else if memchr::memmem::find(key_str, b"->").is_some() && !is_equality {
@@ -360,6 +387,7 @@ pub fn reconcile_keyed_types<'ctx, A>(
                     changed_var_ids,
                     &result_type,
                     context,
+                    !has_inverted_isset,
                 );
             }
 
@@ -429,9 +457,48 @@ pub fn reconcile_keyed_types<'ctx, A>(
             }
         } else if !has_negation && !has_truthy_or_falsy_or_empty && !has_isset && !has_relational_comparison {
             changed_var_ids.insert(*key);
+        } else if has_isset && !has_negation && memchr::memmem::find(key_str, b"->").is_some() {
+            adjust_object_property_type(
+                borrow_path_parts(key_str),
+                block_context,
+                changed_var_ids,
+                &result_type,
+                context,
+                true,
+            );
         }
 
         if !has_object_array_access {
+            if let Some(source_id) = block_context.class_string_sources.get(key).copied() {
+                let mut object_types = Vec::new();
+                let mut all_resolved = true;
+                for atomic in result_type.types.iter() {
+                    if let Some(resolved) = get_class_name_from_atomic(context.codebase, atomic)
+                        .filter(|resolved| !resolved.is_invalid() && !resolved.is_possibly_invalid())
+                    {
+                        object_types.push(resolved.get_object_type(context.codebase));
+                    } else {
+                        all_resolved = false;
+                        break;
+                    }
+                }
+
+                if all_resolved && !object_types.is_empty() {
+                    let object_union = TUnion::from_vec(object_types);
+                    let narrowed = block_context
+                        .locals
+                        .get(&source_id)
+                        .and_then(|current| intersect_union_types(current, &object_union, context.codebase));
+                    if let Some(narrowed) = narrowed.filter(|t| !t.is_never()) {
+                        let changed = block_context.locals.get(&source_id).is_none_or(|current| **current != narrowed);
+                        if changed {
+                            block_context.locals.insert(source_id, Rc::new(narrowed));
+                            changed_var_ids.insert(source_id);
+                        }
+                    }
+                }
+            }
+
             block_context.locals.insert(*key, Rc::new(result_type));
         }
 
@@ -514,6 +581,29 @@ where
     result.filter(|entry_type| !entry_type.is_never() && !entry_type.is_mixed())
 }
 
+pub(crate) fn resolve_literal_array_key(array_key: &[u8]) -> Option<ArrayKey> {
+    if (array_key.starts_with(b"'") || array_key.starts_with(b"\"")) && array_key.len() >= 2 {
+        let value = &array_key[1..(array_key.len() - 1)];
+        if array_key.starts_with(b"'") && value.contains(&b'\\') {
+            let mut decoded = Vec::with_capacity(value.len());
+            let mut bytes = value.iter();
+            while let Some(&byte) = bytes.next() {
+                if byte == b'\\' && matches!(bytes.as_slice().first(), Some(b'\'' | b'\\')) {
+                    decoded.push(*bytes.next()?);
+                } else {
+                    decoded.push(byte);
+                }
+            }
+
+            return Some(ArrayKey::from_string(word(&decoded)));
+        }
+
+        return Some(ArrayKey::from_string(word(value)));
+    }
+
+    std::str::from_utf8(array_key).ok()?.parse().ok().map(ArrayKey::Integer)
+}
+
 fn adjust_array_type(
     mut key_parts: Vec<&[u8]>,
     context: &mut BlockContext<'_>,
@@ -531,9 +621,9 @@ fn adjust_array_type(
     let base_key: Vec<u8> = key_parts.iter().flat_map(|part| part.iter()).copied().collect();
     let base_key_atom = word(&base_key);
 
-    if array_key.starts_with(b"$") {
-        // When the key is a variable, we can't narrow to a specific key,
-        // but we CAN remove empty array variants since isset proves the array is non-empty.
+    let resolved_key = resolve_literal_array_key(array_key);
+
+    if resolved_key.is_none() && array_key.starts_with(b"$") {
         if let Some(existing_type) = context.locals.get(&base_key_atom).cloned()
             && existing_type.types.iter().any(|t| matches!(t, TAtomic::Array(a) if a.is_empty()))
         {
@@ -547,13 +637,8 @@ fn adjust_array_type(
         return;
     }
 
-    let mut has_string_offset = false;
-
-    let arraykey_offset = if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
-        has_string_offset = true;
-        &array_key[1..(array_key.len() - 1)]
-    } else {
-        array_key
+    let Some(dictkey) = resolved_key else {
+        return;
     };
 
     let mut existing_type = if let Some(existing_type) = context.locals.get(&base_key_atom) {
@@ -568,17 +653,6 @@ fn adjust_array_type(
     for mut base_atomic_type in atomic_types {
         match &mut base_atomic_type {
             TAtomic::Array(TArray::Keyed(TKeyedArray { known_items, .. })) => {
-                let dictkey = if has_string_offset {
-                    ArrayKey::String(word(arraykey_offset))
-                } else if let Some(arraykey_value) =
-                    std::str::from_utf8(arraykey_offset).ok().and_then(|s| s.parse::<i64>().ok())
-                {
-                    ArrayKey::Integer(arraykey_value)
-                } else {
-                    compatible_types.push(base_atomic_type);
-                    continue;
-                };
-
                 if let Some(known_items) = known_items {
                     let known_items = Arc::make_mut(known_items);
                     if let Some((existing_optional, existing_item_type)) = known_items.get(&dictkey) {
@@ -598,8 +672,8 @@ fn adjust_array_type(
                 }
             }
             TAtomic::Array(TArray::List(TList { known_elements, .. })) => {
-                if let Some(arraykey_offset) =
-                    std::str::from_utf8(arraykey_offset).ok().and_then(|s| s.parse::<usize>().ok())
+                if let ArrayKey::Integer(arraykey_value) = dictkey
+                    && let Ok(arraykey_offset) = usize::try_from(arraykey_value)
                 {
                     if let Some(known_elements) = known_elements.as_mut().map(Arc::make_mut) {
                         if let Some((_, existing_item_type)) = known_elements.get(&arraykey_offset) {
@@ -621,19 +695,8 @@ fn adjust_array_type(
                 }
             }
             TAtomic::Mixed(_) => {
-                let key = if has_string_offset {
-                    ArrayKey::String(word(arraykey_offset))
-                } else if let Some(arraykey_value) =
-                    std::str::from_utf8(arraykey_offset).ok().and_then(|s| s.parse::<i64>().ok())
-                {
-                    ArrayKey::Integer(arraykey_value)
-                } else {
-                    compatible_types.push(base_atomic_type);
-                    continue;
-                };
-
                 base_atomic_type = TAtomic::Array(TArray::Keyed(TKeyedArray {
-                    known_items: Some(BTreeMap::from([(key, (optional, result_type.clone()))]).into()),
+                    known_items: Some(BTreeMap::from([(dictkey, (optional, result_type.clone()))]).into()),
                     parameters: Some((Arc::new(get_arraykey()), Arc::new(get_mixed()))),
                     non_empty: !optional,
                     known_non_list: false,
@@ -678,11 +741,12 @@ fn adjust_array_type(
     context.locals.insert(base_key_atom, Rc::new(existing_type));
 }
 
-fn adjust_array_type_remove_key(
+fn adjust_array_type_for_missing_key(
     mut key_parts: Vec<&[u8]>,
     context: &mut BlockContext<'_>,
     changed_var_ids: &mut WordSet,
     codebase: &CodebaseMetadata,
+    preserve_null: bool,
 ) {
     key_parts.pop();
     let Some(array_key) = key_parts.pop() else {
@@ -691,17 +755,8 @@ fn adjust_array_type_remove_key(
 
     key_parts.pop();
 
-    if array_key.starts_with(b"$") {
+    let Some(dictkey) = resolve_literal_array_key(array_key) else {
         return;
-    }
-
-    let mut has_string_offset = false;
-
-    let arraykey_offset = if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
-        has_string_offset = true;
-        &array_key[1..(array_key.len() - 1)]
-    } else {
-        array_key
     };
 
     let base_key: Vec<u8> = key_parts.iter().flat_map(|part| part.iter()).copied().collect();
@@ -713,33 +768,43 @@ fn adjust_array_type_remove_key(
         return;
     };
 
-    for base_atomic_type in existing_type.types.to_mut() {
+    existing_type.types.to_mut().retain_mut(|base_atomic_type| {
         match base_atomic_type {
-            TAtomic::Array(TArray::Keyed(TKeyedArray { known_items, .. })) => {
-                let dictkey = if has_string_offset {
-                    ArrayKey::String(word(arraykey_offset))
-                } else if let Some(arraykey_value) =
-                    std::str::from_utf8(arraykey_offset).ok().and_then(|s| s.parse::<i64>().ok())
-                {
-                    ArrayKey::Integer(arraykey_value)
-                } else {
-                    continue;
-                };
-
+            TAtomic::Array(TArray::Keyed(TKeyedArray { known_items, parameters, .. })) => {
                 if let Some(known_items) = known_items {
-                    Arc::make_mut(known_items).remove(&dictkey);
+                    let known_items = Arc::make_mut(known_items);
+                    if let Some((optional, item_type)) = known_items.get_mut(&dictkey) {
+                        if preserve_null && item_type.can_be_null() {
+                            *item_type = get_null();
+                        } else if *optional && parameters.is_some() {
+                            *item_type = get_never();
+                        } else if *optional {
+                            known_items.remove(&dictkey);
+                        } else {
+                            return false;
+                        }
+                    }
                 }
             }
             TAtomic::Array(TArray::List(TList { known_elements, .. })) => {
-                if let Some(arraykey_offset) =
-                    std::str::from_utf8(arraykey_offset).ok().and_then(|s| s.parse::<usize>().ok())
+                if let ArrayKey::Integer(arraykey_value) = dictkey
+                    && let Ok(arraykey_offset) = usize::try_from(arraykey_value)
                     && let Some(known_elements) = known_elements
                 {
-                    Arc::make_mut(known_elements).remove(&arraykey_offset);
+                    let known_elements = Arc::make_mut(known_elements);
+                    if let Some((optional, item_type)) = known_elements.get_mut(&arraykey_offset) {
+                        if preserve_null && item_type.can_be_null() {
+                            *item_type = get_null();
+                        } else if *optional {
+                            known_elements.remove(&arraykey_offset);
+                        } else {
+                            return false;
+                        }
+                    }
                 }
             }
             _ => {
-                continue;
+                return true;
             }
         }
 
@@ -757,6 +822,12 @@ fn adjust_array_type_remove_key(
                 false,
             );
         }
+
+        true
+    });
+
+    if existing_type.types.is_empty() {
+        existing_type = get_never();
     }
 
     context.locals.insert(base_key_atom, Rc::new(existing_type));
@@ -773,6 +844,7 @@ fn adjust_object_property_type<A>(
     changed_var_ids: &mut WordSet,
     result_type: &TUnion,
     context: &Context<'_, '_, A>,
+    update_shape: bool,
 ) where
     A: Arena,
 {
@@ -800,8 +872,22 @@ fn adjust_object_property_type<A>(
     let atomic_types = std::mem::take(existing_type.types.to_mut());
     let original_len = atomic_types.len();
     let mut compatible_types = Vec::with_capacity(original_len);
+    let mut shape_changed = false;
 
     for base_atomic_type in atomic_types {
+        if update_shape
+            && let TAtomic::Object(TObject::WithProperties(shape)) = &base_atomic_type
+            && !result_type.possibly_undefined()
+            && let Some((optional, property_type)) = shape.known_properties.get(&word(property_name))
+            && (*optional || property_type != result_type)
+        {
+            let mut shape = shape.clone();
+            shape.known_properties.insert(word(property_name), (false, result_type.clone()));
+            compatible_types.push(TAtomic::Object(TObject::WithProperties(shape)));
+            shape_changed = true;
+            continue;
+        }
+
         let should_check = match &base_atomic_type {
             TAtomic::Object(TObject::Named(named)) => {
                 let fq_class_name = named.get_name();
@@ -834,8 +920,12 @@ fn adjust_object_property_type<A>(
         }
     }
 
-    if !compatible_types.is_empty() && compatible_types.len() < original_len {
+    if !compatible_types.is_empty() && (shape_changed || compatible_types.len() < original_len) {
         *existing_type.types.to_mut() = compatible_types;
+        if shape_changed {
+            adjust_object_property_type(key_parts, block_context, changed_var_ids, &existing_type, context, true);
+        }
+
         block_context.locals.insert(base_key_atom, Rc::new(existing_type));
         changed_var_ids.insert(base_key_atom);
     }
@@ -856,7 +946,9 @@ fn refine_array_key(key_type: &TUnion) -> TUnion {
                         types.push(cat.clone());
                     }
                 }
-                TAtomic::Scalar(TScalar::ArrayKey | TScalar::String(_) | TScalar::Integer(_)) => {
+                TAtomic::Scalar(
+                    TScalar::ArrayKey | TScalar::String(_) | TScalar::ClassLikeString(_) | TScalar::Integer(_),
+                ) => {
                     types.push(cat.clone());
                 }
                 _ => {
@@ -872,17 +964,13 @@ fn refine_array_key(key_type: &TUnion) -> TUnion {
     refine_array_key_inner(key_type).unwrap_or_else(|| key_type.clone())
 }
 
-static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| unsafe {
-    // SAFETY: `unwrap_unchecked` is safe here because the regex is valid and will not panic.
-    Regex::new("^[0-9]+$").unwrap_unchecked()
-});
-
 #[allow(clippy::multiple_unsafe_ops_per_block)]
 #[allow(clippy::semicolon_inside_block)]
 fn add_nested_assertions(
     new_types: &mut Cow<'_, AssertionMap<Word, AssertionSet>>,
     active_new_types: &mut AssertionMap<Word, HashSet<usize>>,
     context: &BlockContext<'_>,
+    codebase: &CodebaseMetadata,
 ) {
     let nested_assertions = new_types
         .iter()
@@ -961,14 +1049,11 @@ fn add_nested_assertions(
                 new_base_key.push(b']');
                 let base_key_atom = word(&base_key);
                 let entry = new_types.entry(base_key_atom).or_default();
-                let new_key = if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
-                    Some(ArrayKey::String(word(&array_key[1..(array_key.len() - 1)])))
+
+                let new_key = if let Some(resolved_key) = resolve_literal_array_key(array_key) {
+                    Some(resolved_key)
                 } else if array_key.starts_with(b"$") {
                     None
-                } else if let Some(arraykey_value) =
-                    std::str::from_utf8(array_key).ok().and_then(|s| s.parse::<i64>().ok())
-                {
-                    Some(ArrayKey::Integer(arraykey_value))
                 } else {
                     continue 'outer;
                 };
@@ -979,7 +1064,13 @@ fn add_nested_assertions(
                     if key_parts.is_empty() {
                         // Only remove the nested key if it contains ONLY isset-related assertions
                         // If it has other assertions (e.g., IsType from is_string()), keep them
-                        if only_isset_assertions {
+                        if only_isset_assertions
+                            && !context.locals.get(&base_key_atom).is_some_and(|base| {
+                                base.types.iter().any(|atomic| {
+                                    matches!(atomic, TAtomic::Object(TObject::Named(named)) if codebase.is_instance_of(named.name.as_bytes(), b"ArrayAccess"))
+                                })
+                            })
+                        {
                             keys_to_remove.push(nk);
 
                             if nesting == 0 && base_key_set && active_new_types.swap_remove(&nk).is_some() {
@@ -1024,7 +1115,13 @@ fn add_nested_assertions(
         }
     }
 
-    new_types.retain(|k, _| !keys_to_remove.contains(k));
+    new_types.retain(|key, assertions| {
+        !keys_to_remove.contains(key)
+            || !assertions
+                .iter()
+                .flatten()
+                .all(|assertion| matches!(assertion, Assertion::IsIsset | Assertion::IsEqualIsset))
+    });
 }
 
 #[cfg(test)]
@@ -1040,7 +1137,7 @@ fn borrow_path_parts(path: &[u8]) -> Vec<&[u8]> {
     parts
 }
 
-fn path_part_count(path: &[u8]) -> usize {
+pub(crate) fn path_part_count(path: &[u8]) -> usize {
     let mut count = 0;
     for_each_path_part(path, |_| count += 1);
     count
@@ -1164,8 +1261,16 @@ where
     let base_key_atom = word(&base_key);
     if let std::collections::hash_map::Entry::Vacant(e) = block_context.locals.entry(base_key_atom) {
         let sep = memchr::memmem::find(&base_key, b"::")?;
-        let fq_class_name = &base_key[..sep];
+        let written_class_name = &base_key[..sep];
         let const_name = &base_key[sep + 2..];
+
+        let scope_class = block_context.scope.get_class_like();
+        let resolved_class_name = match written_class_name {
+            b"static" | b"self" => Some(scope_class?.name),
+            b"parent" => Some(scope_class?.direct_parent_class?),
+            _ => None,
+        };
+        let fq_class_name = resolved_class_name.as_ref().map_or(written_class_name, |name| name.as_bytes());
 
         if !context.codebase.class_like_exists(fq_class_name) {
             return None;
@@ -1191,17 +1296,12 @@ where
 
             key_parts.pop();
 
-            let array_key_offset = std::str::from_utf8(array_key)
-                .ok()
-                .and_then(|s| if INTEGER_REGEX.is_match(s) { s.parse::<usize>().ok() } else { None });
-
-            let array_key_type = if let Some(array_key_offset) = array_key_offset {
-                ArrayKey::Integer(array_key_offset as i64)
-            } else if array_key.starts_with(b"'") || array_key.starts_with(b"\"") {
-                ArrayKey::String(word(&array_key[1..(array_key.len() - 1)]))
-            } else {
-                ArrayKey::String(word(array_key))
+            let resolved_key = resolve_literal_array_key(array_key);
+            let array_key_offset = match resolved_key {
+                Some(ArrayKey::Integer(i)) => usize::try_from(i).ok(),
+                _ => None,
             };
+            let array_key_type = resolved_key.unwrap_or_else(|| ArrayKey::String(word(array_key)));
 
             let mut new_base_key = base_key.clone();
             new_base_key.push(b'[');
@@ -1227,7 +1327,7 @@ where
                             return None;
                         }
 
-                        let known_item = if !array_key.starts_with(b"$")
+                        let known_item = if resolved_key.is_some()
                             && let Some(known_items) = known_items
                         {
                             known_items.get(&array_key_type)
@@ -1314,15 +1414,20 @@ where
                         new_base_type_candidate = get_string();
                     } else if existing_key_type_part.is_never() || existing_key_type_part.is_mixed_isset_from_loop() {
                         return Some(get_mixed_maybe_from_loop(inside_loop));
-                    } else if let TAtomic::Object(TObject::Named(_named_object)) = existing_key_type_part {
-                        if has_isset || has_inverted_isset || has_inverted_key_exists {
+                    } else if let TAtomic::Object(TObject::Named(_)) = existing_key_type_part {
+                        if let Some(value) = get_primary_array_access_parameters(context, existing_key_type_part, false)
+                            .map(|(_, value)| value)
+                            .filter(|value| !value.is_mixed() && !value.has_template_types())
+                        {
+                            new_base_type_candidate = value;
+                        } else if has_isset || has_inverted_isset || has_inverted_key_exists {
                             *has_object_array_access = true;
                             block_context.locals.remove(&new_base_key_atom);
 
                             return None;
+                        } else {
+                            new_base_type_candidate = get_mixed();
                         }
-
-                        new_base_type_candidate = get_mixed();
                     } else {
                         continue;
                     }
@@ -1387,6 +1492,16 @@ where
                                 block_context.scope.get_class_like_name(),
                             )?;
                         }
+                    } else if let TAtomic::Object(TObject::WithProperties(shape)) = existing_key_type_part
+                        && let Some((optional, property_type)) = shape.known_properties.get(&word(property_name))
+                    {
+                        class_property_type = if *optional {
+                            let mut property_type = property_type.clone();
+                            property_type.set_possibly_undefined(true, None);
+                            property_type
+                        } else {
+                            property_type.clone()
+                        };
                     } else {
                         class_property_type = get_mixed();
                     }
@@ -1531,7 +1646,7 @@ fn report_impossible_issue<A>(
         ),
         Assertion::IsNotType(TAtomic::Null) => (
             IssueCode::ImpossibleNullTypeComparison,
-            "will always be `null`".to_owned(),
+            "can never be non-`null`".to_owned(),
             format!("Variable {subject_desc} is already known to be `null`, so asserting it's not `null` is impossible."),
             format!("The condition checking if `{key}` is not `null` will always be false. Review the variable's state or condition."),
         ),
@@ -1543,7 +1658,7 @@ fn report_impossible_issue<A>(
         ),
         Assertion::DoesNotHaveArrayKey(array_key_assertion) => (
             IssueCode::ImpossibleKeyCheck,
-            format!("will always have the key `{array_key_assertion}`"),
+            format!("can never lack the key `{array_key_assertion}`"),
             format!("Variable {subject_desc} is known to always contain the key `{array_key_assertion}`. Asserting it doesn't have this key will always be false."),
             "Review the logic; this negative key check will always fail.".to_owned(),
         ),

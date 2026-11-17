@@ -1,9 +1,13 @@
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::array::key::ArrayKey;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::bool::TBool;
 use mago_codex::ttype::atomic::scalar::float::TFloat;
 use mago_codex::ttype::atomic::scalar::int::TInteger;
 use mago_codex::ttype::atomic::scalar::string::TString;
+use mago_codex::ttype::get_mixed_keyed_array;
 use mago_codex::ttype::union::TUnion;
 
 use crate::plugin::context::InvocationInfo;
@@ -29,7 +33,10 @@ const FILTER_SANITIZE_NUMBER_FLOAT: i64 = 520;
 const FILTER_SANITIZE_FULL_SPECIAL_CHARS: i64 = 522;
 const FILTER_SANITIZE_ADD_SLASHES: i64 = 523;
 
+const FILTER_FLAG_EMPTY_STRING_NULL: i64 = 0x0100;
 const FILTER_NULL_ON_FAILURE: i64 = 0x0800_0000;
+const FILTER_REQUIRE_ARRAY: i64 = 0x0100_0000;
+const FILTER_FORCE_ARRAY: i64 = 0x0400_0000;
 
 /// Resolves the return type for filter functions (`filter_var` and `filter_input`).
 ///
@@ -38,40 +45,105 @@ const FILTER_NULL_ON_FAILURE: i64 = 0x0800_0000;
 pub fn resolve_filter_return_type(
     context: &ProviderContext<'_, '_, '_>,
     invocation: &InvocationInfo<'_, '_, '_>,
+    value_index: Option<usize>,
     filter_index: usize,
     options_index: usize,
 ) -> Option<TUnion> {
-    let filter_arg = invocation.get_argument(filter_index, &[b"filter"])?;
-    let filter_type = context.get_expression_type(filter_arg)?;
-    let filter_value = filter_type.get_single_literal_int_value()?;
+    let filter_value = match invocation.get_argument(filter_index, &[b"filter"]) {
+        Some(filter_arg) => context.get_expression_type(filter_arg)?.get_single_literal_int_value()?,
+        None => FILTER_DEFAULT,
+    };
 
-    let null_on_failure = has_null_on_failure_flag(context, invocation, options_index);
+    let flags = get_flags(context, invocation, options_index);
+    let null_on_failure = flags & FILTER_NULL_ON_FAILURE != 0;
+    if flags & FILTER_FORCE_ARRAY != 0 {
+        return Some(get_mixed_keyed_array());
+    }
 
-    get_filter_return_type(filter_value, null_on_failure)
+    if flags & FILTER_REQUIRE_ARRAY != 0 {
+        let mut result = get_mixed_keyed_array();
+        result.types.to_mut().push(failure_type(null_on_failure));
+
+        return Some(result);
+    }
+
+    let mut result = get_filter_return_type(filter_value, null_on_failure)?;
+    if is_sanitize_filter(filter_value) {
+        if filter_value == FILTER_DEFAULT && flags & FILTER_FLAG_EMPTY_STRING_NULL != 0 {
+            result.types.to_mut().push(TAtomic::Null);
+        }
+
+        // A sanitize filter fails on an array or on an object that cannot be cast to string.
+        let input_may_fail = value_index.is_some_and(|value_index| {
+            invocation
+                .get_argument(value_index, &[b"value"])
+                .and_then(|value| context.get_expression_type(value))
+                .is_none_or(|value_type| value_type.types.iter().any(|atomic| !is_string_filterable(context, atomic)))
+        });
+
+        if input_may_fail {
+            result.types.to_mut().push(failure_type(null_on_failure));
+        }
+    }
+
+    Some(result)
 }
 
-/// Checks if the options parameter contains the `FILTER_NULL_ON_FAILURE` flag.
-///
-/// This handles the case where the options parameter is a literal integer with the flag set.
-/// It does NOT handle the array form `['flags' => FILTER_NULL_ON_FAILURE]`.
-fn has_null_on_failure_flag(
+fn is_string_filterable(context: &ProviderContext<'_, '_, '_>, atomic: &TAtomic) -> bool {
+    match atomic {
+        TAtomic::Scalar(_) | TAtomic::Null | TAtomic::Resource(_) => true,
+        TAtomic::Object(TObject::Named(named)) => {
+            context.codebase().method_exists(named.name.as_bytes(), b"__toString")
+        }
+        _ => false,
+    }
+}
+
+const fn is_sanitize_filter(filter: i64) -> bool {
+    matches!(
+        filter,
+        FILTER_DEFAULT
+            | FILTER_SANITIZE_ENCODED
+            | FILTER_SANITIZE_SPECIAL_CHARS
+            | FILTER_SANITIZE_FULL_SPECIAL_CHARS
+            | FILTER_SANITIZE_EMAIL
+            | FILTER_SANITIZE_URL
+            | FILTER_SANITIZE_NUMBER_INT
+            | FILTER_SANITIZE_NUMBER_FLOAT
+            | FILTER_SANITIZE_ADD_SLASHES
+    )
+}
+
+/// Reads the flags from the options parameter, either a literal integer or the `flags`
+/// entry of an options array.
+fn get_flags(
     context: &ProviderContext<'_, '_, '_>,
     invocation: &InvocationInfo<'_, '_, '_>,
     options_index: usize,
-) -> bool {
-    let Some(options_arg) = invocation.get_argument(options_index, &[b"options"]) else {
-        return false;
+) -> i64 {
+    let Some(options_type) =
+        invocation.get_argument(options_index, &[b"options"]).and_then(|options| context.get_expression_type(options))
+    else {
+        return 0;
     };
 
-    let Some(options_type) = context.get_expression_type(options_arg) else {
-        return false;
+    if let Some(flags) = options_type.get_single_literal_int_value() {
+        return flags;
+    }
+
+    let [TAtomic::Array(TArray::Keyed(options))] = options_type.types.as_ref() else {
+        return 0;
     };
 
-    let Some(options_value) = options_type.get_single_literal_int_value() else {
-        return false;
-    };
-
-    (options_value & FILTER_NULL_ON_FAILURE) != 0
+    options
+        .get_known_items()
+        .and_then(|items| {
+            items.iter().find_map(|(key, (_, value))| match key {
+                ArrayKey::String(name) if name.as_bytes() == b"flags" => value.get_single_literal_int_value(),
+                _ => None,
+            })
+        })
+        .unwrap_or(0)
 }
 
 /// The failure type: `false` normally, `null` when `FILTER_NULL_ON_FAILURE` is set.
@@ -101,16 +173,7 @@ fn get_filter_return_type(filter: i64, null_on_failure: bool) -> Option<TUnion> 
             TAtomic::Scalar(TScalar::String(TString::general())),
             failure_type(null_on_failure),
         ])),
-        // Sanitize filters always return string.
-        FILTER_DEFAULT
-        | FILTER_SANITIZE_ENCODED
-        | FILTER_SANITIZE_SPECIAL_CHARS
-        | FILTER_SANITIZE_FULL_SPECIAL_CHARS
-        | FILTER_SANITIZE_EMAIL
-        | FILTER_SANITIZE_URL
-        | FILTER_SANITIZE_NUMBER_INT
-        | FILTER_SANITIZE_NUMBER_FLOAT
-        | FILTER_SANITIZE_ADD_SLASHES => {
+        _ if is_sanitize_filter(filter) => {
             Some(TUnion::from_vec(vec![TAtomic::Scalar(TScalar::String(TString::general()))]))
         }
         _ => None,

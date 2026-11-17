@@ -35,3 +35,5 @@ pub mod format;
 pub mod guard;
 pub mod incremental_analysis;
 pub mod lint;
+pub mod twig_format;
+pub mod twig_lint;

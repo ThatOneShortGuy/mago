@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 #[cfg(unix)]
@@ -26,7 +27,9 @@ use crate::exclusion::Exclusion;
 use crate::file::File;
 use crate::file::FileId;
 use crate::file::FileType;
+use crate::git::GitIgnores;
 use crate::matcher::build_glob_set;
+use crate::matcher::directory_patterns;
 use crate::utils::bytes_to_os_str;
 use crate::utils::bytes_to_path;
 use crate::utils::bytes_to_string_lossy;
@@ -50,13 +53,29 @@ pub struct DatabaseLoader<'config> {
     memory_sources: Vec<(&'static [u8], &'static [u8], FileType)>,
     stdin_override: Option<(Cow<'config, [u8]>, Vec<u8>)>,
     directory_symlinks: Option<Mutex<HashSet<PathBuf>>>,
+    git_ignores: Option<Arc<GitIgnores>>,
 }
 
 impl<'config> DatabaseLoader<'config> {
     #[inline]
     #[must_use]
     pub fn new(configuration: DatabaseConfiguration<'config>) -> Self {
-        Self { configuration, memory_sources: vec![], database: None, stdin_override: None, directory_symlinks: None }
+        Self {
+            configuration,
+            memory_sources: vec![],
+            database: None,
+            stdin_override: None,
+            directory_symlinks: None,
+            git_ignores: None,
+        }
+    }
+
+    /// Load source files that Git ignores as vendored files, like `includes`.
+    #[inline]
+    #[must_use]
+    pub fn with_git_ignores(mut self, ignores: Arc<GitIgnores>) -> Self {
+        self.git_ignores = Some(ignores);
+        self
     }
 
     #[inline]
@@ -131,19 +150,8 @@ impl<'config> DatabaseLoader<'config> {
             .collect();
 
         let glob_excludes = build_glob_set(glob_exclude_patterns.iter().copied(), self.configuration.glob)?;
-        let dir_prune_patterns: Vec<&str> = glob_exclude_patterns
-            .iter()
-            .filter_map(|pat| {
-                let stripped =
-                    pat.strip_suffix("/**/*").or_else(|| pat.strip_suffix("/**")).or_else(|| pat.strip_suffix("/*"))?;
-                if stripped.is_empty() || stripped == "*" || stripped == "**" {
-                    return None;
-                }
-                Some(stripped)
-            })
-            .collect();
-
-        let dir_prune_globs = build_glob_set(dir_prune_patterns.iter().copied(), self.configuration.glob)?;
+        let dir_prune_globs =
+            build_glob_set(directory_patterns(glob_exclude_patterns.iter().copied()), self.configuration.glob)?;
 
         let path_excludes: HashSet<_> = self
             .configuration
@@ -193,6 +201,12 @@ impl<'config> DatabaseLoader<'config> {
         );
 
         let host_files_with_spec = host_files_with_spec?;
+        let (host_files_with_spec, ignored_files_with_spec): (Vec<_>, Vec<_>) = match &self.git_ignores {
+            Some(ignores) => host_files_with_spec.into_par_iter().partition(|file_with_spec| {
+                !file_with_spec.file.path.as_deref().is_some_and(|path| ignores.is_ignored(path, false))
+            }),
+            None => (host_files_with_spec, Vec::new()),
+        };
         let vendored_files_with_spec = vendored_files_with_spec?;
         let patch_files_with_spec = patch_files_with_spec?;
 
@@ -200,8 +214,12 @@ impl<'config> DatabaseLoader<'config> {
         // the file did not match any configured pattern in that tier; otherwise it carries the
         // best specificity score that tier could offer, scored by `calculate_pattern_specificity`.
         type TierSpecs = (Option<usize>, Option<usize>, Option<usize>);
-        let file_count = host_files_with_spec.len() + vendored_files_with_spec.len() + patch_files_with_spec.len();
-        let mut all_files: HashMap<FileId, (File, TierSpecs)> =
+        let file_count = host_files_with_spec.len()
+            + ignored_files_with_spec.len()
+            + vendored_files_with_spec.len()
+            + patch_files_with_spec.len();
+        let mut files: Vec<(File, TierSpecs)> = Vec::with_capacity(file_count);
+        let mut slots: HashMap<FileId, usize> =
             HashMap::with_capacity_and_hasher(file_count, foldhash::fast::RandomState::default());
 
         // Process host files (from paths)
@@ -209,12 +227,13 @@ impl<'config> DatabaseLoader<'config> {
             let file_id = file_with_spec.file.id;
             let specificity = file_with_spec.specificity;
 
-            match all_files.entry(file_id) {
+            match slots.entry(file_id) {
                 Entry::Vacant(entry) => {
-                    entry.insert((file_with_spec.file, (Some(specificity), None, None)));
+                    entry.insert(files.len());
+                    files.push((file_with_spec.file, (Some(specificity), None, None)));
                 }
-                Entry::Occupied(mut entry) => {
-                    let (file, specs) = entry.get_mut();
+                Entry::Occupied(entry) => {
+                    let (file, specs) = &mut files[*entry.get()];
                     *file = file_with_spec.file;
                     bump_spec(&mut specs.0, specificity);
                 }
@@ -250,28 +269,35 @@ impl<'config> DatabaseLoader<'config> {
             if !matched_glob && !matched_path {
                 let file = File::ephemeral(Cow::Owned(name.as_ref().to_vec()), Cow::Owned(content.clone()));
                 let file_id = file.id;
-                if let Entry::Vacant(e) = all_files.entry(file_id) {
-                    e.insert((file, (Some(usize::MAX), None, None)));
+                if let Entry::Vacant(entry) = slots.entry(file_id) {
+                    entry.insert(files.len());
+                    files.push((file, (Some(usize::MAX), None, None)));
                 }
             }
         }
 
-        for file_with_spec in vendored_files_with_spec {
+        for file_with_spec in vendored_files_with_spec.into_iter().chain(ignored_files_with_spec) {
             let file_id = file_with_spec.file.id;
             let vendored_specificity = file_with_spec.specificity;
-            let (_, specs) = all_files.entry(file_id).or_insert((file_with_spec.file, (None, None, None)));
-            bump_spec(&mut specs.1, vendored_specificity);
+            let slot = *slots.entry(file_id).or_insert_with(|| {
+                files.push((file_with_spec.file, (None, None, None)));
+                files.len() - 1
+            });
+            bump_spec(&mut files[slot].1.1, vendored_specificity);
         }
 
         for file_with_spec in patch_files_with_spec {
             let file_id = file_with_spec.file.id;
             let specificity = file_with_spec.specificity;
-            let (_, specs) = all_files.entry(file_id).or_insert((file_with_spec.file, (None, None, None)));
-            bump_spec(&mut specs.2, specificity);
+            let slot = *slots.entry(file_id).or_insert_with(|| {
+                files.push((file_with_spec.file, (None, None, None)));
+                files.len() - 1
+            });
+            bump_spec(&mut files[slot].1.2, specificity);
         }
 
-        db.reserve(all_files.len() + self.memory_sources.len());
-        for (_, (mut file, (host_spec, vendored_spec, patch_spec))) in all_files {
+        db.reserve(files.len() + self.memory_sources.len());
+        for (mut file, (host_spec, vendored_spec, patch_spec)) in files {
             file.file_type = resolve_file_type(host_spec, vendored_spec, patch_spec);
             db.add(file);
         }
@@ -477,11 +503,9 @@ impl<'config> DatabaseLoader<'config> {
             let workspace = canonical_workspace.as_path();
             if let Some((override_name, override_content)) = &self.stdin_override {
                 #[cfg(windows)]
-                let logical_name =
-                    path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().replace('\\', "/");
+                let logical_name = path.trim_prefix(workspace).to_string_lossy().replace('\\', "/");
                 #[cfg(not(windows))]
-                let logical_name =
-                    path.strip_prefix(workspace).unwrap_or(path.as_path()).to_string_lossy().into_owned();
+                let logical_name = path.trim_prefix(workspace).to_string_lossy().into_owned();
 
                 if override_name.as_ref() == logical_name.as_bytes() {
                     let file = File::new(
@@ -686,7 +710,7 @@ where
 }
 
 fn workspace_relative_string(path: &Path, workspace: &Path) -> String {
-    let relative = path.strip_prefix(workspace).unwrap_or(path).to_string_lossy();
+    let relative = path.trim_prefix(workspace).to_string_lossy();
     #[cfg(windows)]
     {
         relative.replace('\\', "/")
@@ -1448,5 +1472,28 @@ mod tests {
 
         let bar = db.files().find(|f| String::from_utf8_lossy(&f.name).contains("Bar.php")).unwrap();
         assert_eq!(bar.file_type, FileType::Host, "file not covered by patch should remain Host");
+    }
+
+    #[test]
+    fn git_ignored_sources_load_as_vendored() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".git")).unwrap();
+        create_test_file(&temp_dir, ".gitignore", "/vendor/\n.claude/worktrees/\n");
+        create_test_file(&temp_dir, "src/Service.php", "<?php");
+        create_test_file(&temp_dir, "vendor/package/Library.php", "<?php");
+        create_test_file(&temp_dir, ".claude/worktrees/copy/src/Service.php", "<?php");
+
+        let root = temp_dir.path().to_string_lossy().into_owned();
+        let ignores = Arc::new(GitIgnores::discover_with_global(temp_dir.path(), None).unwrap());
+        let db = DatabaseLoader::new(create_test_config(&temp_dir, vec![&root], vec![]))
+            .with_git_ignores(ignores)
+            .load()
+            .unwrap();
+
+        let types: HashMap<String, FileType> =
+            db.files().map(|file| (name_str(&file.name).into_owned(), file.file_type)).collect();
+        assert_eq!(types.get("src/Service.php"), Some(&FileType::Host));
+        assert_eq!(types.get("vendor/package/Library.php"), Some(&FileType::Vendored));
+        assert_eq!(types.get(".claude/worktrees/copy/src/Service.php"), Some(&FileType::Vendored));
     }
 }

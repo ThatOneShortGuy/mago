@@ -77,6 +77,7 @@ pub fn default_test_settings() -> Settings {
         find_unused_expressions: true,
         find_unused_definitions: true,
         check_throws: true,
+        check_throw_type_covariance: false,
         allow_possibly_undefined_array_keys: false,
         strict_list_index_checks: true,
         check_property_initialization: true,
@@ -91,6 +92,7 @@ pub fn infection_like_settings() -> Settings {
         find_unused_definitions: true,
         find_unused_parameters: true,
         check_throws: true,
+        check_throw_type_covariance: true,
         analyze_dead_code: true,
         memoize_properties: true,
         allow_possibly_undefined_array_keys: true,
@@ -111,6 +113,11 @@ pub fn php_90_settings() -> Settings {
 #[must_use]
 pub fn check_name_casing_settings() -> Settings {
     Settings { check_name_casing: true, ..Default::default() }
+}
+
+#[must_use]
+pub fn operator_overloading_settings() -> Settings {
+    Settings { allow_operator_overloading: true, ..default_test_settings() }
 }
 
 #[must_use]

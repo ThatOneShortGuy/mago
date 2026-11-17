@@ -161,11 +161,16 @@ where
     let variable_name = BytesDisplay(variable_name_bytes);
     block_context.add_conditionally_referenced_variable_atom(variable_name_bytes, variable_atom);
 
-    let variable_type = match block_context.locals.get(&variable_atom) {
+    let mut variable_type = match block_context.locals.get(&variable_atom) {
         Some(variable_type) => Rc::clone(variable_type),
         None => {
-            if block_context.variables_possibly_in_scope.contains(&variable_atom) {
-                if !block_context.flags.inside_isset() && !block_context.flags.inside_unset() {
+            if block_context.variables_possibly_in_scope.contains(&variable_atom)
+                && !block_context.flags.inside_variable_reference()
+            {
+                if !block_context.flags.inside_isset()
+                    && !block_context.flags.inside_unset()
+                    && !block_context.flags.inside_variable_reference()
+                {
                     context.collector.report_with_code(
                         IssueCode::PossiblyUndefinedVariable,
                         Issue::warning(format!(
@@ -183,7 +188,8 @@ where
 
                 Rc::new(get_mixed())
             } else if block_context.flags.inside_variable_reference() {
-                context.collector.report_with_code(
+                if !block_context.variables_possibly_in_scope.contains(&variable_atom) {
+                    context.collector.report_with_code(
                     IssueCode::ReferenceToUndefinedVariable,
                     Issue::help(format!("Reference created from a previously undefined variable `{variable_name}`.",))
                         .with_annotation(
@@ -200,6 +206,7 @@ where
                             format!("If this is intentional, consider initializing `{variable_name}` to `null` first for code clarity. Otherwise, check for typos.")
                         ),
                 );
+                }
 
                 // This variable does not currently exist, but is being referenced.
                 // therefore, we need to analyze it as if it was being assigned `null`.
@@ -214,7 +221,7 @@ where
                     false,
                 );
 
-                Rc::new(get_mixed())
+                Rc::new(get_null())
             } else if block_context.flags.inside_unset() {
                 Rc::new(get_null())
             } else if block_context.flags.inside_isset() {
@@ -258,9 +265,10 @@ where
         }
     };
 
+    let is_read = !block_context.flags.inside_isset() && !block_context.flags.inside_variable_reference();
     if variable_type.possibly_undefined()
         && block_context.possibly_undefined_variable_ids.contains(&variable_atom)
-        && !block_context.flags.inside_isset()
+        && is_read
         && !block_context.flags.inside_unset()
     {
         context.collector.report_with_code(
@@ -275,7 +283,11 @@ where
             .with_note("Accessing an undefined variable will result in an `E_WARNING` (PHP 8+) or `E_NOTICE` (PHP 7) and it will be treated as `null`.")
             .with_help(format!("Initialize `{variable_name}` before conditional paths, or use `isset()` to check its existence.")),
         );
-    } else if variable_type.possibly_undefined_from_try() && !block_context.flags.inside_isset() {
+
+        if block_context.flags.inside_conditional() {
+            variable_type = Rc::new(Rc::unwrap_or_clone(variable_type).as_nullable());
+        }
+    } else if variable_type.possibly_undefined_from_try() && is_read {
         context.collector.report_with_code(
             IssueCode::PossiblyUndefinedVariable,
             Issue::warning(format!(
@@ -435,8 +447,8 @@ mod tests {
                     echo 'Y: ' . $y . "\n";
                 }
 
-                echo (string) $key;
-                echo (string) $value;
+                echo $key;
+                echo $value;
                 echo (string) $y;
             }
         "#},

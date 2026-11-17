@@ -4,18 +4,20 @@ use std::sync::Arc;
 
 use mago_codex::assertion::Assertion;
 use mago_codex::consts::MAX_ENUM_CASES_FOR_ANALYSIS;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_word::Word;
 use mago_word::WordSet;
+use mago_word::word;
 
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::r#enum::TEnum;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::bool::TBool;
-use mago_codex::ttype::atomic::scalar::string::TString;
 use mago_codex::ttype::combiner;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
@@ -29,7 +31,9 @@ use mago_codex::ttype::wrap_atomic;
 use mago_span::Span;
 
 use crate::reconciler::Context;
+use crate::reconciler::assertion_reconciler::can_iterate_as;
 use crate::reconciler::assertion_reconciler::intersect_atomic_with_atomic;
+use crate::reconciler::map_generic_constraint;
 use crate::reconciler::simple_negated_assertion_reconciler;
 use crate::reconciler::trigger_issue_for_impossible;
 
@@ -124,6 +128,27 @@ fn subtract_complex_type<A>(
     for existing_atomic in existing_atomic_types {
         if &existing_atomic == assertion_type {
             *can_be_disjunct = true;
+
+            continue;
+        }
+
+        if let TAtomic::GenericParameter(parameter) = &existing_atomic
+            && !matches!(assertion_type, TAtomic::GenericParameter(_))
+            && parameter.constraint.types.len() > 1
+        {
+            let mut constraint = (*parameter.constraint).clone();
+            let mut constraint_can_be_disjunct = false;
+            subtract_complex_type(context, assertion_type, &mut constraint, &mut constraint_can_be_disjunct);
+
+            if constraint_can_be_disjunct {
+                *can_be_disjunct = true;
+            }
+
+            if !constraint.is_never() {
+                let mut narrowed_parameter = parameter.clone();
+                narrowed_parameter.constraint = Arc::new(constraint);
+                acceptable_types.push(TAtomic::GenericParameter(narrowed_parameter));
+            }
 
             continue;
         }
@@ -255,6 +280,60 @@ fn subtract_complex_type<A>(
                     Arc::clone(&iterable.value_type),
                 ))));
             }
+            (TAtomic::Iterable(iterable), TAtomic::Array(_)) => {
+                let key_type = if iterable.key_type.is_always_array_key(false) {
+                    Arc::clone(&iterable.key_type)
+                } else {
+                    Arc::new(get_arraykey())
+                };
+
+                let array_part = TAtomic::Array(TArray::Keyed(TKeyedArray::new_with_parameters(
+                    key_type,
+                    Arc::clone(&iterable.value_type),
+                )));
+
+                if atomic_comparator::is_contained_by(
+                    context.codebase,
+                    &array_part,
+                    assertion_type,
+                    true,
+                    &mut ComparisonResult::new(),
+                ) {
+                    *can_be_disjunct = true;
+
+                    acceptable_types.push(TAtomic::Object(TObject::Named(
+                        TNamedObject::new(word("Traversable")).with_type_parameters(Some(vec![
+                            (*iterable.key_type).clone(),
+                            (*iterable.value_type).clone(),
+                        ])),
+                    )));
+                } else {
+                    acceptable_types.push(existing_atomic);
+                }
+            }
+            (_, TAtomic::Iterable(assertion_iterable)) if existing_atomic.is_array_or_traversable(context.codebase) => {
+                if !*can_be_disjunct && can_iterate_as(context.codebase, &existing_atomic, assertion_iterable) {
+                    *can_be_disjunct = true;
+                }
+
+                acceptable_types.push(existing_atomic);
+            }
+            (TAtomic::Scalar(TScalar::String(existing_string)), TAtomic::Callable(assertion_callable)) => {
+                if let TCallable::Alias(FunctionLikeIdentifier::Function(callable_name)) = assertion_callable
+                    && let Some(literal) = existing_string.get_known_literal_value()
+                {
+                    let literal = literal.trim_prefix(b"\\");
+                    if literal.eq_ignore_ascii_case(callable_name.as_bytes())
+                        && context.codebase.function_exists(literal)
+                    {
+                        *can_be_disjunct = true;
+
+                        continue;
+                    }
+                }
+
+                acceptable_types.push(existing_atomic);
+            }
             _ => {
                 acceptable_types.push(existing_atomic);
             }
@@ -334,6 +413,24 @@ where
         }
 
         match &existing_atomic_type {
+            TAtomic::GenericParameter(parameter) => {
+                if let Some(atomic) = map_generic_constraint(parameter, |constraint| {
+                    let narrowed = handle_literal_negated_equality(
+                        context,
+                        assertion,
+                        constraint,
+                        None,
+                        old_var_type_atom,
+                        None,
+                        negated,
+                    );
+
+                    did_remove_type |= &narrowed != constraint;
+                    narrowed
+                }) {
+                    acceptable_types.push(atomic);
+                }
+            }
             TAtomic::Scalar(TScalar::String(existing_string)) => {
                 let existing_literal_string = existing_atomic_type.get_literal_string_value();
                 let assertion_literal_string = assertion_type.get_literal_string_value();
@@ -352,13 +449,13 @@ where
                         did_remove_type = true;
 
                         if assertion_value.is_empty() {
-                            acceptable_types.push(TAtomic::Scalar(TScalar::String(TString::general_with_props(
-                                existing_string.is_numeric,
-                                existing_string.is_truthy,
-                                true,
-                                existing_string.is_callable,
-                                existing_string.casing,
-                            ))));
+                            let mut non_empty_string = *existing_string;
+                            non_empty_string.is_non_empty = true;
+                            acceptable_types.push(TAtomic::Scalar(TScalar::String(non_empty_string)));
+                        } else if assertion_value == b"0" && existing_string.is_non_empty {
+                            let mut truthy_string = *existing_string;
+                            truthy_string.is_truthy = true;
+                            acceptable_types.push(TAtomic::Scalar(TScalar::String(truthy_string)));
                         } else {
                             acceptable_types.push(existing_atomic_type);
                         }

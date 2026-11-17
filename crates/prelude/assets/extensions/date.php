@@ -290,6 +290,9 @@ function date_sunset(
  */
 function date_sun_info(int $timestamp, float $latitude, float $longitude): array {}
 
+/**
+ * @inheritors DateTime|DateTimeImmutable
+ */
 interface DateTimeInterface
 {
     /** @var non-empty-string */
@@ -379,6 +382,9 @@ class DateTime implements DateTimeInterface
     #[Mago\AvailableSince(80000)]
     public static function createFromInterface(DateTimeInterface $object): DateTime {} // TODO return type should be static
 
+    /**
+     * @return static|false
+     */
     public static function createFromFormat(
         string $format,
         string $datetime,

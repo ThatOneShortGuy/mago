@@ -55,6 +55,7 @@ use crate::statement::analyze_statements;
 use crate::utils::conditional;
 use crate::utils::expression::is_derived_access_path;
 use crate::utils::misc::check_for_paradox;
+use crate::utils::misc::check_for_paradoxical_or_operands;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
@@ -170,7 +171,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             &if_clauses,
             self.condition.span(),
             &context.settings.algebra_thresholds(),
+            true,
         );
+        check_for_paradoxical_or_operands(context, block_context, artifacts, self.condition);
 
         if_clauses = saturate_clauses(if_clauses.iter(), &context.settings.algebra_thresholds());
         let combined_clauses = if block_context.clauses.is_empty() {
@@ -200,15 +203,15 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
         }
 
         if_scope.reasonable_clauses.clone_from(&if_block_context.clauses);
-        let mut saved_if_clauses = if_clauses.clone();
         if_scope.negated_clauses = negate_or_synthesize(
-            if_clauses,
+            &if_clauses,
             self.condition,
             context.get_assertion_context_from_block(block_context),
             artifacts,
             &context.settings.algebra_thresholds(),
             context.settings.formula_size_threshold,
         );
+        let mut saved_if_clauses = if_clauses;
 
         let all_negated_clauses = saturate_clauses(
             block_context.clauses.iter().map(Rc::deref).chain(if_scope.negated_clauses.iter()),
@@ -242,6 +245,15 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             .map(|(&key, ty)| (key, Rc::clone(ty)))
             .collect();
 
+        let negated_condition_locals: Vec<(Word, Rc<TUnion>)> = if self.body.has_else_if_clauses() {
+            changed_variable_ids
+                .iter()
+                .filter_map(|key| temporary_else_context.locals.get(key).map(|ty| (*key, Rc::clone(ty))))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         analyze_if_statement_block(
             context,
             &mut if_scope,
@@ -252,6 +264,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             &pre_assignment_else_redefined_locals,
             self,
         )?;
+
+        let if_branch_exits = !if_scope.if_actions.is_empty() && !if_scope.if_actions.contains(ControlAction::None);
 
         let if_body_assigned_ids: WordSet = if_scope
             .assigned_variable_ids
@@ -384,10 +398,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
                     }
                 }
             }
+        } else if if_branch_exits {
+            for (variable_id, variable_type) in negated_condition_locals {
+                block_context.locals.insert(variable_id, variable_type);
+            }
         }
 
         if let Some(loop_scope) = artifacts.loop_scope.as_mut() {
-            loop_scope.final_actions.extend(if_scope.final_actions);
+            loop_scope.final_actions.extend(&if_scope.final_actions);
         }
 
         block_context.variables_possibly_in_scope.extend(if_scope.new_variables_possibly_in_scope);
@@ -405,6 +423,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             block_context.possibly_undefined_variable_ids.insert(variable_id);
         }
 
+        let branch_descendants: Vec<(Word, Rc<TUnion>)> = if_scope
+            .new_variables
+            .iter()
+            .flatten()
+            .chain(if_scope.redefined_variables.iter().flatten())
+            .filter(|(variable_id, _)| {
+                variable_id.as_bytes().contains(&b'[') || memchr::memmem::find(variable_id.as_bytes(), b"->").is_some()
+            })
+            .map(|(variable_id, variable_type)| (*variable_id, Rc::clone(variable_type)))
+            .collect();
+
         if let Some(new_variables) = if_scope.new_variables {
             for (variable_id, variable_type) in new_variables {
                 block_context.locals.insert(variable_id, variable_type);
@@ -413,27 +442,22 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
         }
 
         if let Some(redefined_variables) = if_scope.redefined_variables {
+            for (variable_id, variable_type) in &redefined_variables {
+                if let Some(existing_type) = block_context.locals.get(variable_id).cloned()
+                    && existing_type != *variable_type
+                {
+                    block_context.remove_descendants(context, *variable_id, &existing_type, Some(variable_type));
+                }
+            }
+
             for (variable_id, variable_type) in redefined_variables {
                 block_context.locals.insert(variable_id, variable_type);
-
-                if !if_scope.reasonable_clauses.is_empty() {
-                    if_scope.reasonable_clauses = BlockContext::filter_clauses(
-                        context,
-                        variable_id,
-                        if_scope.reasonable_clauses,
-                        block_context.locals.get(&variable_id).map(std::convert::AsRef::as_ref),
-                    );
-                }
 
                 if_scope.updated_variables.insert(variable_id);
             }
         }
 
-        let if_body_always_exits =
-            !if_scope.if_actions.is_empty() && !if_scope.if_actions.contains(ControlAction::None);
-
-        if if_body_always_exits
-            && !if_scope.reasonable_clauses.is_empty()
+        if !if_scope.reasonable_clauses.is_empty()
             && (if_scope.reasonable_clauses.len() > 1 || !if_scope.reasonable_clauses[0].wedge)
         {
             block_context.clauses = mago_algebra::saturate_shared_clauses(
@@ -461,6 +485,20 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for If<'arena> {
             }
 
             block_context.locals.insert(variable_id, Rc::new(new_type));
+        }
+
+        for (variable_id, variable_type) in branch_descendants {
+            block_context.locals.entry(variable_id).or_insert(variable_type);
+        }
+
+        let unset_variables = if_scope.unset_variables.unwrap_or_default();
+        for variable_id in if_scope.possibly_unset_variables {
+            if unset_variables.contains(&variable_id) {
+                block_context.remove_variable(variable_id.as_bytes(), true, context);
+            } else if let Some(variable_type) = block_context.locals.get_mut(&variable_id) {
+                Rc::make_mut(variable_type).set_possibly_undefined(true, None);
+                block_context.possibly_undefined_variable_ids.insert(variable_id);
+            }
         }
 
         block_context.clauses.extend(discriminator_clauses);
@@ -604,7 +642,7 @@ where
     let has_leaving_statements =
         has_ending_statements || (!final_actions.is_empty() && !final_actions.contains(ControlAction::None));
 
-    if_scope.if_actions = final_actions;
+    if_scope.if_actions = final_actions.clone();
     if_scope.final_actions = final_actions;
 
     let new_assigned_variable_ids = if_block_context.assigned_variable_ids.clone();
@@ -616,7 +654,7 @@ where
     inherit_branch_context_properties(context, outer_block_context, &if_block_context);
 
     if !has_leaving_statements {
-        let new_assigned_variable_ids_keys = new_assigned_variable_ids.keys().copied().collect::<Vec<Word>>();
+        retain_unchanged_branch_clauses(&mut if_scope.reasonable_clauses, &old_if_locals, &if_block_context);
 
         update_if_scope(
             context,
@@ -628,18 +666,6 @@ where
             &if_scope.conditionally_changed_variable_ids.clone(),
             true,
         );
-
-        if !if_scope.reasonable_clauses.is_empty() {
-            for variable_id in new_assigned_variable_ids_keys {
-                let previous_clauses = std::mem::take(&mut if_scope.reasonable_clauses);
-                if_scope.reasonable_clauses = BlockContext::filter_clauses(
-                    context,
-                    variable_id,
-                    previous_clauses,
-                    if_block_context.locals.get(&variable_id).map(std::convert::AsRef::as_ref),
-                );
-            }
-        }
     } else if !has_break_statement {
         if_scope.reasonable_clauses = vec![];
 
@@ -661,9 +687,8 @@ where
         let variables_to_update = if_scope
             .negated_types
             .keys()
-            .filter(|key| pre_assignment_else_redefined_locals.contains_key(key))
-            .copied()
-            .collect::<WordSet>();
+            .filter_map(|key| Some((*key, Rc::clone(pre_assignment_else_redefined_locals.get(key)?))))
+            .collect::<WordMap<_>>();
 
         outer_block_context.update_locals(
             context,
@@ -821,6 +846,7 @@ where
         &else_if_clauses,
         else_if_clause.0.span(),
         &context.settings.algebra_thresholds(),
+        true,
     );
 
     let else_if_clauses = saturate_clauses(else_if_clauses.iter(), &context.settings.algebra_thresholds());
@@ -866,7 +892,7 @@ where
     );
 
     let negated_if_clauses = negate_or_synthesize(
-        else_if_clauses.clone(),
+        &else_if_clauses,
         else_if_clause.0,
         context.get_assertion_context_from_block(&else_if_block_context),
         artifacts,
@@ -876,6 +902,20 @@ where
 
     let (negated_else_if_types, _) =
         find_satisfying_assignments(negated_if_clauses.as_slice(), None, &mut WordSet::default());
+
+    // The earlier branches' negations describe the old value of a variable this condition reassigns.
+    for assigned_variable_id in assigned_in_conditional_variable_ids.keys() {
+        if_scope.negated_types.swap_remove(assigned_variable_id);
+    }
+
+    if !assigned_in_conditional_variable_ids.is_empty() {
+        if_scope.negated_clauses.retain(|clause| {
+            !clause
+                .possibilities
+                .keys()
+                .any(|variable_id| assigned_in_conditional_variable_ids.contains_key(variable_id))
+        });
+    }
 
     let all_negated_variables =
         negated_else_if_types.keys().copied().chain(if_scope.negated_types.keys().copied()).collect::<HashSet<_>>();
@@ -931,6 +971,7 @@ where
         }
     }
 
+    let old_else_if_locals = else_if_block_context.locals.clone();
     let pre_assigned_variable_ids = std::mem::take(&mut else_if_block_context.assigned_variable_ids);
     let pre_possibly_assigned_variable_ids = std::mem::take(&mut else_if_block_context.possibly_assigned_variable_ids);
 
@@ -951,9 +992,10 @@ where
         ControlAction::from_statements(else_if_clause.1.iter().collect(), vec![], Some(artifacts), true);
 
     let (has_ending_statements, has_break_statement, has_continue_statement, has_leaving_statements) =
-        get_branch_control_flags(final_actions);
+        get_branch_control_flags(&final_actions);
 
-    if_scope.if_actions.extend(final_actions);
+    if_scope.if_actions.extend(&final_actions);
+    if_scope.final_actions.extend(&final_actions);
 
     if has_leaving_statements {
         if_scope.reasonable_clauses = vec![];
@@ -985,14 +1027,17 @@ where
             false,
         );
 
-        if if_scope.reasonable_clauses.is_empty() || else_if_clauses.is_empty() {
+        let mut surviving_clauses: Vec<_> = else_if_clauses.iter().cloned().map(Rc::new).collect();
+        retain_unchanged_branch_clauses(&mut surviving_clauses, &old_else_if_locals, &else_if_block_context);
+
+        if if_scope.reasonable_clauses.is_empty() || surviving_clauses.is_empty() {
             if_scope.reasonable_clauses = vec![];
         } else {
             let previous_clauses = std::mem::take(&mut if_scope.reasonable_clauses);
 
             if_scope.reasonable_clauses = disjoin_clauses(
                 previous_clauses.into_iter().map(Rc::unwrap_or_clone).collect(),
-                else_if_clauses.clone(),
+                surviving_clauses.into_iter().map(Rc::unwrap_or_clone).collect(),
                 else_if_clause.0.span(),
                 &context.settings.algebra_thresholds(),
             )
@@ -1028,7 +1073,7 @@ where
     }
 
     let negated_formula = negate_or_synthesize(
-        else_if_clauses,
+        &else_if_clauses,
         else_if_clause.0,
         context.get_assertion_context_from_block(&else_if_block_context),
         artifacts,
@@ -1063,6 +1108,7 @@ where
         if_scope.assigned_variable_ids = None;
         if_scope.new_variables = None;
         if_scope.redefined_variables = None;
+        if_scope.unset_variables = Some(WordSet::default());
         if_scope.reasonable_clauses = vec![];
 
         // No else branch means we can't guarantee initialization - clear intersection sets
@@ -1139,6 +1185,8 @@ where
         else_types.keys().any(|var_id| else_block_context.locals.get(var_id).is_some_and(|t| t.is_never()));
 
     if is_unreachable {
+        if_scope.reasonable_clauses.clear();
+
         if else_statements.is_some() {
             context.collector.report_with_code(
                 IssueCode::UnreachableElseClause,
@@ -1160,7 +1208,6 @@ where
         return Ok(());
     }
 
-    let old_else_locals = else_block_context.locals.clone();
     let pre_assigned_variable_ids = std::mem::take(&mut else_block_context.assigned_variable_ids);
     let pre_possibly_assigned_variable_ids = std::mem::take(&mut else_block_context.possibly_assigned_variable_ids);
 
@@ -1189,9 +1236,9 @@ where
     };
 
     let (has_ending_statements, has_break_statement, has_continue_statement, has_leaving_statements) =
-        get_branch_control_flags(final_actions);
+        get_branch_control_flags(&final_actions);
 
-    if_scope.final_actions.extend(final_actions);
+    if_scope.final_actions.extend(&final_actions);
 
     if !has_leaving_statements {
         update_if_scope(
@@ -1206,24 +1253,6 @@ where
         );
 
         if_scope.reasonable_clauses = vec![];
-    }
-
-    if !if_scope.negated_types.is_empty() {
-        let variables_to_update = if_scope
-            .negated_types
-            .keys()
-            .copied()
-            .filter(|var| outer_block_context.locals.contains_key(var))
-            .collect::<WordSet>();
-
-        outer_block_context.update_locals(
-            context,
-            &old_else_locals,
-            else_block_context,
-            has_leaving_statements,
-            &variables_to_update,
-            &mut if_scope.updated_variables,
-        );
     }
 
     if !has_ending_statements {
@@ -1349,6 +1378,23 @@ fn update_if_scope<'ctx, A>(
 
         outer_block_context.called_methods.extend(if_block_context.called_methods.iter().copied());
     }
+    let unset_variables: WordSet = new_possibly_assigned_variable_ids
+        .iter()
+        .filter(|id| {
+            !id.as_bytes().contains(&b'[')
+                && !id.as_bytes().contains(&b'-')
+                && !id.as_bytes().contains(&b':')
+                && outer_block_context.locals.contains_key(*id)
+                && !if_block_context.locals.contains_key(*id)
+        })
+        .copied()
+        .collect();
+    if_scope.possibly_unset_variables.extend(unset_variables.iter().copied());
+    match &mut if_scope.unset_variables {
+        Some(existing) => existing.retain(|id| unset_variables.contains(id)),
+        None => if_scope.unset_variables = Some(unset_variables),
+    }
+
     let mut redefined_variables =
         if_block_context.get_redefined_locals(&outer_block_context.locals, false, &mut WordSet::default());
 
@@ -1419,6 +1465,11 @@ fn update_if_scope<'ctx, A>(
         }
     }
 
+    if_scope.updated_variables.retain(|variable_id| {
+        !new_assigned_variable_ids.contains_key(variable_id)
+            && !new_possibly_assigned_variable_ids.contains(variable_id)
+    });
+
     match &mut if_scope.assigned_variable_ids {
         Some(assigned_variable_ids) => {
             assigned_variable_ids.extend(new_assigned_variable_ids);
@@ -1479,6 +1530,26 @@ fn merge_definitely_uninitialized_property_ids(if_scope: &mut IfScope<'_>, branc
                 Some(branch_context.definitely_uninitialized_property_ids.clone());
         }
     }
+}
+
+fn retain_unchanged_branch_clauses(
+    clauses: &mut Vec<Rc<Clause>>,
+    start_locals: &WordMap<Rc<TUnion>>,
+    end_context: &BlockContext<'_>,
+) {
+    let unchanged = |variable_id: Word| {
+        start_locals.get(&variable_id) == end_context.locals.get(&variable_id)
+            && !end_context.parent_conflicting_clause_variables.iter().any(|assigned_id| {
+                var_has_root(variable_id, *assigned_id) || var_references_dynamic(variable_id, *assigned_id)
+            })
+    };
+
+    clauses.retain(|clause| {
+        clause.possibilities.iter().all(|(variable_id, assertions)| {
+            unchanged(*variable_id)
+                && assertions.values().all(|assertion| assertion.referenced_variable().is_none_or(unchanged))
+        })
+    });
 }
 
 fn get_definitely_evaluated_ored_expressions<'ast, 'arena>(
@@ -1583,7 +1654,7 @@ fn synthesize_branch_discriminator_clauses(
     clauses
 }
 
-fn get_branch_control_flags(final_actions: ControlActionSet) -> (bool, bool, bool, bool) {
+fn get_branch_control_flags(final_actions: &ControlActionSet) -> (bool, bool, bool, bool) {
     if final_actions.is_empty() {
         return (false, false, false, false);
     }

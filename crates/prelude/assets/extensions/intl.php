@@ -1316,6 +1316,12 @@ function locale_set_default(string $locale): bool {}
  */
 function locale_get_primary_language(string $locale): ?string {}
 
+#[Mago\AvailableSince(80500)]
+function locale_add_likely_subtags(string $locale): string|false {}
+
+#[Mago\AvailableSince(80500)]
+function locale_minimize_subtags(string $locale): string|false {}
+
 /**
  * @pure
  */
@@ -1559,43 +1565,43 @@ function grapheme_strlen(string $string): int|false|null {}
  *
  * @pure
  */
-function grapheme_strpos(string $haystack, string $needle, int $offset = 0): int|false {}
+function grapheme_strpos(string $haystack, string $needle, int $offset = 0, #[Mago\AvailableSince(80500)] string $locale = ''): int|false {}
 
 /**
  * @return int<0, max>|false
  *
  * @pure
  */
-function grapheme_stripos(string $haystack, string $needle, int $offset = 0): int|false {}
+function grapheme_stripos(string $haystack, string $needle, int $offset = 0, #[Mago\AvailableSince(80500)] string $locale = ''): int|false {}
 
 /**
  * @return int<0, max>|false
  *
  * @pure
  */
-function grapheme_strrpos(string $haystack, string $needle, int $offset = 0): int|false {}
+function grapheme_strrpos(string $haystack, string $needle, int $offset = 0, #[Mago\AvailableSince(80500)] string $locale = ''): int|false {}
 
 /**
  * @return int<0, max>|false
  *
  * @pure
  */
-function grapheme_strripos(string $haystack, string $needle, int $offset = 0): int|false {}
+function grapheme_strripos(string $haystack, string $needle, int $offset = 0, #[Mago\AvailableSince(80500)] string $locale = ''): int|false {}
 
 /**
  * @pure
  */
-function grapheme_substr(string $string, int $offset, ?int $length = null): string|false {}
+function grapheme_substr(string $string, int $offset, ?int $length = null, #[Mago\AvailableSince(80500)] string $locale = ''): string|false {}
 
 /**
  * @pure
  */
-function grapheme_strstr(string $haystack, string $needle, bool $beforeNeedle = false): string|false {}
+function grapheme_strstr(string $haystack, string $needle, bool $beforeNeedle = false, #[Mago\AvailableSince(80500)] string $locale = ''): string|false {}
 
 /**
  * @pure
  */
-function grapheme_stristr(string $haystack, string $needle, bool $beforeNeedle = false): string|false {}
+function grapheme_stristr(string $haystack, string $needle, bool $beforeNeedle = false, #[Mago\AvailableSince(80500)] string $locale = ''): string|false {}
 
 /**
  * @pure
@@ -1613,6 +1619,7 @@ function grapheme_levenshtein(
     int $insertionCost = 1,
     int $replacementCost = 1,
     int $deletionCost = 1,
+    string $locale = '',
 ): int {}
 
 /**
@@ -2430,6 +2437,8 @@ const IDNA_ERROR_LEADING_HYPHEN = 8;
 
 const IDNA_ERROR_HYPHEN_3_4 = 32;
 
+const IDNA_ERROR_TRAILING_HYPHEN = 16;
+
 const IDNA_ERROR_LEADING_COMBINING_MARK = 64;
 
 const IDNA_ERROR_DISALLOWED = 128;
@@ -2759,7 +2768,8 @@ class UConverter
 
 class IntlChar
 {
-    public const UNICODE_VERSION = 13.0;
+    /** @var non-empty-string */
+    public const UNICODE_VERSION = '16.0';
     public const CODEPOINT_MIN = 0;
     public const CODEPOINT_MAX = 1114111;
     public const FOLD_CASE_DEFAULT = 0;

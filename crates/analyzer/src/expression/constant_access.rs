@@ -8,7 +8,7 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::ConstantAccess;
-use mago_word::word;
+use mago_word::ascii_lowercase_constant_name_word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -32,8 +32,13 @@ impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
         let name = BytesDisplay(name_bytes);
         let unqualified_name = self.name.value();
 
-        let constant_metadata =
-            context.codebase.get_constant(name_bytes).or_else(|| context.codebase.get_constant(unqualified_name));
+        let constant_metadata = context.codebase.get_constant(name_bytes).or_else(|| {
+            if !self.name.is_local() || context.resolved_names.is_imported(&self.name) {
+                return None;
+            }
+
+            context.codebase.get_constant(unqualified_name)
+        });
 
         let Some(constant_metadata) = constant_metadata else {
             if let Some(literal_type) = get_literal_constant_type(name_bytes) {
@@ -41,7 +46,10 @@ impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
                 return Ok(());
             }
 
-            let is_known = block_context.known_constants.contains(&word(name_bytes));
+            let falls_back_to_global = self.name.is_local() && !context.resolved_names.is_imported(&self.name);
+            let is_known = block_context.known_constants.contains(&ascii_lowercase_constant_name_word(name_bytes))
+                || falls_back_to_global
+                    && block_context.known_constants.contains(&ascii_lowercase_constant_name_word(unqualified_name));
 
             if is_known {
                 artifacts.set_expression_type(self, get_mixed());

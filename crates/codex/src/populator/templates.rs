@@ -1,17 +1,21 @@
 use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 use mago_word::Word;
-use mago_word::WordMap;
 
+use crate::metadata::CodebaseMetadata;
 use crate::metadata::class_like::ClassLikeMetadata;
 use crate::misc::GenericParent;
-use crate::ttype::atomic::TAtomic;
-use crate::ttype::atomic::generic::TGenericParameter;
+use crate::ttype::template::TemplateResult;
+use crate::ttype::template::inferred_type_replacer;
 use crate::ttype::union::TUnion;
 
 /// Extends the template parameter map of `metadata` based on `parent_metadata`.
 /// Handles resolving template types inherited from parents/traits.
-pub fn extend_template_parameters(metadata: &mut ClassLikeMetadata, parent_metadata: &ClassLikeMetadata) {
+pub fn extend_template_parameters(
+    metadata: &mut ClassLikeMetadata,
+    parent_metadata: &ClassLikeMetadata,
+    codebase: &CodebaseMetadata,
+) {
     let parent_name = parent_metadata.name;
 
     if parent_metadata.template_types.is_empty() {
@@ -38,23 +42,35 @@ pub fn extend_template_parameters(metadata: &mut ClassLikeMetadata, parent_metad
                     break;
                 };
 
+                let default = resolve_with_earlier_arguments(default, parent_name, &parent_path, codebase);
                 metadata.add_template_extended_parameter(parent_name, *parameter_name, default.clone());
-                parent_path.insert(*parameter_name, default.clone());
+                parent_path.insert(*parameter_name, default);
             }
         } else {
             for (parameter_name, template) in &parent_metadata.template_types {
-                let value = template.default.clone().unwrap_or_else(|| template.constraint.clone());
+                let value = template.default.as_ref().unwrap_or(&template.constraint);
+                let value = resolve_with_earlier_arguments(value, parent_name, &parent_path, codebase);
                 metadata.add_template_extended_parameter(parent_name, *parameter_name, value.clone());
                 parent_path.insert(*parameter_name, value);
             }
         }
 
         metadata.record_template_extended_path(parent_name, parent_path);
-        let current_child_extended_params = metadata.template_extended_parameters.clone();
+        let mut current_child_extended_params = TemplateResult::default();
+        for (defining_entity, parameters) in &metadata.template_extended_parameters {
+            for (parameter_name, parameter_type) in parameters {
+                current_child_extended_params.add_lower_bound(
+                    *parameter_name,
+                    GenericParent::ClassLike(*defining_entity),
+                    parameter_type.clone(),
+                );
+            }
+        }
+
         for (grandparent_fqcn, extended_parameters) in &parent_metadata.template_extended_parameters {
             let mut grandparent_path: IndexMap<Word, TUnion, RandomState> = IndexMap::default();
             for (template_name, type_to_resolve_arc) in extended_parameters {
-                let resolved_type = extend_type(type_to_resolve_arc, &current_child_extended_params);
+                let resolved_type = extend_type(type_to_resolve_arc, &current_child_extended_params, codebase);
 
                 metadata.add_template_extended_parameter(*grandparent_fqcn, *template_name, resolved_type.clone());
                 grandparent_path.insert(*template_name, resolved_type);
@@ -67,13 +83,38 @@ pub fn extend_template_parameters(metadata: &mut ClassLikeMetadata, parent_metad
             for parameterization in parameterizations {
                 let mut resolved_path: IndexMap<Word, TUnion, RandomState> = IndexMap::default();
                 for (template_name, type_to_resolve) in parameterization {
-                    resolved_path.insert(*template_name, extend_type(type_to_resolve, &current_child_extended_params));
+                    resolved_path
+                        .insert(*template_name, extend_type(type_to_resolve, &current_child_extended_params, codebase));
                 }
 
                 metadata.record_template_extended_path(*grandparent_fqcn, resolved_path);
             }
         }
     }
+}
+
+/// Resolves an inherited type's ancestor templates to the types the class supplies for them.
+pub fn bind_inherited_templates(
+    metadata: &ClassLikeMetadata,
+    inherited_type: &TUnion,
+    codebase: &CodebaseMetadata,
+) -> TUnion {
+    if !inherited_type.has_template_types() {
+        return inherited_type.clone();
+    }
+
+    let mut template_result = TemplateResult::default();
+    for (defining_entity, parameters) in &metadata.template_extended_parameters {
+        for (parameter_name, parameter_type) in parameters {
+            template_result.add_lower_bound(
+                *parameter_name,
+                GenericParent::ClassLike(*defining_entity),
+                parameter_type.clone(),
+            );
+        }
+    }
+
+    inferred_type_replacer::replace(inherited_type, &template_result, codebase)
 }
 
 /// Folds a parent's recorded ancestor parameterizations into the child, so that
@@ -90,37 +131,32 @@ fn inherit_template_extended_paths(metadata: &mut ClassLikeMetadata, parent_meta
     }
 }
 
-/// Resolves a `TUnion` that might contain generic parameters, using the provided
-/// extended parameter map.
-///
-/// Example: If `extended_type` is `T` (generic param) and `template_extended_parameters`
-/// maps `T` defined on `ParentClass` to `string`, this returns a `TUnion` containing `string`.
-pub fn extend_type(
-    extended_type: &TUnion,
-    template_extended_parameters: &WordMap<IndexMap<Word, TUnion, RandomState>>,
+/// Resolves a parent template's default or constraint against the arguments
+/// already given for the parent's earlier templates.
+fn resolve_with_earlier_arguments(
+    value: &TUnion,
+    parent_name: Word,
+    earlier_arguments: &IndexMap<Word, TUnion, RandomState>,
+    codebase: &CodebaseMetadata,
 ) -> TUnion {
-    if !extended_type.has_template() {
+    if !value.has_template_types() {
+        return value.clone();
+    }
+
+    let mut template_result = TemplateResult::default();
+    for (parameter_name, argument) in earlier_arguments {
+        template_result.add_lower_bound(*parameter_name, GenericParent::ClassLike(parent_name), argument.clone());
+    }
+
+    inferred_type_replacer::replace(value, &template_result, codebase)
+}
+
+/// Resolves the generic parameters of `extended_type`, at any depth, to the
+/// types the child supplies for them.
+fn extend_type(extended_type: &TUnion, child_parameters: &TemplateResult, codebase: &CodebaseMetadata) -> TUnion {
+    if !extended_type.has_template_types() {
         return extended_type.clone();
     }
 
-    let mut extended_types = Vec::new();
-
-    let mut worklist = extended_type.types.to_vec();
-    while let Some(atomic_type) = worklist.pop() {
-        if let TAtomic::GenericParameter(TGenericParameter {
-            parameter_name,
-            defining_entity: GenericParent::ClassLike(defining_entity),
-            ..
-        }) = &atomic_type
-            && let Some(extended_parameters) = template_extended_parameters.get(defining_entity)
-            && let Some(referenced_type) = extended_parameters.get(parameter_name)
-        {
-            extended_types.extend(referenced_type.types.iter().cloned());
-            continue;
-        }
-
-        extended_types.push(atomic_type);
-    }
-
-    TUnion::from_vec(extended_types)
+    inferred_type_replacer::replace(extended_type, child_parameters, codebase)
 }

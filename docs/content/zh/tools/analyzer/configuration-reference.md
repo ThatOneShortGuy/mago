@@ -79,12 +79,15 @@ glob 匹配会遵循 `[source.glob]` 下的项目级设置,因此像 `literal-se
 | `analyze-dead-code` | `false` | 分析看似不可达的代码。 |
 | `memoize-properties` | `true` | 跟踪字面量属性值以获得更精准的推断,代价是占用一些额外内存。 |
 | `allow-possibly-undefined-array-keys` | `true` | **已弃用。**允许访问可能不存在的键,而不报告。设为 `false` 时仅对带有单个字面量键的 `array<K, V>` 读取发出警告,且不会将类型扩展为 `T\|null`。请改用 `strict-array-index-existence`。 |
-| `check-throws` | `false` | 报告未被捕获且未通过 `@throws` 声明的异常。 |
+| `check-throws` | `false` | 报告未捕获且未使用 `@throws` 文档说明的异常。 |
+| `check-dead-catch` | `false` | 报告与 `try` 块中任何已知异常都不匹配的 `catch` 子句。需要启用 `check-throws`;未记录的代码仍可能抛出分析器无法发现的异常。 |
+| `check-throw-type-covariance` | `false` | 检查重写和实现方法的 `@throws` 契约协变性。缺少该标签时按 `Throwable` 处理；无异常时使用 `@throws void`。 |
 | `check-missing-override` | `false` | 报告重写方法上缺失的 `#[Override]` attribute(PHP 8.3+)。 |
 | `find-unused-parameters` | `false` | 报告从未被读取的参数。 |
 | `strict-list-index-checks` | `false` | 要求作为列表下标使用的整数必须可被证明非负。 |
 | `strict-array-index-existence` | `false` | 当数组或列表读取的键无法证明存在时,将结果视为 `T\|null` 并发出 `possibly-undefined-{int,string}-array-index` 警告。用于替代 `allow-possibly-undefined-array-keys = false`。 |
 | `allow-array-truthy-operand` | `false` | 允许将数组用作 `&&`、`\|\|` 与 `xor` 的操作数,而不触发 `invalid-operand`。独立的 `if ($array)` 不受影响,也不会发出警告。 |
+| `allow-operator-overloading` | `false` | 接受 `BcMath\Number` 和 `GMP` 重载的运算符（算术、位运算、移位、`-`、`+`、`~`、`++`、`--`），而不报告 `invalid-operand`。无论是否启用该选项，结果类型都会被推断；比较运算不受影响。 |
 | `no-boolean-literal-comparison` | `false` | 禁止与布尔字面量进行直接比较,例如 `$a === true`。 |
 | `check-missing-type-hints` | `false` | 报告参数、属性和返回值缺失的类型提示。 |
 | `check-closure-missing-type-hints` | `false` | 把类型提示检查扩展到闭包(需要 `check-missing-type-hints`)。 |
@@ -260,6 +263,7 @@ find-unused-definitions = true
 find-overly-wide-return-types = true
 analyze-dead-code = true
 check-throws = true
+check-dead-catch = true
 check-missing-override = true
 find-unused-parameters = true
 check-missing-type-hints = true
@@ -273,6 +277,8 @@ strict-array-index-existence = true
 no-boolean-literal-comparison = true
 trust-existence-checks = false
 ```
+
+`check-dead-catch` 默认关闭,因为 PHP 运行时可能抛出函数类型或 `@throws` 文档未描述的异常,例如 `TypeError`。如果代码库的异常文档足够完整,可启用此选项进行更严格的检查。
 
 ### 宽松模式
 
@@ -317,6 +323,7 @@ function process(object $obj): mixed
 
 `allow-array-truthy-operand` 控制是否接受数组作为 `&&`、`||` 与 `xor` 的操作数。PHP 会将空数组转换为 `false`,非空数组转换为 `true`,这与独立的 `if ($array)` 所使用的真值判定一致。默认情况下,分析器会对逻辑运算符的数组操作数发出 `invalid-operand`,以提醒这种隐式的 `bool` 转换;开启该选项会抑制该警告,从而允许依赖此转换风格的代码库保留其写法。独立的 `if ($array)` 始终不受影响。
 
+`allow-operator-overloading` 控制是否接受在重载了运算符的类（例如 `BcMath\Number` 和 `GMP`）上使用运算符。对于这些对象，PHP 会通过该类来执行 `$a + $b`，而不是将其作为普通算术处理；仅凭表达式本身，阅读代码的人无法看出这一点。默认情况下，分析器会将这些运算报告为 `invalid-operand`，但仍会将结果推断为该类的实例，因此不会出现后续的 `mixed` 问题；启用该选项后，这些运算会被接受。比较运算和 `<=>` 不受该选项影响，而类在运行时会拒绝的操作数无论是否启用该选项都会被报告。
 ## 性能调优
 
 分析器使用内部阈值在分析深度与速度之间取得平衡。设置位于 `[analyzer.performance]` 下。

@@ -23,6 +23,10 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
         return;
     }
 
+    if metadata.kind.is_trait() && !context.settings.check_missing_override {
+        return;
+    }
+
     let class_name = metadata.original_name;
     for member in members {
         let ClassLikeMember::Method(method) = member else {
@@ -43,9 +47,8 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             (None, 0)
         };
 
-        let name_bytes = method.name.value.to_ascii_lowercase();
-        let name = mago_bytes::BytesDisplay(&name_bytes);
-        if name_bytes.eq_ignore_ascii_case(b"__construct") {
+        let name = mago_bytes::BytesDisplay(method.name.value);
+        if method.name.value.eq_ignore_ascii_case(b"__construct") {
             if let Some(attribute) = override_attribute {
                 let issue = Issue::error("Invalid `#[Override]` attribute on constructor.")
                     .with_code(IssueCode::InvalidOverrideAttribute)
@@ -104,7 +107,7 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             continue;
         };
 
-        if override_attribute.is_some() || metadata.kind.is_trait() {
+        if override_attribute.is_some() || metadata.kind.is_trait() || !context.settings.check_missing_override {
             continue;
         }
 
@@ -155,5 +158,55 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
 
             edits.push(TextEdit::insert(method.start_offset(), format!("#[\\Override]\n{indent}")));
         });
+    }
+}
+
+pub fn check_property_override_attributes<'ctx, A>(
+    metadata: &'ctx ClassLikeMetadata,
+    context: &mut Context<'ctx, '_, A>,
+) where
+    A: Arena,
+{
+    if context.settings.version < PHPVersion::PHP85 || metadata.kind.is_trait() || metadata.has_incomplete_hierarchy() {
+        return;
+    }
+
+    let class_name = metadata.original_name;
+    for (property_name, property_metadata) in &metadata.properties {
+        let Some(attribute) = property_metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name.as_bytes().eq_ignore_ascii_case(b"Override"))
+        else {
+            continue;
+        };
+
+        if metadata.overridden_property_ids.contains_key(property_name) {
+            continue;
+        }
+
+        let issue = Issue::error(format!("Invalid `#[Override]` attribute on `{class_name}::{property_name}`."));
+        let issue = match metadata.declaring_property_ids.get(property_name) {
+            Some(trait_name) if *trait_name != metadata.name => {
+                let trait_name =
+                    context.codebase.get_class_like(trait_name.as_bytes()).map_or(*trait_name, |t| t.original_name);
+
+                issue
+                    .with_annotation(Annotation::primary(metadata.name_span.unwrap_or(metadata.span)).with_message(
+                        format!("`{property_name}` comes from trait `{trait_name}` and doesn't override any parent property."),
+                    ))
+                    .with_annotation(Annotation::secondary(attribute.span).with_message("The attribute is declared here."))
+            }
+            _ => issue.with_annotation(
+                Annotation::primary(attribute.span).with_message("This property doesn't override any parent property."),
+            ),
+        };
+
+        context.collector.report_with_code(
+            IssueCode::InvalidOverrideAttribute,
+            issue
+                .with_note("The attribute should only be used when explicitly overriding a parent property.")
+                .with_help(format!("Remove the `#[Override]` attribute from `{property_name}` or verify inheritance.")),
+        );
     }
 }

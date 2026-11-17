@@ -114,6 +114,20 @@ struct ArrayCreationInfo {
     known_non_list: bool,
     can_be_empty: bool,
     known_int_offset: bool,
+    unkeyed_minimum_count: usize,
+}
+
+impl ArrayCreationInfo {
+    /// Records an item whose integer key the literal cannot pin down.
+    fn push_unkeyed_int(&mut self, value_type: &TUnion, optional: bool) {
+        self.known_int_offset = false;
+        self.can_create_objectlike = false;
+        self.item_key_atomic_types.push(TAtomic::Scalar(TScalar::int()));
+        self.item_value_atomic_types.extend(value_type.types.iter().cloned());
+        if !optional {
+            self.unkeyed_minimum_count += 1;
+        }
+    }
 }
 
 fn report_unpacked_int_key_overflow<A>(context: &mut Context<'_, '_, A>, element_span: Span)
@@ -158,6 +172,7 @@ where
         known_non_list: false,
         can_be_empty: true,
         known_int_offset: true,
+        unkeyed_minimum_count: 0,
     };
 
     for element in elements {
@@ -171,6 +186,25 @@ where
                 let (item_key_value, key_type) = artifacts
                     .get_expression_type(key_value_array_element.key)
                     .map_or((None, get_mixed()), |item_key_type| {
+                        let drop_null = item_key_type.ignore_nullable_issues() && item_key_type.is_nullable();
+                        let drop_false = item_key_type.ignore_falsable_issues() && item_key_type.is_falsable();
+                        let item_key_type = if drop_null || drop_false {
+                            Cow::Owned(
+                                item_key_type.clone_with_types(
+                                    item_key_type
+                                        .types
+                                        .iter()
+                                        .filter(|atomic| {
+                                            !(drop_null && atomic.is_null() || drop_false && atomic.is_false())
+                                        })
+                                        .cloned()
+                                        .collect(),
+                                ),
+                            )
+                        } else {
+                            Cow::Borrowed(item_key_type)
+                        };
+
                         let key_type = if item_key_type.is_null() {
                             get_literal_string(empty_word())
                         } else if item_key_type.is_true() {
@@ -181,6 +215,24 @@ where
                             get_literal_int(f.trunc() as i64)
                         } else if item_key_type.is_float() {
                             get_int()
+                        } else if item_key_type.is_mixed() {
+                            let item_key_type_id = item_key_type.get_id();
+
+                            context.collector.report_with_code(
+                                IssueCode::MixedArrayIndex,
+                                Issue::error("Possibly invalid array key type.")
+                                    .with_annotation(
+                                        Annotation::primary(key_value_array_element.key.span()).with_message(format!(
+                                            "This has type `{item_key_type_id}`, which is not guaranteed to be a string or an integer.",
+                                        )),
+                                    )
+                                    .with_note(
+                                        "In PHP, array keys must be strings or integers. A `mixed` key may hold a value that cannot be used as an array key at runtime.",
+                                    )
+                                    .with_help("Ensure the array key is either a string or an integer."),
+                            );
+
+                            get_arraykey()
                         } else if !item_key_type.is_always_array_key(true) {
                             let item_key_type_id = item_key_type.get_id();
 
@@ -200,7 +252,7 @@ where
 
                             get_arraykey()
                         } else {
-                            item_key_type.clone()
+                            item_key_type.into_owned()
                         };
 
                         let item_key_value =
@@ -260,6 +312,8 @@ where
                         value_array_element.value,
                     )
                 } else {
+                    array_creation_info.unkeyed_minimum_count += 1;
+
                     (None, get_int(), true, value_array_element.value)
                 }
             }
@@ -446,27 +500,27 @@ where
         )))
     };
 
+    let unkeyed_minimum_count = array_creation_info.unkeyed_minimum_count;
+    let with_unkeyed_minimum = |mut elements: BTreeMap<usize, (bool, TUnion)>, element_type: &TUnion| {
+        let known = elements.len();
+        elements.extend((known..known + unkeyed_minimum_count).map(|index| (index, (false, element_type.clone()))));
+        elements
+    };
+
     let array_type = if !array_creation_info.property_types.is_empty() {
         if array_creation_info.is_list {
+            let element_type = item_value_type.unwrap_or_else(get_never);
+            let known_elements = array_creation_info
+                .property_types
+                .into_iter()
+                .enumerate()
+                .map(|(index, (_, value_tuple))| (index, (value_tuple.0, value_tuple.1)))
+                .collect::<BTreeMap<_, _>>();
+
             TUnion::from_vec(vec![TAtomic::Array(TArray::List(TList {
-                known_count: if array_creation_info.known_int_offset {
-                    Some(array_creation_info.property_types.len())
-                } else {
-                    None
-                },
-                known_elements: Some(
-                    array_creation_info
-                        .property_types
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, (_, value_tuple))| (index, (value_tuple.0, value_tuple.1)))
-                        .collect::<BTreeMap<_, _>>()
-                        .into(),
-                ),
-                element_type: Arc::new(match item_value_type {
-                    Some(value) => value,
-                    None => get_never(),
-                }),
+                known_count: if array_creation_info.known_int_offset { Some(known_elements.len()) } else { None },
+                known_elements: Some(with_unkeyed_minimum(known_elements, &element_type).into()),
+                element_type: Arc::new(element_type),
                 non_empty: true,
             }))])
         } else {
@@ -489,9 +543,12 @@ where
     } else if item_key_type.is_none() && item_value_type.is_none() {
         get_empty_keyed_array()
     } else if array_creation_info.is_list {
+        let element_type = item_value_type.unwrap_or_else(get_mixed);
+
         TUnion::from_vec(vec![TAtomic::Array(TArray::List(TList {
-            known_elements: None,
-            element_type: Arc::new(item_value_type.unwrap_or_else(get_mixed)),
+            known_elements: (unkeyed_minimum_count > 0)
+                .then(|| with_unkeyed_minimum(BTreeMap::new(), &element_type).into()),
+            element_type: Arc::new(element_type),
             known_count: None,
             non_empty: !array_creation_info.can_be_empty,
         }))])
@@ -524,17 +581,43 @@ fn handle_variadic_array_element<'arena, A>(
 {
     let mut all_non_empty = true;
 
-    for atomic_type in variadic_array_element_type.types.as_ref() {
+    if let [TAtomic::Array(spread)] = variadic_array_element_type.types.as_ref()
+        && spread.is_non_empty()
+        && !match spread {
+            TArray::List(list) => {
+                list.known_elements.as_ref().is_some_and(|elements| elements.values().any(|(optional, _)| !optional))
+            }
+            TArray::Keyed(keyed) => {
+                keyed.known_items.as_ref().is_some_and(|items| items.values().any(|(optional, _)| !optional))
+            }
+        }
+    {
+        array_creation_info.unkeyed_minimum_count += 1;
+    }
+
+    let spread_atomics: Vec<&TAtomic> = variadic_array_element_type
+        .types
+        .iter()
+        .flat_map(|atomic| match atomic {
+            TAtomic::GenericParameter(parameter) => parameter.constraint.types.iter().collect(),
+            atomic => vec![atomic],
+        })
+        .collect();
+
+    for atomic_type in spread_atomics {
         let (key_type, value_type) = match atomic_type {
             TAtomic::Array(array_type) => match array_type {
                 TArray::Keyed(keyed_data) => {
                     if let Some(known_items) = &keyed_data.known_items {
                         for (key, (possibly_undefined, value_type)) in known_items.iter() {
-                            if *possibly_undefined {
-                                continue;
-                            }
-
                             let new_offset_key = match key {
+                                ArrayKey::Integer(_)
+                                    if *possibly_undefined || !array_creation_info.known_int_offset =>
+                                {
+                                    array_creation_info.push_unkeyed_int(value_type, *possibly_undefined);
+
+                                    continue;
+                                }
                                 ArrayKey::Integer(_) => {
                                     if array_creation_info.int_offset == i64::MAX {
                                         report_unpacked_int_key_overflow(context, variadic_array_element.span());
@@ -556,6 +639,7 @@ fn handle_variadic_array_element<'arena, A>(
                                         .push(TAtomic::Scalar(TScalar::String(TString::known_literal(*string_key))));
                                     ArrayKey::String(*string_key)
                                 }
+                                ArrayKey::ClassLikeConstant { .. } if *possibly_undefined => continue,
                                 ArrayKey::ClassLikeConstant { .. } => {
                                     // unresolved class-like constant key; treat as opaque
                                     array_creation_info.is_list = false;
@@ -563,13 +647,34 @@ fn handle_variadic_array_element<'arena, A>(
                                 }
                             };
 
-                            array_creation_info.property_types.insert(new_offset_key, (false, value_type.clone()));
+                            match array_creation_info.property_types.get_mut(&new_offset_key) {
+                                Some((_, existing)) if *possibly_undefined => {
+                                    *existing = combine_union_types(
+                                        existing,
+                                        value_type,
+                                        context.codebase,
+                                        context.settings.combiner_options(),
+                                    );
+                                }
+                                _ => {
+                                    array_creation_info
+                                        .property_types
+                                        .insert(new_offset_key, (*possibly_undefined, value_type.clone()));
+                                }
+                            }
 
                             if new_offset_key.is_integer() {
                                 array_creation_info.array_keys.insert(new_offset_key);
                             } else {
                                 array_creation_info.known_non_list = true;
                             }
+                        }
+                    }
+
+                    if let Some((parameter_key, _)) = &keyed_data.parameters {
+                        array_creation_info.can_create_objectlike = false;
+                        if parameter_key.has_int() || parameter_key.has_array_key() || parameter_key.is_mixed() {
+                            array_creation_info.known_int_offset = false;
                         }
                     }
 
@@ -586,14 +691,11 @@ fn handle_variadic_array_element<'arena, A>(
                     }
                 }
                 TArray::List(list_data) => {
-                    let has_unknown_count = list_data.known_count.is_none();
-                    if has_unknown_count {
-                        array_creation_info.known_int_offset = false;
-                    }
-
                     if let Some(known_elements) = &list_data.known_elements {
                         for (possibly_undefined, value_type) in known_elements.values() {
-                            if *possibly_undefined {
+                            if *possibly_undefined || !array_creation_info.known_int_offset {
+                                array_creation_info.push_unkeyed_int(value_type, *possibly_undefined);
+
                                 continue;
                             }
 
@@ -611,6 +713,10 @@ fn handle_variadic_array_element<'arena, A>(
                                 .push(TAtomic::Scalar(TScalar::literal_int(array_creation_info.int_offset)));
                             array_creation_info.property_types.insert(new_key, (false, value_type.clone()));
                         }
+                    }
+
+                    if list_data.known_count.is_none() {
+                        array_creation_info.known_int_offset = false;
                     }
 
                     if !list_data.non_empty {

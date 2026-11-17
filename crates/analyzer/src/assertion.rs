@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 use mago_algebra::assertion_set::AssertionSet;
 use mago_algebra::assertion_set::negate_assertion_set;
@@ -12,10 +13,14 @@ use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::atomic::scalar::int::TInteger;
 use mago_codex::ttype::atomic::scalar::string::TString;
 use mago_codex::ttype::atomic::scalar::string::TStringCasing;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
+use mago_codex::ttype::comparator::ComparisonResult;
+use mago_codex::ttype::comparator::atomic_comparator;
+use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::get_array_value_parameter;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_bool;
@@ -24,6 +29,8 @@ use mago_codex::ttype::get_float;
 use mago_codex::ttype::get_iterable_value_parameter;
 use mago_codex::ttype::get_numeric_string;
 use mago_codex::ttype::get_true;
+use mago_codex::ttype::shared::EMPTY_KEYED_ARRAY_ATOMIC;
+use mago_codex::ttype::shared::EMPTY_STRING_ATOMIC;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_span::Span;
@@ -39,6 +46,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
@@ -49,8 +57,12 @@ use mago_word::word;
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::assertion::AssertionContext;
 use crate::resolver::class_name::get_class_name_from_atomic;
+use crate::resolver::function::BuiltinNarrowingFunction;
+use crate::resolver::function::get_builtin_get_class_or_gettype_call;
+use crate::utils::expression::expression_has_observable_side_effect;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_index_id;
+use crate::utils::expression::get_literal_array_key;
 use crate::utils::expression::get_non_nullsafe_expression_id;
 use crate::utils::misc::unwrap_expression;
 
@@ -79,6 +91,11 @@ where
     match expression {
         Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
             let assertions = scrape_assertions(operand, artifacts, assertion_context);
+            // Negating facts about multiple variables requires an OR across variable IDs.
+            if assertions.len() != 1 || assertions[0].len() != 1 {
+                return vec![];
+            }
+
             let mut negated_assertions = WordMap::default();
             for assertion in assertions {
                 for (var_name, assertion_set) in assertion {
@@ -153,7 +170,8 @@ where
         }
         Expression::Construct(construct) => match construct {
             Construct::Empty(empty_construct) => {
-                let Some(value_id) = assertion_context.get_expression_id(empty_construct.value) else {
+                let Some(value_id) = get_isset_expression_id(empty_construct.value, artifacts, assertion_context)
+                else {
                     return vec![];
                 };
 
@@ -169,7 +187,7 @@ where
             }
             Construct::Isset(isset_construct) => {
                 for value in &isset_construct.values {
-                    if let Some(value_id) = assertion_context.get_expression_id(value) {
+                    if let Some(value_id) = get_isset_expression_id(value, artifacts, assertion_context) {
                         if let Expression::Variable(variable) = value
                             && let Some(expression_type) = artifacts.get_expression_type(variable)
                             && !expression_type.is_mixed()
@@ -180,6 +198,23 @@ where
                         } else {
                             if_types.entry(value_id).or_insert_with(|| vec![vec![Assertion::IsIsset]]);
                         }
+                    }
+
+                    if let Expression::ArrayAccess(array_access) = value
+                        && matches!(unwrap_expression(array_access.index), Expression::Variable(_))
+                        && let Some(key_id) = assertion_context.get_expression_id(array_access.index)
+                        && let Some(array_type) = artifacts.get_expression_type(array_access.array)
+                        && array_type.types.as_ref().iter().all(|atomic| matches!(atomic, TAtomic::Array(_)))
+                        && let Some(input_key_type) = artifacts.get_expression_type(array_access.index)
+                        && input_key_type
+                            .types
+                            .as_ref()
+                            .iter()
+                            .all(|atomic| matches!(atomic, TAtomic::Scalar(TScalar::String(_) | TScalar::Integer(_))))
+                        && let Some(key_type) =
+                            get_possible_array_key_argument_type(array_type, input_key_type, assertion_context.codebase)
+                    {
+                        if_types.entry(key_id).or_default().push(vec![Assertion::InArray(key_type)]);
                     }
                 }
             }
@@ -285,6 +320,9 @@ where
     let resolved_function_name = ascii_lowercase_word(assertion_context.resolved_names.get(function_identifier));
     let should_check_against_unresolved = { function_identifier.is_local() };
 
+    let is_subclass_of_call = (should_check_against_unresolved && function_name.as_bytes() == b"is_subclass_of")
+        || resolved_function_name.as_bytes() == b"is_subclass_of";
+
     let is_array_key_exists = |name: &[u8]| matches!(name, b"array_key_exists" | b"key_exists");
     if (should_check_against_unresolved && is_array_key_exists(function_name.as_bytes()))
         || is_array_key_exists(resolved_function_name.as_bytes())
@@ -351,30 +389,60 @@ where
                     return if_types;
                 };
 
-                let mut iterable_values = None;
-                for atomic in checked_iterable.types.as_ref() {
-                    let Some(value_type) = get_iterable_value_parameter(atomic, assertion_context.codebase) else {
+                if let Some(value_assertions) = get_in_array_assertions(checked_iterable, assertion_context.codebase) {
+                    (1, value_assertions)
+                } else {
+                    let mut iterable_values = None;
+                    for atomic in checked_iterable.types.as_ref() {
+                        let Some(value_type) = get_iterable_value_parameter(atomic, assertion_context.codebase) else {
+                            return if_types;
+                        };
+
+                        iterable_values = Some(add_optional_union_type(
+                            value_type,
+                            iterable_values.as_ref(),
+                            assertion_context.codebase,
+                        ));
+                    }
+
+                    let Some(value_type) = iterable_values else {
                         return if_types;
                     };
 
-                    iterable_values =
-                        Some(add_optional_union_type(value_type, iterable_values.as_ref(), assertion_context.codebase));
+                    (1, vec![Assertion::InArray(value_type)])
                 }
-
-                let Some(value_type) = iterable_values else {
-                    return if_types;
-                };
-
-                let mut value_assertions = vec![];
-                for atomic in value_type.types.into_owned() {
-                    value_assertions.push(Assertion::IsEqual(atomic));
-                }
-
-                (1, value_assertions)
             }
             _ => return if_types,
         }
     } else {
+        let ctype_assertion = |asserted: TString| {
+            let asserted = TAtomic::Scalar(TScalar::String(asserted));
+            let argument_type = function_call
+                .argument_list
+                .arguments
+                .first()
+                .map(mago_syntax::cst::Argument::value)
+                .and_then(|argument| artifacts.get_expression_type(argument));
+
+            if argument_type.is_some_and(|argument_type| {
+                argument_type.types.iter().any(
+                    |atomic| matches!(atomic, TAtomic::Scalar(TScalar::String(string)) if string.literal.is_some()),
+                ) || union_comparator::is_contained_by(
+                    assertion_context.codebase,
+                    argument_type,
+                    &TUnion::from_atomic(asserted.clone()),
+                    false,
+                    false,
+                    false,
+                    &mut ComparisonResult::new(),
+                )
+            }) {
+                return None;
+            }
+
+            Some((0, vec![Assertion::IsType(asserted)]))
+        };
+
         let get_builtin_assertion = |name: &[u8]| match name {
             b"array_key_exists" | b"key_exists" => function_call
                 .argument_list
@@ -384,36 +452,15 @@ where
                 .and_then(|array_key| get_expression_array_key(artifacts, array_key))
                 .map(|key| (1, vec![Assertion::HasArrayKey(key)])),
             b"is_countable" => Some((0, vec![Assertion::Countable])),
-            b"ctype_digit" => Some((
-                0,
-                vec![Assertion::IsType(TAtomic::Scalar(TScalar::String(TString::general_with_props(
-                    true,
-                    false,
-                    false,
-                    false,
-                    TStringCasing::Unspecified,
-                ))))],
-            )),
-            b"ctype_lower" => Some((
-                0,
-                vec![Assertion::IsType(TAtomic::Scalar(TScalar::String(TString::general_with_props(
-                    false,
-                    false,
-                    true,
-                    false,
-                    TStringCasing::Lowercase,
-                ))))],
-            )),
-            b"ctype_upper" => Some((
-                0,
-                vec![Assertion::IsType(TAtomic::Scalar(TScalar::String(TString::general_with_props(
-                    false,
-                    false,
-                    true,
-                    false,
-                    TStringCasing::Uppercase,
-                ))))],
-            )),
+            b"ctype_digit" => {
+                ctype_assertion(TString::general_with_props(true, false, false, false, TStringCasing::Unspecified))
+            }
+            b"ctype_lower" => {
+                ctype_assertion(TString::general_with_props(false, false, true, false, TStringCasing::Lowercase))
+            }
+            b"ctype_upper" => {
+                ctype_assertion(TString::general_with_props(false, false, true, false, TStringCasing::Uppercase))
+            }
             b"count" => Some((0, vec![Assertion::HasAtLeastCount(1)])),
             b"function_exists" => {
                 Some((0, vec![Assertion::IsType(TAtomic::Scalar(TScalar::String(TString::callable())))]))
@@ -501,7 +548,7 @@ where
                     .arguments
                     .get(2)
                     .and_then(|argument| artifacts.get_expression_type(argument.value()))
-                    .is_some_and(mago_codex::ttype::union::TUnion::is_true);
+                    .is_some_and(TUnion::is_true);
 
                 if !should_strict_check {
                     return None;
@@ -514,25 +561,8 @@ where
                     .map(mago_syntax::cst::Argument::value)
                     .and_then(|expr| artifacts.get_expression_type(expr))?;
 
-                let mut value_types = None;
-                for atomic in checked_array.types.as_ref() {
-                    let TAtomic::Array(array) = atomic else {
-                        return None;
-                    };
-
-                    value_types = Some(add_optional_union_type(
-                        get_array_value_parameter(array, assertion_context.codebase),
-                        value_types.as_ref(),
-                        assertion_context.codebase,
-                    ));
-                }
-
-                let mut value_assertions = vec![];
-                for atomic in value_types?.types.into_owned() {
-                    value_assertions.push(Assertion::IsIdentical(atomic));
-                }
-
-                Some((0, value_assertions))
+                get_in_array_assertions(checked_array, assertion_context.codebase)
+                    .map(|value_assertions| (0, value_assertions))
             }
             _ => None,
         };
@@ -574,6 +604,13 @@ where
         && let Some((variable_id, needs_isset)) = extract_expression_id(argument)
     {
         let mut assertions = vec![function_assertions];
+        if is_subclass_of_call {
+            // `is_subclass_of()` is strict: the target class is not a subclass of itself.
+            for excluded in get_is_subclass_of_self_exclusions(assertion_context, artifacts, function_call) {
+                assertions.insert(0, vec![Assertion::IsNotIdentical(excluded)]);
+            }
+        }
+
         if needs_isset {
             assertions.push(vec![Assertion::IsIsset]);
         }
@@ -582,6 +619,133 @@ where
     }
 
     if_types
+}
+
+fn get_in_array_assertions(haystack: &TUnion, codebase: &CodebaseMetadata) -> Option<Vec<Assertion>> {
+    let mut value_types = None;
+    let mut required_values: Option<BTreeSet<TAtomic>> = None;
+    for atomic in haystack.types.as_ref() {
+        let TAtomic::Array(array) = atomic else {
+            return None;
+        };
+
+        let array_value_type = get_array_value_parameter(array, codebase);
+        let mut array_required_values = BTreeSet::new();
+        let mut add_required_value = |value_type: &TUnion| {
+            if !value_type.is_single() {
+                return;
+            }
+
+            let value = value_type.get_single();
+            if value.is_literal()
+                || value.is_literal_class_string()
+                || matches!(value, TAtomic::Object(TObject::Enum(r#enum)) if r#enum.case.is_some())
+            {
+                array_required_values.insert(value.clone());
+            }
+        };
+
+        if array.is_non_empty() {
+            add_required_value(&array_value_type);
+        }
+
+        match array {
+            TArray::Keyed(keyed) => {
+                if let Some(items) = keyed.get_known_items() {
+                    for (optional, value_type) in items.values() {
+                        if !optional {
+                            add_required_value(value_type);
+                        }
+                    }
+                }
+            }
+            TArray::List(list) => {
+                if let Some(items) = list.get_known_elements() {
+                    for (optional, value_type) in items.values() {
+                        if !optional {
+                            add_required_value(value_type);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(required_values) = &mut required_values {
+            required_values.retain(|value| array_required_values.contains(value));
+        } else {
+            required_values = Some(array_required_values);
+        }
+
+        value_types = Some(add_optional_union_type(array_value_type, value_types.as_ref(), codebase));
+    }
+
+    let value_types = value_types?;
+    let required_values = required_values?;
+    let has_unknown_values = value_types.types.iter().any(|value| !required_values.contains(value));
+    let mut value_assertions = required_values
+        .into_iter()
+        .map(|value| {
+            if matches!(value, TAtomic::Object(TObject::Enum(_))) {
+                Assertion::IsType(value)
+            } else {
+                Assertion::IsIdentical(value)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if has_unknown_values {
+        value_assertions.insert(0, Assertion::InArray(value_types));
+    }
+
+    Some(value_assertions)
+}
+
+/// Returns the literal class-strings in the subject of an `is_subclass_of()` call that name the
+/// target class itself. `is_subclass_of(Foo::class, Foo::class)` is `false`, so these literals
+/// must be removed when the call is true, and kept when it is false.
+fn get_is_subclass_of_self_exclusions<A>(
+    assertion_context: AssertionContext<'_, '_, A>,
+    artifacts: &AnalysisArtifacts,
+    function_call: &FunctionCall,
+) -> Vec<TAtomic>
+where
+    A: Arena,
+{
+    let arguments = &function_call.argument_list.arguments;
+    let allow_string = arguments
+        .get(2)
+        .and_then(|argument| artifacts.get_expression_type(argument.value()))
+        .is_none_or(|t| !t.is_false());
+    if !allow_string {
+        return vec![];
+    }
+
+    let Some(target_name) = arguments
+        .get(1)
+        .and_then(|argument| artifacts.get_expression_type(argument.value()))
+        .filter(|target| target.is_single())
+        .and_then(|target| get_class_name_from_atomic(assertion_context.codebase, target.get_single()))
+        .and_then(|resolved| resolved.fqcn)
+    else {
+        return vec![];
+    };
+
+    let Some(subject) = arguments.first().and_then(|argument| artifacts.get_expression_type(argument.value())) else {
+        return vec![];
+    };
+
+    subject
+        .types
+        .iter()
+        .filter(|atomic| {
+            matches!(
+                atomic,
+                TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Literal { value }))
+                    if value.as_bytes().eq_ignore_ascii_case(target_name.as_bytes())
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 fn get_possible_array_key_argument_type(
@@ -664,7 +828,15 @@ fn add_possible_key_argument_type(
 
     match key {
         TAtomic::Scalar(TScalar::Integer(integer)) => {
-            if accepts_all_scalars || input_key_type.has_int() {
+            if accepts_all_scalars
+                || input_key_type.types.iter().any(|atomic| match atomic {
+                    TAtomic::Scalar(scalar) => {
+                        matches!(scalar, TScalar::Integer(_) | TScalar::ArrayKey | TScalar::Numeric)
+                    }
+                    TAtomic::GenericParameter(parameter) => parameter.constraint.has_int(),
+                    _ => false,
+                })
+            {
                 add(TUnion::from_atomic(key.clone()), possible_type);
             }
 
@@ -718,13 +890,20 @@ pub(super) fn scrape_equality_assertions<A>(
 where
     A: Arena,
 {
-    if let Some(assertions) = scrape_class_constant_equality_assertions(
-        left,
-        right,
-        artifacts,
-        assertion_context,
-        false, // negated = false
-    ) {
+    if let Some(assertions) =
+        scrape_get_class_or_gettype_equality_assertions(left, right, artifacts, assertion_context, false)
+    {
+        return assertions;
+    }
+
+    if let Some(assertions) =
+        scrape_class_constant_equality_assertions(left, right, artifacts, assertion_context, false)
+    {
+        return assertions;
+    }
+
+    if let Some(assertions) = scrape_string_length_equality_assertions(left, right, artifacts, assertion_context, false)
+    {
         return assertions;
     }
 
@@ -761,7 +940,7 @@ where
     }
 
     if let Some(null_position) = has_null_variable(left, right, artifacts) {
-        return get_null_equality_assertions(left, right, assertion_context, null_position);
+        return get_null_equality_assertions(left, is_identity, right, artifacts, assertion_context, null_position);
     }
 
     if let Some(true_position) = has_true_variable(left, right, artifacts) {
@@ -791,6 +970,46 @@ where
         );
     }
 
+    if is_identity
+        && let (
+            Expression::Variable(Variable::Direct(left_variable)),
+            Expression::Variable(Variable::Direct(right_variable)),
+        ) = (unwrap_expression(left), unwrap_expression(right))
+        && let (Some(left_type), Some(right_type)) =
+            (artifacts.get_expression_type(&left.span()), artifacts.get_expression_type(&right.span()))
+    {
+        if left_type == right_type {
+            return vec![];
+        }
+
+        let (left_overlap, right_overlap) =
+            union_comparator::strict_equality_overlap(assertion_context.codebase, left_type, right_type);
+
+        if !left_overlap.is_never() && !right_overlap.is_never() {
+            let mut if_types = WordMap::default();
+
+            if left_type != &left_overlap {
+                let left_assertions: Vec<Assertion> =
+                    left_overlap.types.iter().cloned().map(Assertion::IsIdentical).collect();
+                if_types.insert(word(left_variable.name), vec![left_assertions]);
+            }
+
+            if right_type != &right_overlap {
+                let right_assertions: Vec<Assertion> =
+                    right_overlap.types.iter().cloned().map(Assertion::IsIdentical).collect();
+                if_types.insert(word(right_variable.name), vec![right_assertions]);
+            }
+
+            if !if_types.is_empty() {
+                // Keep the comparison itself: its type consequences alone are not equivalent to equality.
+                let comparison_id =
+                    Word::from(format!("*{}-{}", left.span().start.offset, right.span().end.offset).as_str());
+                if_types.insert(comparison_id, vec![vec![Assertion::Truthy]]);
+                return vec![if_types];
+            }
+        }
+    }
+
     vec![]
 }
 
@@ -804,13 +1023,19 @@ fn scrape_inequality_assertions<A>(
 where
     A: Arena,
 {
-    if let Some(assertions) = scrape_class_constant_equality_assertions(
-        left,
-        right,
-        artifacts,
-        assertion_context,
-        true, // negated = true
-    ) {
+    if let Some(assertions) =
+        scrape_get_class_or_gettype_equality_assertions(left, right, artifacts, assertion_context, true)
+    {
+        return assertions;
+    }
+
+    if let Some(assertions) = scrape_class_constant_equality_assertions(left, right, artifacts, assertion_context, true)
+    {
+        return assertions;
+    }
+
+    if let Some(assertions) = scrape_string_length_equality_assertions(left, right, artifacts, assertion_context, true)
+    {
         return assertions;
     }
 
@@ -853,7 +1078,14 @@ where
     }
 
     if let Some(null_position) = has_null_variable(left, right, artifacts) {
-        return get_null_inequality_assertions(left, right, assertion_context, null_position);
+        return get_null_inequality_assertions(
+            left,
+            operator.is_identity(),
+            right,
+            artifacts,
+            assertion_context,
+            null_position,
+        );
     }
 
     if let Some(false_position) = has_false_variable(left, right, artifacts) {
@@ -901,17 +1133,26 @@ where
     let left_class_part = is_class_constant_access(left);
     let right_class_part = is_class_constant_access(right);
 
+    let is_this_class = |part: &Expression| {
+        assertion_context.this_class_name.is_some() && matches!(unwrap_expression(part), Expression::Static(_))
+    };
+
     let (variable_expr, class_name_expr) = match (left_class_part, right_class_part) {
         // Case 1: Both sides are `::class` expressions (e.g., `$var::class === Foo::class`)
         (Some(left_part), Some(right_part)) => {
-            let left_is_static = is_static_class_reference(left_part);
-            let right_is_static = is_static_class_reference(right_part);
+            let left_is_static = is_static_class_reference(left_part) && !is_this_class(left_part);
+            let right_is_static = is_static_class_reference(right_part) && !is_this_class(right_part);
 
             if !left_is_static && right_is_static {
                 // $var::class === Foo::class  =>  $var is the variable, Foo::class is the type
                 (left_part, right)
             } else if left_is_static && !right_is_static {
                 // Foo::class === $var::class  =>  $var is the variable, Foo::class is the type
+                (right_part, left)
+            } else if is_this_class(right_part) && !is_this_class(left_part) {
+                // $var::class === static::class  =>  $var is the variable, static::class is the type
+                (left_part, right)
+            } else if is_this_class(left_part) && !is_this_class(right_part) {
                 (right_part, left)
             } else {
                 // Both are dynamic ($a::class === $b::class) or both static (A::class === B::class).
@@ -927,7 +1168,11 @@ where
         (None, None) => return None,
     };
 
-    let variable_id = assertion_context.get_expression_id(variable_expr)?;
+    let variable_id = if is_this_class(variable_expr) {
+        word("$this")
+    } else {
+        assertion_context.get_expression_id(variable_expr)?
+    };
 
     let class_name_type = artifacts.get_expression_type(class_name_expr)?;
 
@@ -935,14 +1180,21 @@ where
     for atomic in class_name_type.types.iter() {
         if let Some(resolved_class) = get_class_name_from_atomic(assertion_context.codebase, atomic) {
             let object_type = resolved_class.get_object_type(assertion_context.codebase);
+            let names_final_class = resolved_class.is_final
+                || atomic.get_literal_string_value().is_some_and(|name| {
+                    assertion_context.codebase.get_class_like(name).is_some_and(|metadata| {
+                        metadata.original_name.as_bytes() == name
+                            && (metadata.flags.is_final() || metadata.kind.is_enum())
+                    })
+                });
 
             assertions.push(if negated {
-                if resolved_class.is_final {
+                if names_final_class {
                     Assertion::IsNotType(object_type)
                 } else {
                     Assertion::IsNotIdentical(object_type)
                 }
-            } else if resolved_class.is_final {
+            } else if names_final_class {
                 Assertion::IsType(object_type)
             } else {
                 Assertion::IsIdentical(object_type)
@@ -957,6 +1209,152 @@ where
     let mut if_types = WordMap::default();
     if_types.insert(variable_id, vec![assertions]);
     Some(vec![if_types])
+}
+
+/// Scrapes assertions for comparisons like `get_class($var) === Class::class`,
+/// `gettype($var) === "string"`, or `$var === Class::class`.
+///
+/// Treated as equivalent to an `instanceof` check: inside the matching branch,
+/// `$var` is narrowed to the class (or scalar type) named on the other side.
+fn scrape_get_class_or_gettype_equality_assertions<A>(
+    left: &Expression,
+    right: &Expression,
+    artifacts: &AnalysisArtifacts,
+    assertion_context: AssertionContext<'_, '_, A>,
+    negated: bool,
+) -> Option<Vec<WordMap<AssertionSet>>>
+where
+    A: Arena,
+{
+    let (target, compared) = match (
+        get_builtin_get_class_or_gettype_call(left, assertion_context.resolved_names, assertion_context.codebase),
+        get_builtin_get_class_or_gettype_call(right, assertion_context.resolved_names, assertion_context.codebase),
+    ) {
+        (Some(target), None) => (Some(target), Some(right)),
+        (None, Some(target)) => (Some(target), Some(left)),
+        _ => (None, None),
+    };
+
+    let Some((kind, argument)) = target else {
+        return scrape_class_constant_vs_string_variable(left, right, artifacts, assertion_context, negated);
+    };
+    let compared = compared?;
+
+    let variable_id = assertion_context.get_expression_id(argument)?;
+    let compared_type = artifacts.get_expression_type(compared)?;
+
+    let [atomic] = compared_type.types.as_ref() else {
+        return None;
+    };
+
+    let assertion = match kind {
+        BuiltinNarrowingFunction::GetClass => {
+            let resolved = get_class_name_from_atomic(assertion_context.codebase, atomic)?;
+            if resolved.is_invalid() || resolved.is_possibly_invalid() {
+                return None;
+            }
+            let object_type = resolved.get_object_type(assertion_context.codebase);
+            if resolved.is_final { Assertion::IsType(object_type) } else { Assertion::IsIdentical(object_type) }
+        }
+        BuiltinNarrowingFunction::GetType => {
+            let scalar = gettype_literal_to_scalar(atomic)?;
+            Assertion::IsType(scalar)
+        }
+    };
+
+    let assertion = if negated {
+        match assertion {
+            Assertion::IsType(t) => Assertion::IsNotType(t),
+            Assertion::IsIdentical(t) => Assertion::IsNotIdentical(t),
+            other => other,
+        }
+    } else {
+        assertion
+    };
+
+    let mut if_types = WordMap::default();
+    if_types.insert(variable_id, vec![vec![assertion]]);
+    Some(vec![if_types])
+}
+
+fn gettype_literal_to_scalar(atomic: &TAtomic) -> Option<TAtomic> {
+    let TAtomic::Scalar(TScalar::String(string)) = atomic else {
+        return None;
+    };
+    let value = string.get_known_literal_value()?;
+    match value {
+        b"string" => Some(TAtomic::Scalar(TScalar::string())),
+        b"integer" => Some(TAtomic::Scalar(TScalar::int())),
+        b"double" => Some(TAtomic::Scalar(TScalar::float())),
+        b"boolean" => Some(TAtomic::Scalar(TScalar::bool())),
+        b"object" => Some(TAtomic::Object(TObject::Any)),
+        b"NULL" => Some(TAtomic::Null),
+        _ => None,
+    }
+}
+
+/// Scrapes assertions for comparisons like `$var === Class::class` where `$var` is a
+/// string-typed variable, narrowing `$var` to `class-string<Class>`.
+fn scrape_class_constant_vs_string_variable<A>(
+    left: &Expression,
+    right: &Expression,
+    artifacts: &AnalysisArtifacts,
+    assertion_context: AssertionContext<'_, '_, A>,
+    negated: bool,
+) -> Option<Vec<WordMap<AssertionSet>>>
+where
+    A: Arena,
+{
+    let (class_expr, variable_expr) = match (is_bare_class_constant_access(left), is_bare_class_constant_access(right))
+    {
+        (Some(class_expr), None) => (class_expr, right),
+        (None, Some(class_expr)) => (class_expr, left),
+        _ => return None,
+    };
+
+    let variable_id = assertion_context.get_expression_id(variable_expr)?;
+    let variable_type = artifacts.get_expression_type(variable_expr)?;
+    if !matches!(variable_expr, Expression::Variable(Variable::Direct(_)))
+        || !variable_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Scalar(TScalar::String(_))))
+    {
+        return None;
+    }
+
+    let class_name = match class_expr {
+        Expression::Identifier(name) => assertion_context.resolved_names.get(name),
+        _ => return None,
+    };
+
+    let class_string = TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::literal(word(class_name))));
+    let assertion = Assertion::IsType(class_string);
+    let assertion = if negated {
+        Assertion::IsNotType(match assertion {
+            Assertion::IsType(t) => t,
+            _ => unreachable!(),
+        })
+    } else {
+        assertion
+    };
+
+    let mut if_types = WordMap::default();
+    if_types.insert(variable_id, vec![vec![assertion]]);
+    Some(vec![if_types])
+}
+
+fn is_bare_class_constant_access<'arena>(expression: &'arena Expression<'arena>) -> Option<&'arena Expression<'arena>> {
+    if let Expression::Access(Access::ClassConstant(ClassConstantAccess {
+        class,
+        constant: ClassLikeConstantSelector::Identifier(LocalIdentifier { value: b"class", .. }),
+        ..
+    })) = unwrap_expression(expression)
+    {
+        match &**class {
+            Expression::Identifier(_) => Some(class),
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 /// Helper to check if an expression is a `::class` constant access.
@@ -1169,7 +1567,9 @@ where
 
 fn get_null_equality_assertions<A>(
     left: &Expression,
+    is_identity: bool,
     right: &Expression,
+    artifacts: &AnalysisArtifacts,
     assertion_context: AssertionContext<'_, '_, A>,
     null_position: OtherValuePosition,
 ) -> Vec<WordMap<AssertionSet>>
@@ -1182,35 +1582,78 @@ where
         OtherValuePosition::Right => left,
     };
 
-    if let Expression::Binary(binary) = unwrap_expression(base_conditional)
+    let (base_conditional, null_assertion) = if let Expression::Binary(binary) = unwrap_expression(base_conditional)
         && let BinaryOperator::NullCoalesce(_) = binary.operator
         && let Expression::Literal(Literal::Null(_)) = unwrap_expression(binary.rhs)
     {
-        let coalesce_lhs = binary.lhs;
-
-        if let Some(var_name) = assertion_context.get_expression_id(coalesce_lhs) {
-            if_types.insert(var_name, vec![vec![Assertion::IsNotIsset]]);
-        }
+        (binary.lhs, Assertion::IsNotIsset)
     } else {
-        let var_name = assertion_context.get_expression_id(base_conditional);
+        (base_conditional, Assertion::IsType(TAtomic::Null))
+    };
 
-        if let Some(var_name) = var_name {
-            if_types.insert(var_name, vec![vec![Assertion::IsType(TAtomic::Null)]]);
+    if let Some(var_name) = assertion_context.get_expression_id(base_conditional) {
+        let mut assertions = vec![null_assertion];
+        if !is_identity {
+            assertions.extend([
+                Assertion::IsIdentical(TAtomic::Scalar(TScalar::r#false())),
+                Assertion::IsIdentical(TAtomic::Scalar(TScalar::literal_int(0))),
+                Assertion::IsIdentical(TAtomic::Scalar(TScalar::literal_float(0.0))),
+                Assertion::IsIdentical(EMPTY_STRING_ATOMIC.clone()),
+                Assertion::IsIdentical(EMPTY_KEYED_ARRAY_ATOMIC.clone()),
+            ]);
+
+            if let Some(existing_type) = artifacts.get_expression_type(base_conditional) {
+                assertions.retain(|assertion| {
+                    assertion.get_type().is_none_or(|atomic| {
+                        existing_type
+                            .types
+                            .iter()
+                            .any(|existing| can_contain_null_equivalent(existing, atomic, assertion_context.codebase))
+                    })
+                });
+            }
+        }
+
+        if !assertions.is_empty() {
+            if_types.insert(var_name, vec![assertions]);
         }
     }
 
     vec![if_types]
 }
 
+fn can_contain_null_equivalent(existing: &TAtomic, value: &TAtomic, codebase: &CodebaseMetadata) -> bool {
+    if let TAtomic::GenericParameter(parameter) = existing {
+        return parameter
+            .constraint
+            .types
+            .iter()
+            .any(|existing| can_contain_null_equivalent(existing, value, codebase));
+    }
+
+    atomic_comparator::is_contained_by(codebase, value, existing, true, &mut ComparisonResult::new())
+}
+
 fn get_null_inequality_assertions<A>(
     left: &Expression,
+    is_identity: bool,
     right: &Expression,
+    artifacts: &AnalysisArtifacts,
     assertion_context: AssertionContext<'_, '_, A>,
     null_position: OtherValuePosition,
 ) -> Vec<WordMap<AssertionSet>>
 where
     A: Arena,
 {
+    if !is_identity {
+        return get_null_equality_assertions(left, false, right, artifacts, assertion_context, null_position)
+            .into_iter()
+            .map(|assertions| {
+                assertions.into_iter().map(|(key, assertions)| (key, negate_assertion_set(assertions))).collect()
+            })
+            .collect();
+    }
+
     let mut if_types = WordMap::default();
     let base_conditional = match null_position {
         OtherValuePosition::Left => right,
@@ -1283,7 +1726,7 @@ where
     let var_name = assertion_context.get_expression_id(base_conditional);
 
     if let Some(var_name) = var_name {
-        if_types.insert(var_name, vec![vec![Assertion::IsType(TAtomic::Scalar(TScalar::r#true()))]]);
+        if_types.insert(var_name, vec![vec![Assertion::IsNotType(TAtomic::Scalar(TScalar::r#true()))]]);
     }
 
     vec![if_types]
@@ -1320,7 +1763,7 @@ where
                     Ordering::Greater => {
                         if_types.insert(
                             array_variable_id,
-                            vec![vec![Assertion::DoesNotHasAtLeastCount(maximum_count as usize)]],
+                            vec![vec![Assertion::DoesNotHasAtLeastCount((maximum_count as usize).saturating_add(1))]],
                         );
                     }
                 }
@@ -1360,28 +1803,30 @@ where
 
     let mut if_types: WordMap<AssertionSet> = WordMap::default();
 
-    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value)
-        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left)
-    {
+    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value) {
         let bound = if matches!(operator, BinaryOperator::LessThanOrEqual(_)) {
             right_value.saturating_add(1)
         } else {
             right_value
         };
+        let assertion = Assertion::StringLengthLessThan(bound);
 
-        if_types.insert(argument_id, vec![vec![Assertion::StringLengthLessThan(bound)]]);
+        if let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left, &assertion) {
+            if_types.insert(argument_id, vec![vec![assertion]]);
+        }
     }
 
-    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value)
-        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right)
-    {
+    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value) {
         let bound = if matches!(operator, BinaryOperator::LessThanOrEqual(_)) {
             left_value
         } else {
             left_value.saturating_add(1)
         };
+        let assertion = Assertion::StringLengthGreaterThanOrEqual(bound);
 
-        if_types.insert(argument_id, vec![vec![Assertion::StringLengthGreaterThanOrEqual(bound)]]);
+        if let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right, &assertion) {
+            if_types.insert(argument_id, vec![vec![assertion]]);
+        }
     }
 
     let left_id = assertion_context.get_expression_id(left);
@@ -1552,7 +1997,7 @@ where
                     Ordering::Greater => {
                         if_types.insert(
                             array_variable_id,
-                            vec![vec![Assertion::DoesNotHasAtLeastCount(maximum_count as usize)]],
+                            vec![vec![Assertion::DoesNotHasAtLeastCount((maximum_count as usize).saturating_add(1))]],
                         );
                     }
                 }
@@ -1573,28 +2018,30 @@ where
 
     let mut if_types: WordMap<AssertionSet> = WordMap::default();
 
-    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value)
-        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left)
-    {
+    if let Some(right_value) = right_integer.as_ref().and_then(TInteger::get_literal_value) {
         let bound = if matches!(operator, BinaryOperator::GreaterThanOrEqual(_)) {
             right_value
         } else {
             right_value.saturating_add(1)
         };
+        let assertion = Assertion::StringLengthGreaterThanOrEqual(bound);
 
-        if_types.insert(argument_id, vec![vec![Assertion::StringLengthGreaterThanOrEqual(bound)]]);
+        if let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, left, &assertion) {
+            if_types.insert(argument_id, vec![vec![assertion]]);
+        }
     }
 
-    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value)
-        && let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right)
-    {
+    if let Some(left_value) = left_integer.as_ref().and_then(TInteger::get_literal_value) {
         let bound = if matches!(operator, BinaryOperator::GreaterThanOrEqual(_)) {
             left_value.saturating_add(1)
         } else {
             left_value
         };
+        let assertion = Assertion::StringLengthLessThan(bound);
 
-        if_types.insert(argument_id, vec![vec![Assertion::StringLengthLessThan(bound)]]);
+        if let Some(argument_id) = get_strlen_argument_expression_id(assertion_context, right, &assertion) {
+            if_types.insert(argument_id, vec![vec![assertion]]);
+        }
     }
 
     let left_id = assertion_context.get_expression_id(left);
@@ -1759,19 +2206,22 @@ where
                 if let Some(self_class) = context.this_class_name {
                     if_types.insert(
                         counter_variable_id,
-                        vec![vec![Assertion::IsType(TAtomic::Object(TObject::Named(TNamedObject::new_this(
-                            self_class,
+                        vec![vec![Assertion::IsType(TAtomic::Object(TObject::Named(TNamedObject::new(
+                            context
+                                .codebase
+                                .get_class_like(self_class.as_bytes())
+                                .map_or(self_class, |class| class.original_name),
                         ))))]],
                     );
                 }
             }
             Expression::Static(_) => {
                 if let Some(self_class) = context.this_class_name {
+                    let mut static_object = TNamedObject::new(self_class);
+                    static_object.is_static = true;
                     if_types.insert(
                         counter_variable_id,
-                        vec![vec![Assertion::IsIdentical(TAtomic::Object(TObject::Named(TNamedObject::new_this(
-                            self_class,
-                        ))))]],
+                        vec![vec![Assertion::IsIdentical(TAtomic::Object(TObject::Named(static_object)))]],
                     );
                 }
             }
@@ -1796,13 +2246,29 @@ where
                             continue;
                         };
 
-                        assertions.push(Assertion::IsType(name.get_object_type(context.codebase)));
+                        let mut object_type = name.get_object_type(context.codebase);
+                        if let (TAtomic::Object(TObject::Named(source)), TAtomic::Object(TObject::Named(target))) =
+                            (atomic, &mut object_type)
+                            && source.is_static
+                        {
+                            target.is_static = true;
+                        }
+
+                        // The class is only known exactly for a literal class string or a final
+                        // class. Otherwise, the rhs may name a subclass, so a failed check says
+                        // nothing about the lhs: use an identity assertion, whose negation does
+                        // not remove the type.
+                        if name.fqcn.is_some() && (name.is_from_literal_class_string() || name.is_final) {
+                            assertions.push(Assertion::IsType(object_type));
+                        } else {
+                            assertions.push(Assertion::IsIdentical(object_type));
+                        }
                     }
 
                     // If we failed to resolve the class-name on the rhs of
                     // `instanceof`, assert that the lhs is a generic `object`.
                     if assertions.is_empty() && !expression_type.is_objecty() {
-                        assertions.push(Assertion::IsType(TAtomic::Object(TObject::Any)));
+                        assertions.push(Assertion::IsIdentical(TAtomic::Object(TObject::Any)));
                     }
 
                     if !assertions.is_empty() {
@@ -1877,6 +2343,49 @@ fn get_expression_integer_value(artifacts: &AnalysisArtifacts, expression: &Expr
     }
 }
 
+fn get_isset_expression_id<A>(
+    expression: &Expression,
+    artifacts: &AnalysisArtifacts,
+    assertion_context: AssertionContext<'_, '_, A>,
+) -> Option<Word> {
+    let Expression::ArrayAccess(access) = unwrap_expression(expression) else {
+        return assertion_context.get_expression_id(expression);
+    };
+
+    let array_id = get_isset_expression_id(access.array, artifacts, assertion_context)?;
+    let index_id = if let Some(key) = get_literal_array_key(access.index, artifacts) {
+        if let ArrayKey::String(value) = key
+            && memchr::memchr2(b'\'', b'\\', value.as_bytes()).is_some()
+        {
+            let mut escaped = Vec::with_capacity(value.len() + 2);
+            escaped.push(b'\'');
+            for &byte in value.as_bytes() {
+                if matches!(byte, b'\'' | b'\\') {
+                    escaped.push(b'\\');
+                }
+
+                escaped.push(byte);
+            }
+
+            escaped.push(b'\'');
+            word(&escaped)
+        } else {
+            key.id_word()
+        }
+    } else if expression_has_observable_side_effect(access.index) {
+        return None;
+    } else {
+        get_index_id(
+            access.index,
+            assertion_context.this_class_name,
+            assertion_context.resolved_names,
+            Some(assertion_context.codebase),
+        )?
+    };
+
+    Some(concat_word!(array_id.as_bytes(), b"[", index_id.as_bytes(), b"]"))
+}
+
 fn get_expression_array_key(artifacts: &AnalysisArtifacts, expression: &Expression) -> Option<ArrayKey> {
     artifacts.get_expression_type(expression).and_then(mago_codex::ttype::union::TUnion::get_single_array_key)
 }
@@ -1885,21 +2394,84 @@ fn is_count_or_size_of_call<A>(expression: &Expression, assertion_context: Asser
 where
     A: Arena,
 {
-    is_function_call_to_one_of(expression, assertion_context, &[b"count", b"sizeof", b"Psl\\Iter\\count"])
+    const COUNT_FUNCTIONS: &[&[u8]] = &[b"count", b"sizeof", b"Psl\\Iter\\count"];
+
+    if let Expression::Call(Call::Function(FunctionCall { argument_list, .. })) = expression
+        && argument_list.arguments.len() == 2
+        && let Some(mode) = argument_list.arguments.get(1)
+        && !mode.is_unpacked()
+        && is_count_normal(mode.value())
+    {
+        return is_function_call_with_arguments_to_one_of(expression, assertion_context, COUNT_FUNCTIONS, 2);
+    }
+
+    is_function_call_to_one_of(expression, assertion_context, COUNT_FUNCTIONS)
+}
+
+fn is_count_normal(mode: &Expression) -> bool {
+    match unwrap_expression(mode) {
+        Expression::ConstantAccess(constant) => {
+            let name = constant.name.value();
+            name.strip_prefix(b"\\").unwrap_or(name) == b"COUNT_NORMAL"
+        }
+        Expression::Literal(Literal::Integer(integer)) => integer.value == Some(0),
+        _ => false,
+    }
 }
 
 fn get_strlen_argument_expression_id<A>(
     assertion_context: AssertionContext<'_, '_, A>,
     expression: &Expression,
+    assertion: &Assertion,
 ) -> Option<Word>
 where
     A: Arena,
 {
-    if !is_function_call_to(expression, assertion_context, b"strlen") {
+    let counts_bytes = is_function_call_to(expression, assertion_context, b"strlen");
+    let counts_characters = !counts_bytes
+        && is_function_call_to(expression, assertion_context, b"mb_strlen")
+        && matches!(assertion, Assertion::StringLengthLessThan(1) | Assertion::StringLengthGreaterThanOrEqual(1));
+
+    if !counts_bytes && !counts_characters {
         return None;
     }
 
     get_first_argument_expression_id(assertion_context, expression)
+}
+
+fn scrape_string_length_equality_assertions<A>(
+    left: &Expression,
+    right: &Expression,
+    artifacts: &AnalysisArtifacts,
+    assertion_context: AssertionContext<'_, '_, A>,
+    negated: bool,
+) -> Option<Vec<WordMap<AssertionSet>>>
+where
+    A: Arena,
+{
+    let literal = |expression: &Expression| {
+        artifacts
+            .get_expression_type(expression)
+            .and_then(|expression_type| expression_type.get_single_literal_int_value())
+    };
+
+    let (call, length) = match (literal(left), literal(right)) {
+        (None, Some(length)) => (left, length),
+        (Some(length), None) => (right, length),
+        _ => return None,
+    };
+
+    let assertion = match (length, negated) {
+        (0, false) => Assertion::StringLengthLessThan(1),
+        (0, true) => Assertion::StringLengthGreaterThanOrEqual(1),
+        _ => return None,
+    };
+
+    let argument_id = get_strlen_argument_expression_id(assertion_context, call, &assertion)?;
+    let mut if_types = WordMap::default();
+    if_types.insert(argument_id, vec![vec![assertion]]);
+
+    Some(vec![if_types])
 }
 
 fn is_function_call_to<A>(
@@ -1922,11 +2494,24 @@ fn is_function_call_to_one_of<A>(
 where
     A: Arena,
 {
+    is_function_call_with_arguments_to_one_of(expression, assertion_context, functions, 1)
+}
+
+#[inline]
+fn is_function_call_with_arguments_to_one_of<A>(
+    expression: &Expression,
+    assertion_context: AssertionContext<'_, '_, A>,
+    functions: &[&[u8]],
+    argument_count: usize,
+) -> bool
+where
+    A: Arena,
+{
     let Expression::Call(Call::Function(FunctionCall { function, argument_list })) = expression else {
         return false;
     };
 
-    if argument_list.arguments.len() != 1 {
+    if argument_list.arguments.len() != argument_count {
         return false;
     }
 
@@ -2111,7 +2696,41 @@ where
         if_types.insert(other_value_var_name, vec![orred_types]);
     }
 
+    if if_types
+        .values()
+        .flatten()
+        .flatten()
+        .any(|assertion| assertion.get_type().is_some_and(|atomic| !has_single_value(atomic)))
+    {
+        let comparison_id = Word::from(format!("*{}-{}", left.span().start.offset, right.span().end.offset).as_str());
+        if_types.insert(comparison_id, vec![vec![Assertion::Truthy]]);
+    }
+
     if if_types.is_empty() { vec![] } else { vec![if_types] }
+}
+
+fn has_single_value(atomic: &TAtomic) -> bool {
+    if atomic.is_literal()
+        || atomic.is_literal_class_string()
+        || matches!(atomic, TAtomic::Object(TObject::Enum(enumeration)) if enumeration.case.is_some())
+    {
+        return true;
+    }
+
+    let known_value =
+        |(optional, value): &(bool, TUnion)| !optional && value.is_single() && has_single_value(value.get_single());
+
+    match atomic {
+        TAtomic::Array(TArray::List(list)) => {
+            list.element_type.is_never()
+                && list.get_known_elements().is_none_or(|elements| elements.values().all(known_value))
+        }
+        TAtomic::Array(TArray::Keyed(array)) => {
+            array.parameters.is_none()
+                && array.get_known_items().is_none_or(|items| items.len() <= 1 && items.values().all(known_value))
+        }
+        _ => false,
+    }
 }
 
 fn get_typed_value_inequality_assertions<A>(
@@ -2185,12 +2804,13 @@ where
         return None;
     };
 
-    if argument_list.arguments.len() != 1 {
+    let argument = argument_list.arguments.first()?;
+    if argument.is_unpacked() {
         return None;
     }
 
     get_expression_id(
-        argument_list.arguments.first()?.value(),
+        argument.value(),
         assertion_context.this_class_name,
         assertion_context.resolved_names,
         Some(assertion_context.codebase),

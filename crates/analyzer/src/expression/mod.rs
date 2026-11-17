@@ -51,6 +51,7 @@ pub mod instantiation;
 pub mod literal;
 pub mod magic_constant;
 pub mod r#match;
+pub mod operator_overloading;
 pub mod partial_application;
 pub mod throw;
 pub mod unary;
@@ -249,13 +250,24 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
         }
 
         if context.settings.check_throws && context.plugin_registry.has_expression_throw_providers() {
-            let exceptions = context.plugin_registry.get_expression_thrown_exceptions(
-                context.codebase,
-                context.source_file,
-                block_context,
-                artifacts,
-                self,
-            );
+            let exceptions = context
+                .plugin_registry
+                .get_external_expression_thrown_exceptions(
+                    context.codebase,
+                    context.source_file,
+                    artifacts,
+                    self,
+                    context.external_analysis_session,
+                )
+                .unwrap_or_else(|| {
+                    context.plugin_registry.get_expression_thrown_exceptions(
+                        context.codebase,
+                        context.source_file,
+                        block_context,
+                        artifacts,
+                        self,
+                    )
+                });
 
             for exception in exceptions {
                 block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(self.span());
@@ -370,6 +382,7 @@ pub fn find_expression_logic_issues<'ctx, 'arena, A>(
         &expression_clauses,
         expression_span,
         &context.settings.algebra_thresholds(),
+        false,
     );
 
     expression_clauses.extend(block_context.clauses.iter().map(|v| (**v).clone()));

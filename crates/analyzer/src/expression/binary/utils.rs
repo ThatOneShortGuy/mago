@@ -9,9 +9,29 @@ use mago_php_version::PHPVersion;
 
 use crate::utils::php_emulation::numeric_string_equals_int;
 
+/// A template's value lies within its constraint, so the bounds of `T of int<0, 3>` are those of `int<0, 3>`.
+fn int_bound(union: &TUnion, bound: fn(&TAtomic) -> Option<i64>, pick: fn(i64, i64) -> i64) -> Option<i64> {
+    union
+        .types
+        .iter()
+        .map(|atomic| match atomic {
+            TAtomic::GenericParameter(parameter) => int_bound(&parameter.constraint, bound, pick),
+            _ => bound(atomic),
+        })
+        .reduce(|first, second| Some(pick(first?, second?)))?
+}
+
+fn maximum_int(union: &TUnion) -> Option<i64> {
+    int_bound(union, TAtomic::get_maximum_int_value, i64::max)
+}
+
+fn minimum_int(union: &TUnion) -> Option<i64> {
+    int_bound(union, TAtomic::get_minimum_int_value, i64::min)
+}
+
 #[inline]
 pub fn is_always_less_than_or_equal(lhs: &TUnion, rhs: &TUnion) -> bool {
-    if let (Some(max_lhs), Some(min_rhs)) = (lhs.get_maximum_int_value(), rhs.get_minimum_int_value()) {
+    if let (Some(max_lhs), Some(min_rhs)) = (maximum_int(lhs), minimum_int(rhs)) {
         return max_lhs <= min_rhs;
     }
 
@@ -20,7 +40,7 @@ pub fn is_always_less_than_or_equal(lhs: &TUnion, rhs: &TUnion) -> bool {
 
 #[inline]
 pub fn is_always_greater_than_or_equal(lhs: &TUnion, rhs: &TUnion) -> bool {
-    if let (Some(min_lhs), Some(max_rhs)) = (lhs.get_minimum_int_value(), rhs.get_maximum_int_value()) {
+    if let (Some(min_lhs), Some(max_rhs)) = (minimum_int(lhs), maximum_int(rhs)) {
         return min_lhs >= max_rhs;
     }
 
@@ -42,7 +62,7 @@ pub fn is_always_less_than(lhs: &TUnion, rhs: &TUnion) -> bool {
         return true;
     }
 
-    if let (Some(max_lhs), Some(min_rhs)) = (lhs.get_maximum_int_value(), rhs.get_minimum_int_value()) {
+    if let (Some(max_lhs), Some(min_rhs)) = (maximum_int(lhs), minimum_int(rhs)) {
         return max_lhs < min_rhs;
     }
 
@@ -79,7 +99,7 @@ pub fn is_always_greater_than(lhs: &TUnion, rhs: &TUnion) -> bool {
         return true;
     }
 
-    if let (Some(min_lhs), Some(max_rhs)) = (lhs.get_minimum_int_value(), rhs.get_maximum_int_value()) {
+    if let (Some(min_lhs), Some(max_rhs)) = (minimum_int(lhs), maximum_int(rhs)) {
         return min_lhs > max_rhs;
     }
 
@@ -218,15 +238,11 @@ pub fn are_definitely_not_loosely_equal(
         return !loosely_equal;
     }
 
-    if (lhs.is_int() && rhs.is_int())
+    ((lhs.is_int() && rhs.is_int())
         || (lhs.is_bool() && rhs.is_bool())
         || (lhs.is_float() && rhs.is_float())
-        || (lhs.is_null() && rhs.is_null())
-    {
-        are_definitely_not_identical(codebase, lhs, rhs, false)
-    } else {
-        false
-    }
+        || (lhs.is_null() && rhs.is_null()))
+        && are_definitely_not_identical(codebase, lhs, rhs, false)
 }
 
 pub fn are_definitely_loosely_equal(php_version: PHPVersion, lhs: &TUnion, rhs: &TUnion) -> bool {
@@ -255,6 +271,10 @@ pub fn are_definitely_not_identical(
     rhs: &TUnion,
     allow_type_coercion: bool,
 ) -> bool {
+    if (lhs.is_null() && !rhs.can_be_null()) || (rhs.is_null() && !lhs.can_be_null()) {
+        return true;
+    }
+
     // If either type is mixed, we cannot determine non-identity.
     if lhs.has_mixed() || lhs.has_mixed_template() || rhs.has_mixed() || rhs.has_mixed_template() {
         return false;
@@ -279,12 +299,6 @@ pub fn are_definitely_not_identical(
         {
             return !left_enum.as_bytes().eq_ignore_ascii_case(right_enum.as_bytes()) || left_case != right_case;
         }
-    }
-
-    if (lhs.is_null() && (!rhs.is_null() && !rhs.can_be_null()))
-        || (rhs.is_null() && (!lhs.is_null() && !lhs.can_be_null()))
-    {
-        return true;
     }
 
     if lhs.is_bool() {

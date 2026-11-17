@@ -14,12 +14,14 @@ use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::MethodMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::TypeRef;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::mixed::TMixed;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
@@ -133,6 +135,19 @@ where
     input_objects
 }
 
+fn expand_generic_parameters_to_constraints(union: &TUnion) -> Vec<TAtomic> {
+    let mut atomics = Vec::with_capacity(union.types.len());
+    for atomic in union.types.iter() {
+        if let TAtomic::GenericParameter(parameter) = atomic {
+            atomics.extend(expand_generic_parameters_to_constraints(&parameter.constraint));
+        } else {
+            atomics.push(atomic.clone());
+        }
+    }
+
+    atomics
+}
+
 fn infer_templates_from_input_and_container_types<A>(
     context: &Context<'_, '_, A>,
     container_type: &TUnion,
@@ -178,6 +193,12 @@ fn infer_templates_from_input_and_container_types<A>(
         .any(|t| matches!(t, TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic { .. }))));
 
     let has_bare_generic_parameter = generic_container_parts.iter().any(|t| matches!(t, TAtomic::GenericParameter(_)));
+    let input_type = if !has_bare_generic_parameter && input_type.types.iter().any(TAtomic::is_generic_parameter) {
+        Cow::Owned(TUnion::from_vec(expand_generic_parameters_to_constraints(input_type)))
+    } else {
+        Cow::Borrowed(input_type)
+    };
+
     let residual_input_types = input_type
         .types
         .iter()
@@ -315,19 +336,15 @@ fn infer_templates_from_input_and_container_types<A>(
                                 }
 
                                 if let Some(container_parameter) = container_array.parameters.as_ref() {
-                                    let mut input_key_type =
-                                        if let Some(input_parameter) = input_array.parameters.as_ref() {
-                                            Some(Cow::Borrowed(input_parameter.0.as_ref()))
-                                        } else {
-                                            None
-                                        };
+                                    let mut input_key_type = input_array
+                                        .parameters
+                                        .as_ref()
+                                        .map(|input_parameter| Cow::Borrowed(input_parameter.0.as_ref()));
 
-                                    let mut input_value_type =
-                                        if let Some(input_parameter) = input_array.parameters.as_ref() {
-                                            Some(Cow::Borrowed(input_parameter.1.as_ref()))
-                                        } else {
-                                            None
-                                        };
+                                    let mut input_value_type = input_array
+                                        .parameters
+                                        .as_ref()
+                                        .map(|input_parameter| Cow::Borrowed(input_parameter.1.as_ref()));
 
                                     if let Some(known_input_items) = &input_array.known_items {
                                         for (input_key, (_, input_item)) in known_input_items.iter() {
@@ -675,10 +692,52 @@ fn infer_templates_from_input_and_container_types<A>(
                         continue;
                     };
 
-                    let input_return_for_inference = if is_cast_from_non_callable {
-                        Cow::Owned(resolve_unbound_templates_to_constraints(input_return))
-                    } else {
+                    let mut own_bounds = TemplateResult::default();
+                    if input_return.has_template_types() {
+                        for (container_parameter, input_parameter) in
+                            container_parameters.iter().zip(input_parameters.iter()).take(minimum_count)
+                        {
+                            let (Some(container_parameter_type), Some(input_parameter_type)) =
+                                (container_parameter.get_type_signature(), input_parameter.get_type_signature())
+                            else {
+                                continue;
+                            };
+
+                            if !input_parameter_type.has_template_types() {
+                                continue;
+                            }
+
+                            let expected = inferred_type_replacer::replace(
+                                container_parameter_type,
+                                template_result,
+                                context.codebase,
+                            );
+
+                            if expected.has_template_types() {
+                                continue;
+                            }
+
+                            infer_templates_from_input_and_container_types(
+                                context,
+                                input_parameter_type,
+                                &expected,
+                                &mut own_bounds,
+                                InferenceOptions::default(),
+                                &mut Vec::new(),
+                            );
+                        }
+                    }
+
+                    let input_return = if own_bounds.lower_bounds.is_empty() {
                         Cow::Borrowed(input_return)
+                    } else {
+                        Cow::Owned(inferred_type_replacer::replace(input_return, &own_bounds, context.codebase))
+                    };
+
+                    let input_return_for_inference = if is_cast_from_non_callable {
+                        Cow::Owned(resolve_unbound_templates_to_constraints(&input_return))
+                    } else {
+                        input_return
                     };
 
                     infer_templates_from_input_and_container_types(
@@ -705,13 +764,24 @@ fn infer_templates_from_input_and_container_types<A>(
                         continue;
                     };
 
-                    let Some(input_meta) = context.codebase.get_class_like(input_obj.name.as_bytes()) else {
+                    // In an intersection such as `I&Coll<object>`, the member that extends the container binds it.
+                    let Some(input_obj) = std::iter::once(input_obj)
+                        .chain(input_obj.intersection_types.iter().flat_map(|types| types.iter()).filter_map(
+                            |intersection| match intersection {
+                                TAtomic::Object(TObject::Named(named)) => Some(named),
+                                _ => None,
+                            },
+                        ))
+                        .find(|candidate| {
+                            context.codebase.is_instance_of(candidate.name.as_bytes(), container_obj.name.as_bytes())
+                        })
+                    else {
                         continue;
                     };
 
-                    if !context.codebase.is_instance_of(input_obj.name.as_bytes(), container_obj.name.as_bytes()) {
+                    let Some(input_meta) = context.codebase.get_class_like(input_obj.name.as_bytes()) else {
                         continue;
-                    }
+                    };
 
                     for (index, parameter_template_union) in container_params.iter().enumerate() {
                         let generic_parameters =
@@ -757,7 +827,15 @@ fn infer_templates_from_input_and_container_types<A>(
                                     });
                                 }
 
-                                let appearance_depth = usize::from(!top_level);
+                                if is_bound_by_receiver(
+                                    template_result,
+                                    generic_parameter.parameter_name,
+                                    &generic_parameter.defining_entity,
+                                ) {
+                                    continue;
+                                }
+
+                                let appearance_depth = usize::from(!top_level || generic_container_parts_len > 1);
                                 insert_bound_type(
                                     template_result,
                                     generic_parameter.parameter_name,
@@ -897,19 +975,64 @@ fn infer_templates_from_input_and_container_types<A>(
         }
     }
 
-    for container_atomic_part in generic_container_parts {
+    for container_atomic_part in &generic_container_parts {
         let TAtomic::GenericParameter(container_generic) = container_atomic_part else {
             continue;
         };
 
+        let mentions_other_template = |node: TypeRef<'_>| match node {
+            TypeRef::Atomic(TAtomic::GenericParameter(TGenericParameter {
+                parameter_name, defining_entity, ..
+            }))
+            | TypeRef::Atomic(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic {
+                parameter_name,
+                defining_entity,
+                ..
+            }))) => {
+                *parameter_name != container_generic.parameter_name
+                    || *defining_entity != container_generic.defining_entity
+            }
+            _ => false,
+        };
+
+        let residual_input_type = {
+            let unmatched: Vec<TAtomic> = residual_input_type
+                .types
+                .iter()
+                .filter(|input_atomic| {
+                    !generic_container_parts.iter().any(|sibling| {
+                        !sibling.is_generic_parameter()
+                            && !mentions_other_template(TypeRef::Atomic(sibling))
+                            && !sibling.any_child_node(mentions_other_template)
+                            && atomic_comparator::is_contained_by(
+                                context.codebase,
+                                input_atomic,
+                                &resolve_atomic_unbound_templates(sibling),
+                                false,
+                                &mut ComparisonResult::default(),
+                            )
+                    })
+                })
+                .cloned()
+                .collect();
+
+            if unmatched.is_empty() {
+                continue;
+            }
+
+            TUnion::from_vec(unmatched)
+        };
+
         let template_parameter_name = &container_generic.parameter_name;
 
-        let should_add_bound = !options.infer_only_if_new
-            || template_result
-                .lower_bounds
-                .get(template_parameter_name)
-                .and_then(|map| map.get(&container_generic.defining_entity))
-                .is_none_or(std::vec::Vec::is_empty);
+        let should_add_bound =
+            !is_bound_by_receiver(template_result, *template_parameter_name, &container_generic.defining_entity)
+                && (!options.infer_only_if_new
+                    || template_result
+                        .lower_bounds
+                        .get(template_parameter_name)
+                        .and_then(|map| map.get(&container_generic.defining_entity))
+                        .is_none_or(std::vec::Vec::is_empty));
 
         if !should_add_bound {
             continue;
@@ -1310,4 +1433,13 @@ fn resolve_atomic_unbound_templates(atomic: &TAtomic) -> TAtomic {
         }
         _ => atomic.clone(),
     }
+}
+
+fn is_bound_by_receiver(template_result: &TemplateResult, name: Word, defining_entity: &GenericParent) -> bool {
+    matches!(defining_entity, GenericParent::ClassLike(_))
+        && template_result
+            .lower_bounds
+            .get(&name)
+            .and_then(|map| map.get(defining_entity))
+            .is_some_and(|bounds| bounds.iter().any(|bound| bound.argument_offset.is_none()))
 }

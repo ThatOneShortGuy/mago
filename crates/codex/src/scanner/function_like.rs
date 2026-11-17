@@ -40,6 +40,7 @@ use crate::metadata::flags::MetadataFlags;
 use crate::metadata::function_like::FunctionLikeKind;
 use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::metadata::function_like::MethodMetadata;
+use crate::metadata::ttype::TypeMetadata;
 use crate::misc::GenericParent;
 use crate::scanner::Context;
 use crate::scanner::assertion_inference::infer_assertions_from_block_body;
@@ -49,7 +50,7 @@ use crate::scanner::docblock::apply_function_like_metadata_flag;
 use crate::scanner::docblock::assertion_subject_word;
 use crate::scanner::docblock::find_most_trusted_tag;
 use crate::scanner::docblock::for_each_tag_by_ascending_trust;
-use crate::scanner::docblock::parse_docblock;
+use crate::scanner::docblock::parse_docblock_trivia;
 use crate::scanner::parameter::scan_function_like_parameter;
 use crate::scanner::parameter::scan_function_like_parameter_with_constants;
 use crate::scanner::ttype::get_type_metadata_from_hint;
@@ -60,6 +61,7 @@ use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::builder;
 use crate::ttype::builder::reject_unresolvable_tag_variable;
 use crate::ttype::get_mixed;
+use crate::ttype::get_string;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::ttype::template::GenericTemplate;
 use crate::visibility::Visibility;
@@ -109,6 +111,8 @@ where
             Some(class_like_metadata.original_name),
             context,
         )));
+    } else if method.name.value.eq_ignore_ascii_case(b"__tostring") {
+        metadata.set_return_type_declaration_metadata(Some(TypeMetadata::new(get_string(), method.name.span)));
     }
 
     let method_name_str = method.name.value;
@@ -164,6 +168,10 @@ where
         && class_like_metadata.name.as_bytes().eq_ignore_ascii_case(b"revolt\\eventloop\\suspension")
     {
         metadata.flags |= MetadataFlags::SUSPENDS_FIBER;
+    }
+
+    if class_like_metadata.flags.forbids_named_arguments() {
+        metadata.flags |= MetadataFlags::NO_NAMED_ARGUMENTS;
     }
 
     Some(metadata)
@@ -367,7 +375,13 @@ fn scan_function_like_docblock<A>(
 ) where
     A: Arena,
 {
-    let Some(document) = parse_docblock(context, span) else {
+    let docblock = if matches!(metadata.kind, FunctionLikeKind::Closure | FunctionLikeKind::ArrowFunction) {
+        context.get_closure_docblock(span)
+    } else {
+        context.get_docblock(span)
+    };
+
+    let Some(document) = docblock.map(|docblock| parse_docblock_trivia(context, docblock)) else {
         metadata.has_docblock = false;
 
         return;
@@ -429,7 +443,7 @@ fn scan_function_like_docblock<A>(
         }
     }
 
-    let mut type_context = metadata.type_resolution_context.clone().unwrap_or_default();
+    let mut type_context = metadata.type_resolution_context.take().unwrap_or_default();
     for tag in document.tags() {
         let TagValue::Template(template) = &tag.value else {
             continue;

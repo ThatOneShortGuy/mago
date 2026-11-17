@@ -53,6 +53,8 @@ where
     should_break: bool,
     should_inline: bool,
     rhs_is_parenthesized_lassoc_subchain: bool,
+    is_left_parenthesized: bool,
+    is_right_parenthesized: bool,
     right_prefix: Option<Document<'arena, A>>,
 }
 
@@ -141,6 +143,7 @@ pub(super) fn print_binaryish_expression<'arena, A>(
 where
     A: Arena,
 {
+    let original_left = left;
     let original_right = right;
     let left = unwrap_parenthesized(left);
     let right = unwrap_parenthesized(right);
@@ -209,7 +212,7 @@ where
     } else {
         print_binaryish_expression_parts(
             f,
-            left,
+            original_left,
             operator,
             original_right,
             is_inside_parenthesis,
@@ -295,13 +298,13 @@ where
     // context, operators like ?? that would normally skip indentation (because
     // their RHS is "inlined") should still get indented.
     let preserve_breaking_continuation = preserves_breaking_layout
-        && misc::has_new_line_in_range(f.source_text, left.end_offset(), original_right.start_offset())
         && (should_indent_if_inlining
             || f.is_wrapped_in_parens
-            || matches!(grandparent, Some(Node::Return(_) | Node::Throw(_))));
+            || matches!(grandparent, Some(Node::Return(_) | Node::Throw(_))))
+        && ((!f.is_in_inlined_binary_chain && is_lassoc_subchain(&operator, right))
+            || misc::has_new_line_in_range(f.source_text, left.end_offset(), original_right.start_offset()));
 
-    let indent_assignment_continuation =
-        f.settings.indent_binary_expression_continuation || f.is_in_aligned_assignment_rhs;
+    let indent_assignment_continuation = f.settings.indent_binary_expression_continuation;
     let indent_continuation = should_inline_logical_or_coalesce_rhs
         && !same_precedence_sub_expression
         && indent_assignment_continuation
@@ -365,6 +368,7 @@ fn print_binaryish_expression_parts<'arena, A>(
 where
     A: Arena,
 {
+    let original_left = left;
     let left = unwrap_parenthesized(left);
     let original_right = right;
     let right = unwrap_parenthesized(right);
@@ -375,20 +379,14 @@ where
         || has_own_line_comment_in_left_chain(f, left)
         || (is_original_right_parenthesized && has_placed_leading_comment_in_leftmost(f, original_right))
         || (f.settings.preserve_breaking_binary_expression
-            && misc::has_new_line_in_range(f.source_text, left.end_offset(), right.start_offset()));
+            && misc::has_new_line_in_range(f.source_text, original_left.end_offset(), original_right.start_offset()));
 
-    let rhs_is_parenthesized_lassoc_subchain = match right {
-        Expression::Binary(binary) => {
-            should_flatten(&operator, &BinaryishOperator::Binary(&binary.operator))
-                && (operator.is_logical() || operator.is_comparison())
-        }
-        _ => false,
-    };
-
+    let rhs_is_parenthesized_lassoc_subchain = is_lassoc_subchain(&operator, right);
     let mut should_inline_this_level = !should_break
         && !rhs_is_parenthesized_lassoc_subchain
         && should_inline_binary_rhs_expression(f, right, &operator);
-    should_inline_this_level = should_inline_this_level || f.is_in_inlined_binary_chain;
+    // An inherited inline chain must not override a break the source asked to preserve (or a comment).
+    should_inline_this_level = should_inline_this_level || (f.is_in_inlined_binary_chain && !should_break);
 
     let old_inlined_chain_state = f.is_in_inlined_binary_chain;
     f.is_in_inlined_binary_chain = should_inline_this_level;
@@ -439,7 +437,22 @@ where
         _ => vec_in![f.arena; left.format(f)],
     };
 
+    // A comment after the closing parenthesis of an operand belongs to that operand, even when
+    // the parentheses are dropped.
+    if !std::ptr::eq(original_left, left)
+        && let Some(trailing) = f.print_trailing_comments(original_left.span())
+    {
+        parts.push(trailing);
+    }
+
     f.is_in_inlined_binary_chain = old_inlined_chain_state;
+
+    // Only a non-nested operation can be grouped, and logical operands keep their existing chain layout.
+    let groups_operands = !is_nested && !operator.is_logical();
+    // A flattened left operand is printed as part of this chain, never through `Expression::format`.
+    let is_left_flattened = matches!(left, Expression::Binary(binary) if should_flatten(&operator, &BinaryishOperator::Binary(&binary.operator)));
+    let is_left_parenthesized = groups_operands && !is_left_flattened && binary_operand_needs_parens(f, left);
+    let is_right_parenthesized = groups_operands && binary_operand_needs_parens(f, right);
 
     push_binaryish_operation(
         f,
@@ -453,11 +466,42 @@ where
             should_break,
             should_inline: should_inline_this_level,
             rhs_is_parenthesized_lassoc_subchain,
+            is_left_parenthesized,
+            is_right_parenthesized,
             right_prefix: None,
         },
     );
 
+    if is_original_right_parenthesized && let Some(trailing) = f.print_trailing_comments(original_right.span()) {
+        parts.push(trailing);
+    }
+
     parts
+}
+
+/// Whether a binary operand will be printed wrapped in parentheses, and therefore as a single unit
+/// rather than as part of the surrounding chain.
+///
+/// This mirrors the node stack `Expression::format` builds before `need_parens` runs, so the answer
+/// depends on the printed output rather than on whether the source had parentheses.
+fn binary_operand_needs_parens<'arena, A>(
+    f: &mut FormatterState<'_, 'arena, A>,
+    operand: &'arena Expression<'arena>,
+) -> bool
+where
+    A: Arena,
+{
+    let Expression::Binary(binary) = operand else {
+        return false;
+    };
+
+    f.enter_node(Node::Expression(operand));
+    f.enter_node(Node::Binary(binary));
+    let needs_parens = f.need_parens(Node::Binary(binary));
+    f.leave_node();
+    f.leave_node();
+
+    needs_parens
 }
 
 fn print_null_coalesce_chain_parts<'arena, A>(
@@ -536,6 +580,8 @@ where
             should_break,
             should_inline: false,
             rhs_is_parenthesized_lassoc_subchain: false,
+            is_left_parenthesized: false,
+            is_right_parenthesized: false,
             right_prefix: if right_prefix.is_empty() { None } else { Some(Document::Array(right_prefix)) },
         });
         current_left = right;
@@ -617,8 +663,8 @@ fn push_binaryish_operation<'arena, A>(
         && (operation.should_break
             || (!(operation.is_inside_parenthesis && operation.operator.is_logical())
                 && parent.kind() != NodeKind::Binary
-                && operation.left.node_kind() != NodeKind::Binary
-                && operation.right.node_kind() != NodeKind::Binary));
+                && (operation.is_left_parenthesized || operation.left.node_kind() != NodeKind::Binary)
+                && (operation.is_right_parenthesized || operation.right.node_kind() != NodeKind::Binary)));
 
     if should_group {
         parts.push(Document::Group(Group::new(right_document).with_break_mode(if operation.should_break {
@@ -652,6 +698,15 @@ where
         ),
         _ => false,
     }
+}
+
+fn is_lassoc_subchain(operator: &BinaryishOperator<'_>, right: &Expression<'_>) -> bool {
+    matches!(
+        right,
+        Expression::Binary(binary)
+            if should_flatten(operator, &BinaryishOperator::Binary(&binary.operator))
+                && (operator.is_logical() || operator.is_comparison())
+    )
 }
 
 fn should_flatten<'arena>(operator: &BinaryishOperator<'arena>, parent_op: &BinaryishOperator<'arena>) -> bool {

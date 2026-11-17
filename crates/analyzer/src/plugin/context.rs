@@ -4,10 +4,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use mago_codex::context::ScopeContext;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::string::TString;
 use mago_codex::ttype::atomic::scalar::string::TStringLiteral;
@@ -118,6 +120,9 @@ impl<'codebase, 'artifacts, 'block> ProviderContext<'codebase, 'artifacts, 'bloc
         match expr {
             Expression::ArrowFunction(arrow_fn) => self.codebase.get_closure_at(self.source_file, arrow_fn.span()),
             Expression::Closure(closure) => self.codebase.get_closure_at(self.source_file, closure.span()),
+            Expression::PartialApplication(_) if let Some(metadata) = self.get_first_class_callable_source(expr) => {
+                Some(metadata)
+            }
             Expression::PartialApplication(partial) => match partial {
                 PartialApplication::Function(func_partial) => {
                     if !func_partial.argument_list.is_first_class_callable() {
@@ -192,6 +197,24 @@ impl<'codebase, 'artifacts, 'block> ProviderContext<'codebase, 'artifacts, 'bloc
         }
     }
 
+    fn get_first_class_callable_source(&self, expr: &Expression<'_>) -> Option<&'codebase FunctionLikeMetadata> {
+        let [TAtomic::Callable(callable)] = self.get_rc_expression_type(expr)?.types.as_ref() else {
+            return None;
+        };
+
+        let identifier = match callable {
+            TCallable::Alias(identifier) => *identifier,
+            TCallable::Signature(signature) => signature.get_source()?,
+        };
+
+        match identifier {
+            FunctionLikeIdentifier::Method(class, method) => {
+                self.codebase.get_declaring_method(class.as_bytes(), method.as_bytes())
+            }
+            _ => self.codebase.get_function_like(&identifier),
+        }
+    }
+
     #[inline]
     pub fn get_class_like(&self, name: Word) -> Option<&ClassLikeMetadata> {
         self.codebase.get_class_like(name.as_bytes())
@@ -215,6 +238,7 @@ pub struct HookContext<'ctx, 'block> {
     pub(crate) artifacts: &'block mut AnalysisArtifacts,
     pub(crate) reported_issues: RefCell<Vec<ReportedIssue>>,
     expression_type_checkpoints: Option<ExpressionTypeCheckpoints>,
+    resolved_function: Option<Word>,
 }
 
 impl<'ctx, 'block> HookContext<'ctx, 'block> {
@@ -231,7 +255,19 @@ impl<'ctx, 'block> HookContext<'ctx, 'block> {
             block_context,
             reported_issues: RefCell::new(Vec::new()),
             expression_type_checkpoints: None,
+            resolved_function: None,
         }
+    }
+
+    pub(crate) fn with_resolved_function(mut self, resolved_function: Option<Word>) -> Self {
+        self.resolved_function = resolved_function;
+        self
+    }
+
+    /// The name of the function an analyzed function call resolved to, in an `after_function_call` hook.
+    #[inline]
+    pub fn resolved_function(&self) -> Option<Word> {
+        self.resolved_function
     }
 
     /// Report an issue from a hook.

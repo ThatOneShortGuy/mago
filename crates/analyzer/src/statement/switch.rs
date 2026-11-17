@@ -48,6 +48,7 @@ use crate::expression::binary::utils::is_always_identical_to;
 use crate::formula::get_formula;
 use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
+use crate::resolver::function::get_builtin_get_class_or_gettype_call;
 use crate::statement::analyze_statements;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_root_expression_id;
@@ -76,6 +77,7 @@ where
     context: &'anlyz mut Context<'ctx, 'arena, A>,
     block_context: &'anlyz mut BlockContext<'ctx>,
     artifacts: &'anlyz mut AnalysisArtifacts,
+    running_else_context: BlockContext<'ctx>,
     new_locals: Option<WordMap<Rc<TUnion>>>,
     redefined_variables: Option<WordMap<Rc<TUnion>>>,
     possibly_redefined_variables: Option<WordMap<Rc<TUnion>>>,
@@ -88,6 +90,7 @@ where
     last_case_exit_type: ControlAction,
     case_exit_types: HashMap<usize, ControlAction>,
     case_actions: HashMap<usize, ControlActionSet>,
+    reachable_case_statements: Vec<bool>,
     seen_case_condition_types: Vec<(Rc<TUnion>, Span)>,
     has_default_case: bool,
 }
@@ -103,10 +106,12 @@ where
         block_context: &'anlyz mut BlockContext<'ctx>,
         artifacts: &'anlyz mut AnalysisArtifacts,
     ) -> Self {
+        let running_else_context = block_context.clone();
         Self {
             context,
             block_context,
             artifacts,
+            running_else_context,
             new_locals: None,
             redefined_variables: None,
             possibly_redefined_variables: None,
@@ -119,6 +124,7 @@ where
             last_case_exit_type: ControlAction::Break,
             case_exit_types: HashMap::default(),
             case_actions: HashMap::default(),
+            reachable_case_statements: vec![],
             seen_case_condition_types: vec![],
             has_default_case: false,
         }
@@ -142,6 +148,7 @@ where
             self.get_subject_info(switch, &subject_type);
 
         let original_context = self.block_context.clone();
+        self.running_else_context = original_context.clone();
 
         let cases = switch.body.cases();
         if cases.is_empty() {
@@ -149,6 +156,7 @@ where
         }
 
         let last_case_index = cases.len() - 1;
+        self.reachable_case_statements = vec![false; cases.len()];
         for case in cases {
             if case.is_default() {
                 self.has_default_case = true;
@@ -180,6 +188,7 @@ where
                 &subject_for_conditions,
                 is_synthetic,
                 subject_id,
+                root_subject_id,
                 case,
                 &previous_empty_cases,
                 &original_context,
@@ -197,43 +206,77 @@ where
                 previously_matching_case = Some(case.span());
             }
 
-            previous_empty_cases = vec![];
+            previous_empty_cases.clear();
         }
 
-        let all_options_returned = self.case_exit_types.values().all(|t| *t == ControlAction::Return);
-        let is_exhaustive = self.has_default_case || {
-            let mut final_else_context = original_context.clone();
-            let final_else_clauses: Vec<_> =
-                final_else_context.clauses.iter().map(|c| (**c).clone()).chain(self.negated_clauses).collect();
-
-            let mut final_else_referenced_ids = WordSet::default();
-            let (reconcilable_types, _) =
-                mago_algebra::find_satisfying_assignments(&final_else_clauses, None, &mut final_else_referenced_ids);
-
-            if !reconcilable_types.is_empty() {
-                reconcile_keyed_types(
-                    self.context,
-                    &reconcilable_types,
-                    AssertionMap::default(),
-                    &mut final_else_context,
-                    &mut WordSet::default(),
-                    &final_else_referenced_ids,
-                    &switch.span(),
-                    false,
-                    false,
-                );
+        let mut fallthrough_exits = false;
+        let mut all_options_exit = true;
+        for case_index in (0..self.case_actions.len()).rev() {
+            if !self.reachable_case_statements[case_index] {
+                continue;
             }
 
-            final_else_context.locals.get(&subject_id).is_some_and(|t| t.is_never())
-                || root_subject_id
-                    .as_ref()
-                    .is_some_and(|id| final_else_context.locals.get(id).is_some_and(|t| t.is_never()))
-        };
+            let Some(case_actions) = self.case_actions.get(&case_index) else {
+                fallthrough_exits = false;
+                all_options_exit = false;
+                continue;
+            };
+
+            fallthrough_exits = !case_actions.is_empty()
+                && case_actions.iter().all(|action| match action {
+                    ControlAction::None => fallthrough_exits,
+                    ControlAction::End
+                    | ControlAction::Break
+                    | ControlAction::BreakImmediateLoop
+                    | ControlAction::Continue
+                    | ControlAction::Return => true,
+                    ControlAction::LeaveSwitch | ControlAction::BreakTargetSwitch => false,
+                });
+            all_options_exit &= fallthrough_exits;
+        }
+        let is_exhaustive = self.has_default_case
+            || self.running_else_context.locals.get(&subject_id).is_some_and(|t| t.is_never())
+            || root_subject_id
+                .as_ref()
+                .is_some_and(|id| self.running_else_context.locals.get(id).is_some_and(|t| t.is_never()))
+            || {
+                let mut final_else_context = original_context.clone();
+                let final_else_clauses: Vec<_> =
+                    final_else_context.clauses.iter().map(|c| (**c).clone()).chain(self.negated_clauses).collect();
+
+                let mut final_else_referenced_ids = WordSet::default();
+                let (reconcilable_types, _) = mago_algebra::find_satisfying_assignments(
+                    &final_else_clauses,
+                    None,
+                    &mut final_else_referenced_ids,
+                );
+
+                if !reconcilable_types.is_empty() {
+                    reconcile_keyed_types(
+                        self.context,
+                        &reconcilable_types,
+                        AssertionMap::default(),
+                        &mut final_else_context,
+                        &mut WordSet::default(),
+                        &final_else_referenced_ids,
+                        &switch.span(),
+                        false,
+                        false,
+                    );
+                }
+
+                final_else_context.locals.get(&subject_id).is_some_and(|t| t.is_never())
+                    || root_subject_id
+                        .as_ref()
+                        .is_some_and(|id| final_else_context.locals.get(id).is_some_and(|t| t.is_never()))
+            };
 
         let mut possibly_redefined_vars = self.possibly_redefined_variables.unwrap_or_default();
         if let Some(new_locals) = self.new_locals {
             possibly_redefined_vars.retain(|k, _| !new_locals.contains_key(k));
             if is_exhaustive {
+                let offset = switch.start_position().offset;
+                self.new_assigned_variable_ids.extend(new_locals.keys().map(|variable_id| (*variable_id, offset)));
                 self.block_context.locals.extend(new_locals);
             } else {
                 for (var_id, var_type) in new_locals {
@@ -247,6 +290,8 @@ where
 
         if let Some(redefined_vars) = self.redefined_variables {
             if is_exhaustive {
+                let offset = switch.start_position().offset;
+                self.new_assigned_variable_ids.extend(redefined_vars.keys().map(|variable_id| (*variable_id, offset)));
                 possibly_redefined_vars.retain(|k, _| !redefined_vars.contains_key(k));
                 self.block_context.locals.extend(redefined_vars.iter().map(|(k, v)| (*k, Rc::clone(v))));
             } else {
@@ -272,7 +317,7 @@ where
 
         self.artifacts.fully_matched_switch_offsets.insert(switch.start_position().offset);
         self.block_context.assigned_variable_ids.extend(self.new_assigned_variable_ids);
-        self.block_context.flags.set_has_returned(all_options_returned && is_exhaustive);
+        self.block_context.flags.set_has_returned(all_options_exit && is_exhaustive);
 
         Ok(())
     }
@@ -284,6 +329,7 @@ where
         switch_condition: &'ast Expression<'arena>,
         condition_is_synthetic: bool,
         switch_var_id: Word,
+        root_subject_id: Option<Word>,
         switch_case: &'ast SwitchCase<'arena>,
         previous_empty_cases: &Vec<&'ast SwitchExpressionCase<'arena>>,
         original_block_context: &BlockContext<'ctx>,
@@ -352,32 +398,34 @@ where
             has_ending_statements || (!case_actions.is_empty() && !case_actions.contains(ControlAction::None));
 
         let mut case_block_context = original_block_context.clone();
+        let mut condition_assigned_variables = WordSet::default();
 
         let mut case_equality_expression = None;
 
-        if condition_is_synthetic {
-            self.artifacts.set_expression_type(
-                switch_condition,
-                if let Some(t) = self.block_context.locals.get(&switch_var_id) { (**t).clone() } else { get_mixed() },
-            );
-        }
-
-        let switch_condition_type =
+        let original_subject_type =
             self.artifacts.get_rc_expression_type(switch_condition).cloned().unwrap_or(Rc::new(get_mixed()));
 
-        if switch_condition_type.is_never() {
+        let current_subject_type = self
+            .running_else_context
+            .locals
+            .get(&switch_var_id)
+            .cloned()
+            .or_else(|| root_subject_id.and_then(|root_id| self.running_else_context.locals.get(&root_id).cloned()))
+            .unwrap_or_else(|| Rc::clone(&original_subject_type));
+
+        if condition_is_synthetic {
+            self.artifacts.set_expression_type(switch_condition, (*current_subject_type).clone());
+        }
+
+        if switch_case.is_default() && current_subject_type.is_never() && !self.has_reachable_fallthrough {
             result = Some(false);
 
-            let (code, message, annotation_message) = if switch_case.is_default() {
-                (IssueCode::UnreachableSwitchDefault, "Unreachable default case", "this default case is unreachable")
-            } else {
-                (IssueCode::UnreachableSwitchCase, "Unreachable switch case", "this case is unreachable")
-            };
-
             self.context.collector.report_with_code(
-                code,
-                Issue::error(message)
-                    .with_annotation(Annotation::primary(switch_case.span()).with_message(annotation_message))
+                IssueCode::UnreachableSwitchDefault,
+                Issue::error("Unreachable default case")
+                    .with_annotation(
+                        Annotation::primary(switch_case.span()).with_message("this default case is unreachable"),
+                    )
                     .with_annotation(
                         Annotation::secondary(switch.expression.span())
                             .with_message("The switch subject's type has been fully exhausted by previous cases."),
@@ -399,7 +447,35 @@ where
                 }
             }
 
-            case_condition.analyze(self.context, self.block_context, self.artifacts)?;
+            if original_subject_type.is_true() && !self.negated_clauses.is_empty() {
+                let mut condition_context = self.block_context.clone();
+                let (assertions, active_assertions) = mago_algebra::find_satisfying_assignments_iter(
+                    self.negated_clauses.iter(),
+                    None,
+                    &mut WordSet::default(),
+                );
+
+                reconcile_keyed_types(
+                    self.context,
+                    &assertions,
+                    active_assertions,
+                    &mut condition_context,
+                    &mut WordSet::default(),
+                    &WordSet::default(),
+                    &case_condition.span(),
+                    false,
+                    false,
+                );
+
+                case_condition.analyze(self.context, &mut condition_context, self.artifacts)?;
+                condition_assigned_variables =
+                    copy_condition_assignments(original_block_context, &condition_context, &mut case_block_context);
+            } else {
+                case_condition.analyze(self.context, self.block_context, self.artifacts)?;
+                condition_assigned_variables =
+                    copy_condition_assignments(original_block_context, self.block_context, &mut case_block_context);
+            }
+
             let has_alternate_entry = self.has_reachable_fallthrough || has_non_duplicate_empty_case;
             let condition_is_duplicate = self.check_for_duplicate_case_condition(
                 case_condition,
@@ -414,10 +490,10 @@ where
             if result.is_none()
                 && let Some(condition_type) = self.artifacts.get_rc_expression_type(case_condition)
             {
-                if (switch_condition_type.is_true() && condition_type.is_always_falsy())
+                if (original_subject_type.is_true() && condition_type.is_always_falsy())
                     || !can_expression_types_be_identical(
                         self.context.codebase,
-                        switch_condition_type.as_ref(),
+                        original_subject_type.as_ref(),
                         condition_type.as_ref(),
                         false,
                         true,
@@ -435,15 +511,32 @@ where
                             .with_annotation(
                                 Annotation::secondary(switch.expression.span()).with_message(format!(
                                     "Switch subject has type `{}`.",
-                                    switch_condition_type.get_id()
+                                    original_subject_type.get_id()
                                 )),
                             )
                             .with_note("This case condition will never match the switch subject's type.")
                             .with_help("Remove this case or ensure that the switch subject's type can still match it."),
                     );
+                } else if current_subject_type.is_never() && !has_alternate_entry {
+                    result = Some(false);
+
+                    self.context.collector.report_with_code(
+                        IssueCode::UnreachableSwitchCase,
+                        Issue::error("Unreachable switch case")
+                            .with_annotation(
+                                Annotation::primary(switch_case.span()).with_message("this case is unreachable"),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(switch.expression.span()).with_message(
+                                    "The switch subject's type has been fully exhausted by previous cases.",
+                                ),
+                            )
+                            .with_note("The switch subject's type has been fully exhausted by previous cases.")
+                            .with_help("Remove this case or ensure that the switch subject's type can still match it."),
+                    );
                 } else if !is_last
-                    && ((switch_condition_type.is_true() && condition_type.is_always_truthy())
-                        || is_always_identical_to(condition_type.as_ref(), switch_condition_type.as_ref()))
+                    && ((original_subject_type.is_true() && condition_type.is_always_truthy())
+                        || is_always_identical_to(condition_type.as_ref(), original_subject_type.as_ref()))
                 {
                     result = Some(true);
 
@@ -457,7 +550,7 @@ where
                             .with_annotation(
                                 Annotation::secondary(switch.expression.span()).with_message(format!(
                                     "Switch subject has type `{}`.",
-                                    switch_condition_type.get_id()
+                                    original_subject_type.get_id()
                                 )),
                             )
                             .with_note("All subsequent `case` and `default` statements are unreachable.")
@@ -477,7 +570,7 @@ where
                     case_condition,
                     previous_empty_cases.iter().map(|c| c.expression).collect::<Vec<_>>(),
                 )
-            } else if switch_condition_type.is_true() {
+            } else if original_subject_type.is_true() {
                 case_condition.clone()
             } else {
                 new_synthetic_equals(self.context.arena, switch_condition, case_condition)
@@ -485,6 +578,8 @@ where
         } else if result.is_none() {
             result = Some(true);
         }
+
+        self.reachable_case_statements[case_index] = case_statements_are_reachable;
 
         if !has_leaving_statements && !is_last {
             if let Some(case_equality_expression) = case_equality_expression {
@@ -549,6 +644,13 @@ where
             original_block_context.clauses.clone()
         };
 
+        // What the earlier cases said about a variable no longer holds once this condition reassigns it.
+        if !condition_assigned_variables.is_empty() {
+            entry_clauses.retain(|clause| {
+                !clause.possibilities.keys().any(|variable_id| condition_assigned_variables.contains(variable_id))
+            });
+        }
+
         case_block_context.clauses = if case_clauses.is_empty() {
             entry_clauses
         } else if let Some(case_condition) = switch_case.expression() {
@@ -558,6 +660,7 @@ where
                 &case_clauses,
                 case_condition.span(),
                 &self.context.settings.algebra_thresholds(),
+                false,
             );
 
             entry_clauses.extend(case_clauses.iter().cloned().map(Rc::new));
@@ -611,14 +714,35 @@ where
         {
             let assertion_context = self.context.get_assertion_context_from_block(self.block_context);
 
-            self.negated_clauses.extend(negate_or_synthesize(
-                case_clauses,
+            let new_negated = negate_or_synthesize(
+                &case_clauses,
                 case_equality_expr,
                 assertion_context,
                 self.artifacts,
                 &self.context.settings.algebra_thresholds(),
                 self.context.settings.formula_size_threshold,
-            ));
+            );
+            self.negated_clauses.extend(new_negated.clone());
+
+            if !new_negated.is_empty() {
+                let mut else_referenced_ids = WordSet::default();
+                let (reconcilable_else_types, _) =
+                    mago_algebra::find_satisfying_assignments(&new_negated, None, &mut else_referenced_ids);
+
+                if !reconcilable_else_types.is_empty() {
+                    reconcile_keyed_types(
+                        self.context,
+                        &reconcilable_else_types,
+                        AssertionMap::default(),
+                        &mut self.running_else_context,
+                        &mut WordSet::default(),
+                        &else_referenced_ids,
+                        &switch_case.span(),
+                        false,
+                        false,
+                    );
+                }
+            }
         }
 
         self.artifacts.case_scopes.push(CaseScope::new());
@@ -908,12 +1032,18 @@ where
             self.context.resolved_names,
             Some(self.context.codebase),
         ) {
-            (false, id, get_root_expression_id(switch.expression), switch.expression.clone())
+            return (false, id, get_root_expression_id(switch.expression), switch.expression.clone());
+        }
+
+        let subject_id_str = format!("{}{}", Self::SYNTHETIC_SWITCH_VAR_PREFIX, switch.expression.span().start.offset);
+        let subject_id = mago_word::word(&subject_id_str);
+        self.block_context.locals.insert(subject_id, Rc::clone(subject_type));
+
+        if get_builtin_get_class_or_gettype_call(switch.expression, self.context.resolved_names, self.context.codebase)
+            .is_some()
+        {
+            (true, subject_id, None, switch.expression.clone())
         } else {
-            let subject_id_str =
-                format!("{}{}", Self::SYNTHETIC_SWITCH_VAR_PREFIX, switch.expression.span().start.offset);
-            let subject_id = mago_word::word(&subject_id_str);
-            self.block_context.locals.insert(subject_id, Rc::clone(subject_type));
             let subject_for_conditions =
                 new_synthetic_variable(self.context.arena, subject_id_str.as_bytes(), switch.expression.span());
 
@@ -922,9 +1052,17 @@ where
     }
 
     fn update_case_exit_map(&mut self, case: &SwitchCase, case_index: usize) {
-        let actions_set = ControlAction::from_statements(
+        let mut break_types = self
+            .block_context
+            .break_types
+            .iter()
+            .map(|break_context| if break_context.is_switch() { BreakType::Switch } else { BreakType::Loop })
+            .collect::<Vec<_>>();
+        break_types.push(BreakType::Switch);
+
+        let actions_set = ControlAction::from_switch_case_statements(
             case.statements().iter().collect(),
-            vec![BreakType::Switch],
+            break_types,
             Some(self.artifacts),
             true,
         );
@@ -950,6 +1088,14 @@ where
     }
 
     fn get_last_action(case_actions: &ControlActionSet) -> Option<ControlAction> {
+        if case_actions.len() == 1 && case_actions.contains(ControlAction::BreakImmediateLoop) {
+            return Some(ControlAction::BreakImmediateLoop);
+        }
+
+        if case_actions.len() == 1 && case_actions.contains(ControlAction::Break) {
+            return Some(ControlAction::Break);
+        }
+
         match (
             case_actions.len(),
             case_actions.contains(ControlAction::None),
@@ -964,4 +1110,26 @@ where
             _ => None,
         }
     }
+}
+
+/// The body of a case runs after its condition, so it sees the variables the condition assigns.
+fn copy_condition_assignments<'ctx>(
+    original_context: &BlockContext<'ctx>,
+    condition_context: &BlockContext<'ctx>,
+    case_context: &mut BlockContext<'ctx>,
+) -> WordSet {
+    let mut assigned_variables = WordSet::default();
+    for (variable_id, variable_type) in &condition_context.locals {
+        let Some(offset) = condition_context.assigned_variable_ids.get(variable_id) else {
+            continue;
+        };
+
+        if original_context.assigned_variable_ids.get(variable_id) != Some(offset) {
+            case_context.locals.insert(*variable_id, Rc::clone(variable_type));
+            case_context.assigned_variable_ids.insert(*variable_id, *offset);
+            assigned_variables.insert(*variable_id);
+        }
+    }
+
+    assigned_variables
 }

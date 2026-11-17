@@ -147,7 +147,9 @@ pub fn get_union_from_type(
             let left = get_union_from_type(union_type.left, scope, type_context, classname)?;
             let right = get_union_from_type(union_type.right, scope, type_context, classname)?;
 
-            let combined_types: Vec<TAtomic> = left.types.iter().chain(right.types.iter()).cloned().collect();
+            let mut combined_types = Vec::with_capacity(left.types.len() + right.types.len());
+            combined_types.extend(left.types.into_owned());
+            combined_types.extend(right.types.into_owned());
 
             TUnion::from_vec(combined_types)
         }
@@ -159,61 +161,21 @@ pub fn get_union_from_type(
                 return Ok(wrap_atomic(TAtomic::Object(TObject::new_has_method(word("__invoke")))));
             }
 
-            let left = get_union_from_type(intersection.left, scope, type_context, classname)?;
-            let right = get_union_from_type(intersection.right, scope, type_context, classname)?;
+            let mut members = vec![];
+            collect_intersection_members(ttype, &mut members);
 
-            let left_str = left.get_id();
-            let left_types = left.types.into_owned();
-            let right_types = right.types.into_owned();
-            let mut intersection_types = vec![];
-            for left_type in left_types {
-                for right_type in &right_types {
-                    if let Some(string) = left_type.intersect_strings(right_type) {
-                        intersection_types.push(string);
-                        continue;
-                    }
+            let mut members = members.into_iter();
+            let mut result = match members.next() {
+                Some(first) => get_union_from_type(first, scope, type_context, classname)?,
+                None => get_mixed(),
+            };
 
-                    let (mut intersection, intersected_type) = if left_type.can_be_intersected() {
-                        if !right_type.can_be_intersected()
-                            && let Some(deferred) = create_deferred_intersection(right_type.clone())
-                        {
-                            (deferred, left_type.clone())
-                        } else {
-                            (left_type.clone(), right_type.clone())
-                        }
-                    } else if let Some(deferred) = create_deferred_intersection(left_type.clone()) {
-                        (deferred, right_type.clone())
-                    } else if let Some(deferred) = create_deferred_intersection(right_type.clone()) {
-                        (deferred, left_type.clone())
-                    } else {
-                        return Err(TypeError::InvalidType(
-                            ttype.to_string(),
-                            format!(
-                                "Types `{}` and `{}` cannot be intersected",
-                                left_type.get_id(),
-                                right_type.get_id(),
-                            ),
-                            ttype.span(),
-                        ));
-                    };
-
-                    if !intersection.add_intersection_type(intersected_type) {
-                        return Err(TypeError::InvalidType(
-                            ttype.to_string(),
-                            format!(
-                                "Type `{}` used in intersection cannot be intersected with another type ( `{}` )",
-                                right_type.get_id(),
-                                left_str,
-                            ),
-                            ttype.span(),
-                        ));
-                    }
-
-                    intersection_types.push(intersection);
-                }
+            for member in members {
+                let right = get_union_from_type(member, scope, type_context, classname)?;
+                result = intersect_unions(result, right, ttype)?;
             }
 
-            TUnion::from_vec(intersection_types)
+            result
         }
         Type::Slice(slice) => {
             wrap_atomic(get_array_type(None, Some(slice.inner), false, scope, type_context, classname)?)
@@ -349,7 +311,9 @@ pub fn get_union_from_type(
             wrap_atomic(get_callable_from_type(callable_type, scope, type_context, classname)?)
         }
         Type::Reference(reference_type) => {
-            if let ReferenceKind::Identifier(identifier) = &reference_type.kind {
+            if type_context.has_type_aliases()
+                && let ReferenceKind::Identifier(identifier) = &reference_type.kind
+            {
                 let reference_name_atom = word(identifier.value);
 
                 if let Some((source_class, original_name)) = type_context.get_imported_type_alias(reference_name_atom) {
@@ -406,7 +370,7 @@ pub fn get_union_from_type(
         Type::UnspecifiedLiteralFloat(_) => get_unspecified_literal_float(),
         Type::LiteralFloat(lit) => get_literal_float(*lit.value),
         Type::LiteralInt(lit) => get_literal_int(lit.value as i64),
-        Type::LiteralString(lit) => get_literal_string(word(lit.value)),
+        Type::LiteralString(lit) => get_literal_string(word(unescape_literal_string(lit.value, lit.raw))),
         Type::Negated(negated) => match negated.operand {
             Type::LiteralInt(lit) => get_literal_int(-(lit.value as i64)),
             Type::LiteralFloat(lit) => get_literal_float(-(*lit.value)),
@@ -425,12 +389,19 @@ pub fn get_union_from_type(
 
                     wrap_atomic(TAtomic::Iterable(TIterable::of_value(Arc::new(value_type))))
                 }
-                _ => {
+                2 => {
                     let key_type = get_union_from_type(&parameters.entries[0].inner, scope, type_context, classname)?;
 
                     let value_type = get_union_from_type(&parameters.entries[1].inner, scope, type_context, classname)?;
 
                     wrap_atomic(TAtomic::Iterable(TIterable::new(Arc::new(key_type), Arc::new(value_type))))
+                }
+                len => {
+                    return Err(TypeError::InvalidType(
+                        ttype.to_string(),
+                        format!("`iterable<K, V>` expects at most 2 parameters (key, value), got {len}"),
+                        ttype.span(),
+                    ));
                 }
             },
             None => wrap_atomic(TAtomic::Iterable(TIterable::mixed())),
@@ -580,16 +551,16 @@ fn get_reference_class_name(
         ReferenceKind::Identifier(identifier) if identifier.value.eq(b"this") => require_classname()?,
         ReferenceKind::Parent(_) => word("parent"),
         ReferenceKind::Identifier(identifier) => {
-            let (class_like_name, _) = scope.resolve(NameKind::Default, identifier.value);
+            let (class_like_name, _) = scope.resolve_word(NameKind::Default, identifier.value);
 
-            if lowercase_resolved_identifier { ascii_lowercase_word(&class_like_name) } else { word(&class_like_name) }
+            if lowercase_resolved_identifier { class_like_name.to_ascii_lowercase() } else { class_like_name }
         }
     })
 }
 
 fn get_array_key_from_shape_key(key: &ShapeKey<'_>, scope: &NamespaceScope, classname: Option<Word>) -> ArrayKey {
     match key {
-        ShapeKey::String { value, .. } => ArrayKey::from_string(word(value)),
+        ShapeKey::String { value, .. } => ArrayKey::from_string(word(unescape_shape_key(value))),
         ShapeKey::Integer { value, .. } => ArrayKey::Integer(*value),
         ShapeKey::ClassLikeConstant { class_name, constant_name, .. } => {
             let class_like_name = if class_name.value.eq_ignore_ascii_case(b"self")
@@ -601,8 +572,7 @@ fn get_array_key_from_shape_key(key: &ShapeKey<'_>, scope: &NamespaceScope, clas
             } else if class_name.value.eq_ignore_ascii_case(b"parent") {
                 word("parent")
             } else {
-                let (resolved, _) = scope.resolve(NameKind::Default, class_name.value);
-                word(&resolved)
+                scope.resolve_word(NameKind::Default, class_name.value).0
             };
 
             ArrayKey::ClassLikeConstant { class_like_name, constant_name: word(constant_name.value) }
@@ -610,11 +580,163 @@ fn get_array_key_from_shape_key(key: &ShapeKey<'_>, scope: &NamespaceScope, clas
     }
 }
 
+/// Reads the quote and backslash escapes of a quoted shape key.
+fn unescape_shape_key(value: &[u8]) -> Cow<'_, [u8]> {
+    if !value.contains(&b'\\') {
+        return Cow::Borrowed(value);
+    }
+
+    let mut result = Vec::with_capacity(value.len());
+    let mut bytes = value.iter().copied().peekable();
+    while let Some(byte) = bytes.next() {
+        if byte == b'\\'
+            && let Some(escaped @ (b'\\' | b'\'' | b'"')) = bytes.peek().copied()
+        {
+            bytes.next();
+            result.push(escaped);
+        } else {
+            result.push(byte);
+        }
+    }
+
+    Cow::Owned(result)
+}
+
+/// Reads the escapes of a docblock string literal the way PHP reads them in source code.
+fn unescape_literal_string<'value>(value: &'value [u8], raw: &[u8]) -> Cow<'value, [u8]> {
+    if !value.contains(&b'\\') {
+        return Cow::Borrowed(value);
+    }
+
+    let double_quoted = raw.first() == Some(&b'"');
+    let mut result = Vec::with_capacity(value.len());
+    let mut bytes = value.iter().copied().peekable();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            result.push(byte);
+            continue;
+        }
+
+        let escaped = match bytes.peek().copied() {
+            Some(b'\\') => b'\\',
+            Some(b'\'') if !double_quoted => b'\'',
+            Some(b'"') if double_quoted => b'"',
+            Some(b'$') if double_quoted => b'$',
+            Some(b'n') if double_quoted => b'\n',
+            Some(b't') if double_quoted => b'\t',
+            Some(b'r') if double_quoted => b'\r',
+            Some(b'v') if double_quoted => 0x0B,
+            Some(b'e') if double_quoted => 0x1B,
+            Some(b'f') if double_quoted => 0x0C,
+            _ => {
+                result.push(byte);
+                continue;
+            }
+        };
+
+        bytes.next();
+        result.push(escaped);
+    }
+
+    Cow::Owned(result)
+}
+
+fn collect_intersection_members<'arena>(ttype: &'arena Type<'arena>, members: &mut Vec<&'arena Type<'arena>>) {
+    if let Type::Intersection(intersection) = ttype {
+        collect_intersection_members(intersection.left, members);
+        collect_intersection_members(intersection.right, members);
+    } else {
+        members.push(ttype);
+    }
+}
+
+fn intersect_unions(left: TUnion, right: TUnion, ttype: &Type<'_>) -> Result<TUnion, TypeError> {
+    let left_str = left.get_id();
+    let left_types = left.types.into_owned();
+    let right_types = right.types.into_owned();
+    let mut intersection_types = vec![];
+    for left_type in left_types {
+        for right_type in &right_types {
+            if let Some(string) = left_type.intersect_strings(right_type) {
+                intersection_types.push(string);
+                continue;
+            }
+
+            if let Some(open_shape) = open_shape_from_intersection(&left_type, right_type) {
+                intersection_types.push(open_shape);
+                continue;
+            }
+
+            let (mut intersection, intersected_type) = if left_type.can_be_intersected() {
+                if !right_type.can_be_intersected()
+                    && let Some(deferred) = create_deferred_intersection(right_type.clone())
+                {
+                    (deferred, left_type.clone())
+                } else {
+                    (left_type.clone(), right_type.clone())
+                }
+            } else if let Some(deferred) = create_deferred_intersection(left_type.clone()) {
+                (deferred, right_type.clone())
+            } else if let Some(deferred) = create_deferred_intersection(right_type.clone()) {
+                (deferred, left_type.clone())
+            } else if right_type.can_be_intersected() {
+                (right_type.clone(), left_type.clone())
+            } else {
+                return Err(TypeError::InvalidType(
+                    ttype.to_string(),
+                    format!("Types `{}` and `{}` cannot be intersected", left_type.get_id(), right_type.get_id(),),
+                    ttype.span(),
+                ));
+            };
+
+            if !intersection.add_intersection_type(intersected_type) {
+                return Err(TypeError::InvalidType(
+                    ttype.to_string(),
+                    format!(
+                        "Type `{}` used in intersection cannot be intersected with another type ( `{}` )",
+                        right_type.get_id(),
+                        left_str,
+                    ),
+                    ttype.span(),
+                ));
+            }
+
+            intersection_types.push(intersection);
+        }
+    }
+
+    Ok(TUnion::from_vec(intersection_types))
+}
+
+/// `array{a: T}&array<K, V>` is the older spelling of the open shape `array{a: T, ...<K, V>}`.
+fn open_shape_from_intersection(left: &TAtomic, right: &TAtomic) -> Option<TAtomic> {
+    let (TAtomic::Array(TArray::Keyed(left)), TAtomic::Array(TArray::Keyed(right))) = (left, right) else {
+        return None;
+    };
+
+    let (shape, generic) = match (left.known_items.is_some(), right.known_items.is_some()) {
+        (true, false) => (left, right),
+        (false, true) => (right, left),
+        _ => return None,
+    };
+
+    if shape.parameters.is_some() {
+        return None;
+    }
+
+    let mut open_shape = shape.clone();
+    open_shape.parameters = Some(generic.parameters.clone()?);
+    open_shape.non_empty |= generic.non_empty;
+
+    Some(TAtomic::Array(TArray::Keyed(open_shape)))
+}
+
 fn create_deferred_intersection(atomic: TAtomic) -> Option<TAtomic> {
     if matches!(
         atomic,
         TAtomic::Variable(_)
             | TAtomic::Conditional(_)
+            | TAtomic::Alias(_)
             | TAtomic::Derived(
                 TDerived::IndexAccess(_)
                     | TDerived::ValueOf(_)
@@ -649,7 +771,7 @@ fn get_object_from_type(
         };
 
         let key = match field_key.key {
-            ShapeKey::String { value, .. } => word(value),
+            ShapeKey::String { value, .. } => word(unescape_shape_key(value)),
             ShapeKey::Integer { value, .. } => i64_word(value),
             ShapeKey::ClassLikeConstant { class_name, constant_name, .. } => {
                 concat_word!(class_name.value, b"::", constant_name.value)
@@ -695,7 +817,7 @@ fn get_shape_from_type(
                     let array_key = get_array_key_from_shape_key(&field_key.key, scope, classname);
 
                     if let ArrayKey::Integer(offset) = array_key {
-                        if offset > 0 && (offset as usize) == next_offset {
+                        if offset >= 0 && (offset as usize) == next_offset {
                             next_offset += 1;
 
                             offset as usize
@@ -882,17 +1004,17 @@ fn get_reference_from_kind(
         }
         ReferenceKind::Identifier(identifier) => {
             let reference_name = identifier.value;
-            let reference_name_atom = word(reference_name);
-            if let Some(defining_entities) = type_context.get_template_definition(reference_name_atom)
-                && generics.is_none()
-            {
-                return Ok(get_template_atomic(defining_entities, reference_name_atom));
+            if generics.is_none() && type_context.has_template_definitions() {
+                let reference_name_atom = word(reference_name);
+                if let Some(defining_entities) = type_context.get_template_definition(reference_name_atom) {
+                    return Ok(get_template_atomic(defining_entities, reference_name_atom));
+                }
             }
 
-            let (fq_reference_name, _) = scope.resolve(NameKind::Default, reference_name);
+            let (fq_reference_name, _) = scope.resolve_word(NameKind::Default, reference_name);
 
             // `Closure` -> `Closure(mixed...): mixed`
-            if fq_reference_name.eq_ignore_ascii_case(b"Closure") && generics.is_none() {
+            if generics.is_none() && fq_reference_name.as_bytes().eq_ignore_ascii_case(b"Closure") {
                 return Ok(TAtomic::Callable(TCallable::Signature(
                     TCallableSignature::new(false, true)
                         .with_parameters(vec![TCallableParameter::new(Some(Arc::new(get_mixed())), false, true, false)])
@@ -900,7 +1022,7 @@ fn get_reference_from_kind(
                 )));
             }
 
-            word(&fq_reference_name)
+            fq_reference_name
         }
     };
 
@@ -956,11 +1078,7 @@ fn get_reference_from_kind(
             break 'iterator;
         }
 
-        let Some(type_parameters) = &mut type_parameters else {
-            type_parameters = Some(vec![mixed_default(), mixed_default()]);
-
-            break 'iterator;
-        };
+        let type_parameters = type_parameters.get_or_insert_with(Vec::new);
 
         if type_parameters.len() == 1 {
             type_parameters.insert(0, mixed_default());
@@ -998,6 +1116,26 @@ fn get_reference_from_kind(
     }
 }
 
+/// PHP stores a decimal integer string key such as `'123'` as the integer `123`.
+fn normalize_numeric_string_keys(key: TUnion) -> TUnion {
+    if !key.types.iter().any(|atomic| matches!(atomic.to_array_key(), Some(ArrayKey::Integer(_))) && atomic.is_string())
+    {
+        return key;
+    }
+
+    key.clone_with_types(
+        key.types
+            .iter()
+            .map(|atomic| match atomic.to_array_key() {
+                Some(ArrayKey::Integer(integer)) if atomic.is_string() => {
+                    TAtomic::Scalar(TScalar::literal_int(integer))
+                }
+                _ => atomic.clone(),
+            })
+            .collect(),
+    )
+}
+
 #[inline]
 fn get_array_type<'src>(
     mut key: Option<&'src Type<'src>>,
@@ -1013,7 +1151,11 @@ fn get_array_type<'src>(
 
     let mut array = TKeyedArray::new_with_parameters(
         Arc::new(if let Some(k) = key {
-            get_union_from_type(k, scope, type_context, classname)?
+            if matches!(k, Type::Mixed(_)) {
+                get_arraykey()
+            } else {
+                normalize_numeric_string_keys(get_union_from_type(k, scope, type_context, classname)?)
+            }
         } else {
             get_arraykey()
         }),

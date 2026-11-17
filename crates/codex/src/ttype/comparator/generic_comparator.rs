@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use mago_word::Word;
 
 use crate::metadata::CodebaseMetadata;
@@ -42,6 +44,8 @@ pub(crate) fn is_contained_by(
     let Some(container_type_parameters) = container_object.get_type_parameters() else {
         return true;
     };
+
+    let input_is_container_class = input_metadata.name == container_metadata.name;
 
     let mut all_parameters_match = true;
     for (parameter_offset, container_type_parameter) in container_type_parameters.iter().enumerate() {
@@ -128,10 +132,26 @@ pub(crate) fn is_contained_by(
             && !container_type_parameter.from_template_fallback()
         {
             let mut reverse_result = ComparisonResult::new();
+            let reverse_container =
+                if specialized_template_type.types.iter().any(
+                    |atomic| matches!(atomic, TAtomic::Object(TObject::Named(named_object)) if named_object.is_this),
+                ) {
+                    let mut reverse_container = specialized_template_type.clone();
+                    for atomic in reverse_container.types.to_mut() {
+                        if let TAtomic::Object(TObject::Named(named_object)) = atomic {
+                            named_object.is_this = false;
+                        }
+                    }
+
+                    Cow::Owned(reverse_container)
+                } else {
+                    Cow::Borrowed(&specialized_template_type)
+                };
+
             let reverse_ok = union_comparator::is_contained_by(
                 codebase,
                 container_type_parameter,
-                &specialized_template_type,
+                &reverse_container,
                 false,
                 container_type_parameter.ignore_falsable_issues(),
                 inside_assertion,
@@ -150,6 +170,7 @@ pub(crate) fn is_contained_by(
         }
 
         if all_parameters_match
+            && input_is_container_class
             && !specialized_template_type.has_template()
             && !container_type_parameter.has_template()
             && (specialized_template_type.is_never()

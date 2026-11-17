@@ -30,6 +30,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::utils::template::check_template_arguments;
 use mago_bytes::BytesDisplay;
 
 /// Populates the context with variable types defined in the docblock.
@@ -78,6 +79,10 @@ pub fn populate_docblock_variables_excluding<'ctx, A>(
             let TypeRef::Atomic(TAtomic::Reference(TReference::Symbol { name: ref_name, .. })) = type_ref else {
                 continue;
             };
+
+            if context.codebase.get_constant_name_of_type_reference(ref_name.as_bytes()).is_some() {
+                continue;
+            }
 
             context.collector.report_with_code(
                 IssueCode::NonExistentClassLike,
@@ -214,7 +219,7 @@ where
                     var_tag.r#type,
                     &context.scope,
                     &context.type_resolution_context,
-                    block_context.scope.get_class_like_name(),
+                    block_context.scope.get_class_like().map(|class| class.original_name),
                 )
             }) {
                 Ok(mut variable_type) => {
@@ -225,6 +230,10 @@ where
                         &mut artifacts.symbol_references,
                         true,
                     );
+
+                    if allow_tracing {
+                        check_template_arguments(context, TypeRef::Union(&variable_type), var_tag.r#type.span());
+                    }
 
                     expander::expand_union(
                         context.codebase,
@@ -350,6 +359,7 @@ pub fn insert_variable_from_docblock<'ctx, A>(
 
         let is_redundant = is_super
             && is_sub
+            && !previous_type.possibly_undefined()
             && !variable_type.is_mixed()
             && !previous_type.is_mixed()
             && !variable_type.is_generic_parameter()
@@ -393,6 +403,7 @@ pub fn insert_variable_from_docblock<'ctx, A>(
             );
         }
 
+        block_context.remove_descendants(context, variable_name, &previous_type, Some(&variable_type));
         block_context.locals.insert(variable_name, Rc::new(variable_type));
     } else if block_context.scope.get_function_like().is_none() || variable_name.as_bytes() == b"$this" {
         block_context.locals.insert(variable_name, Rc::new(variable_type));

@@ -1,25 +1,22 @@
 use mago_allocator::Arena;
-use mago_allocator::vec::Vec;
 use mago_allocator::vec_in;
 
 use mago_php_version::feature::Feature;
 use mago_span::HasSpan;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionLikeParameterList;
-use mago_syntax::cst::Modifier;
-use mago_syntax::cst::ModifierSequenceExt;
-use mago_syntax::cst::Sequence;
 
 use crate::document::BreakMode;
+use crate::document::Column;
 use crate::document::Document;
 use crate::document::Group;
 use crate::document::IfBreak;
+use crate::document::IndentIfBreak;
 use crate::document::Line;
 use crate::internal::FormatterState;
 use crate::internal::comment::CommentFlags;
 use crate::internal::format::Format;
 use crate::internal::format::misc;
-use crate::internal::utils::string_width;
 
 pub(super) fn print_function_like_parameters<'arena, A>(
     f: &mut FormatterState<'_, 'arena, A>,
@@ -28,6 +25,8 @@ pub(super) fn print_function_like_parameters<'arena, A>(
 where
     A: Arena,
 {
+    f.parameter_state.hugged_list_group_id = None;
+
     if parameter_list.parameters.is_empty() {
         let mut contents = vec_in![f.arena; Document::String(b"(")];
         if let Some(comments) = f.print_inner_comment(parameter_list.span()) {
@@ -47,15 +46,14 @@ where
     let previous_list_group_id = f.parameter_state.list_group_id;
     f.parameter_state.list_group_id = Some(list_id);
 
-    let should_hug_the_parameters = !should_break && should_hug_the_only_parameter(f, parameter_list);
-    let parameter_variable_width = if should_align_parameters(f, parameter_list) {
-        Some(
-            get_max_parameter_prefix_width(parameter_list)
-                + usize::from(needs_promoted_parameter_type_gutter(parameter_list)),
-        )
-    } else {
-        None
-    };
+    let should_hug_the_parameters = !force_break && should_hug_the_only_parameter(f, parameter_list);
+    let variable_column = should_align_parameters(f, parameter_list).then(|| Column {
+        table: f.next_id(),
+        index: 1,
+        shift: 0,
+        gutter: u8::from(needs_promoted_parameter_type_gutter(parameter_list)),
+        adjacent: false,
+    });
 
     let left_parenthesis = {
         let mut contents = vec_in![f.arena; Document::String(b"(")];
@@ -89,15 +87,8 @@ where
 
     let mut printed = vec_in![f.arena; ];
     let len = parameter_list.parameters.len();
-    let previous_variable_padding = f.parameter_state.variable_padding;
     for (i, parameter) in parameter_list.parameters.iter().enumerate() {
-        f.parameter_state.variable_padding = match parameter_variable_width {
-            Some(max_width) if can_align_parameter(f, parameter_list, i, parameter) => {
-                let padding = max_width.saturating_sub(get_parameter_prefix_width(parameter));
-                (padding > 0).then_some(padding)
-            }
-            _ => None,
-        };
+        f.parameter_state.variable_column = variable_column;
 
         printed.push(parameter.format(f));
         if i == len - 1 {
@@ -112,13 +103,34 @@ where
             printed.push(Document::Line(Line::hard()));
         }
     }
-    f.parameter_state.variable_padding = previous_variable_padding;
+    f.parameter_state.variable_column = None;
+    f.parameter_state.list_group_id = previous_list_group_id;
+    f.parameter_state.hugged_list_group_id = should_hug_the_parameters.then_some(list_id);
 
     if should_hug_the_parameters {
-        parts.extend(printed);
-        parts.push(Document::String(b")"));
+        let line_if_broken =
+            || Document::IfBreak(IfBreak::then(f.arena, Document::Line(Line::soft())).with_id(list_id));
 
-        return Document::Array(parts);
+        let mut contents = vec_in![f.arena; line_if_broken()];
+        contents.extend(printed);
+
+        let mut hugged = vec_in![f.arena;
+            Document::Group(Group::new(parts).with_id(list_id).with_break_mode(if preserve_break {
+                BreakMode::Preserve
+            } else {
+                BreakMode::Auto
+            })),
+            Document::IndentIfBreak(IndentIfBreak::new(list_id, contents)),
+        ];
+
+        if f.trailing_comma_for(Feature::TrailingCommaInParameterList) {
+            hugged.push(Document::IfBreak(IfBreak::then(f.arena, Document::String(b",")).with_id(list_id)));
+        }
+
+        hugged.push(line_if_broken());
+        hugged.push(Document::String(b")"));
+
+        return Document::Array(hugged);
     }
 
     if !parameter_list.parameters.is_empty() {
@@ -140,8 +152,6 @@ where
     }
 
     parts.push(Document::String(b")"));
-
-    f.parameter_state.list_group_id = previous_list_group_id;
 
     Document::Group(Group::new(parts).with_id(list_id).with_break_mode(if force_break {
         BreakMode::Force
@@ -223,9 +233,6 @@ where
 {
     f.settings.align_parameters
         && parameter_list.parameters.len() >= 2
-        && (force_break_parameters(f, parameter_list)
-            || preserve_break_parameters(f, parameter_list)
-            || parameter_list_exceeds_print_width(f, parameter_list))
         && parameter_list
             .parameters
             .iter()
@@ -233,67 +240,8 @@ where
             .all(|(index, parameter)| can_align_parameter(f, parameter_list, index, parameter))
 }
 
-fn parameter_list_exceeds_print_width<'arena, A>(
-    f: &FormatterState<'_, 'arena, A>,
-    parameter_list: &'arena FunctionLikeParameterList<'arena>,
-) -> bool
-where
-    A: Arena,
-{
-    let start = parameter_list.left_parenthesis.start.offset;
-    let end = parameter_list.right_parenthesis.end.offset;
-
-    let source = &f.source_text[start as usize..end as usize];
-    let mut flattened = Vec::with_capacity_in(source.len(), f.arena);
-    let mut previous_was_whitespace = false;
-    for &byte in source {
-        if byte.is_ascii_whitespace() {
-            if !previous_was_whitespace {
-                flattened.push(b' ');
-                previous_was_whitespace = true;
-            }
-        } else {
-            flattened.push(byte);
-            previous_was_whitespace = false;
-        }
-    }
-
-    let flattened: &[u8] = flattened.leak();
-
-    string_width(flattened.trim_ascii()) > f.settings.print_width
-}
-
-fn get_max_parameter_prefix_width<'arena>(parameter_list: &'arena FunctionLikeParameterList<'arena>) -> usize {
-    parameter_list.parameters.iter().map(get_parameter_prefix_width).max().unwrap_or(0)
-}
-
 fn needs_promoted_parameter_type_gutter<'arena>(parameter_list: &'arena FunctionLikeParameterList<'arena>) -> bool {
     parameter_list.parameters.iter().any(|parameter| parameter.is_promoted_property() && parameter.hint.is_none())
-}
-
-fn get_parameter_prefix_width<'arena>(parameter: &'arena FunctionLikeParameter<'arena>) -> usize {
-    let mut width = 0;
-
-    let modifiers_width = get_modifier_sequence_width(&parameter.modifiers);
-    if modifiers_width > 0 {
-        width += modifiers_width;
-        width += 1;
-    }
-
-    if let Some(hint) = &parameter.hint {
-        width += hint.span().length() as usize;
-        width += 1;
-    }
-
-    if parameter.ampersand.is_some() {
-        width += string_width(b"&");
-    }
-
-    if parameter.ellipsis.is_some() {
-        width += string_width(b"...");
-    }
-
-    width
 }
 
 fn can_align_parameter<'arena, A>(
@@ -327,26 +275,4 @@ where
         let comment_span = comment.span;
         comment_span.start.offset < end && comment_span.end.offset > start
     })
-}
-
-fn get_modifier_sequence_width(modifiers: &Sequence<'_, Modifier<'_>>) -> usize {
-    let ordered_modifiers = [
-        modifiers.get_final(),
-        modifiers.get_abstract(),
-        modifiers.get_first_read_visibility(),
-        modifiers.get_first_write_visibility(),
-        modifiers.get_static(),
-        modifiers.get_readonly(),
-    ];
-
-    let mut width = 0;
-    for (printed_count, modifier) in ordered_modifiers.into_iter().flatten().enumerate() {
-        if printed_count > 0 {
-            width += 1;
-        }
-
-        width += string_width(modifier.get_keyword().value);
-    }
-
-    width
 }
