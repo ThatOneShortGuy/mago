@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="Configuration · Mago">
   <meta property="og:description" content="Comment Mago découvre les fichiers de configuration, ce que fait chaque option de mago.toml, et comment partager une configuration entre projets.">
-  <meta property="og:url" content="https://mago.carthage.software/main/fr/guide&#x2F;configuration/">
+  <meta property="og:url" content="https://mago.carthage.software/main/fr/guide/configuration/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/fr/guide&#x2F;configuration/">
+  <link rel="canonical" href="https://mago.carthage.software/main/fr/guide/configuration/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../main/fr/">
+      <img class="brand__mark" src="../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">Appuyez sur &#x2F; pour rechercher</span>
+      <span class="search-trigger__hint">Appuyez sur / pour rechercher</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/guide/getting-started">Guide</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/faq">FAQ</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/playground">Playground</a>
+      <a class="header-link" href="../../../../main/fr/guide/getting-started">Guide</a>
+      <a class="header-link" href="../../../../main/fr/faq">FAQ</a>
+      <a class="header-link" href="../../../../main/fr/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">Soutenir</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="Dépôt GitHub" title="Dépôt GitHub">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="fr"
-  data-logical-path="guide&#x2F;configuration"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="guide/configuration"
+  data-path-to-root="../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -155,7 +156,7 @@
   
   <div class="doc-banner">Cette traduction peut être obsolète.</div>
   
-  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#x27;est pas encore traduite. Vous avez été redirigé vers la page d&#x27;accueil de la langue.</div>
+  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#39;est pas encore traduite. Vous avez été redirigé vers la page d&#39;accueil de la langue.</div>
 
   
 <div class="doc-layout">
@@ -198,7 +199,7 @@
       
       <li>
         <a href="../../../../main/fr/guide/environment-variables">
-          <span>Variables d&#x27;environnement</span>
+          <span>Variables d&#39;environnement</span>
         </a>
       </li>
       
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../main/fr/guide/inspecting-the-ast">
-          <span>Inspecter l&#x27;AST</span>
+        <a href="../../../../main/fr/guide/inspecting-the-cst">
+          <span>Inspecter l&#39;CST</span>
         </a>
       </li>
       
@@ -360,13 +361,13 @@
         
         <li>
           <a href="../../../../main/fr/tools/analyzer/command-reference">
-            <span>Référence de commande de l&#x27;analyseur</span>
+            <span>Référence de commande de l&#39;analyseur</span>
           </a>
         </li>
         
         <li>
           <a href="../../../../main/fr/tools/analyzer/configuration-reference">
-            <span>Référence de configuration de l&#x27;analyseur</span>
+            <span>Référence de configuration de l&#39;analyseur</span>
           </a>
         </li>
         
@@ -460,6 +461,54 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/fr/tools/formatter/twig">
+            <span>Formateur Twig</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/fr/tools/twig-linter">
+            <span>Linter Twig</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../main/fr/tools/twig-linter/rules">
+            <span>Règles</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -505,6 +554,12 @@
       <li>
         <a href="../../../../main/fr/recipes/docker">
           <span>Recette Docker</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../main/fr/recipes/drupal">
+          <span>Recette Drupal</span>
         </a>
       </li>
       
@@ -570,29 +625,29 @@
 <p>Chaque version publie un schéma JSON décrivant l'intégralité de l'arbre de configuration. Les éditeurs qui comprennent ce schéma offrent l'auto-complétion, la documentation au survol et la validation en ligne pour <code>mago.{toml,yaml,yml,json}</code>.</p>
 <p>Le schéma est hébergé à :</p>
 <ul>
-<li><code>https://mago.carthage.software/&lt;version&gt;/schema.json</code>, épinglé à une release précise comme <code>1.29.0</code>.</li>
+<li><code>https://mago.carthage.software/&lt;version&gt;/schema.json</code>, épinglé à une release précise comme <code>1.60.2</code>.</li>
 <li><code>https://mago.carthage.software/latest/schema.json</code>, la dernière release stable.</li>
 <li><code>https://mago.carthage.software/main/schema.json</code>, la build de développement depuis <code>main</code>.</li>
 </ul>
 <p>Épinglez l'URL à la version de Mago installée pour que le schéma et votre binaire restent synchronisés. <code>mago init</code> écrit l'URL épinglée dans le fichier qu'il génère.</p>
 <p>La façon de référencer le schéma dépend du format :</p>
-<pre><code class="language-toml">#:schema https://mago.carthage.software/1.29.0/schema.json
+<pre><code class="language-toml">#:schema https://mago.carthage.software/1.60.2/schema.json
 version = "1"
 php-version = "8.3"
 </code></pre>
-<pre><code class="language-yaml"># yaml-language-server: $schema=https://mago.carthage.software/1.29.0/schema.json
+<pre><code class="language-yaml"># yaml-language-server: $schema=https://mago.carthage.software/1.60.2/schema.json
 version: "1"
 php-version: "8.3"
 </code></pre>
 <pre><code class="language-json">{
-  "$schema": "https://mago.carthage.software/1.29.0/schema.json",
+  "$schema": "https://mago.carthage.software/1.60.2/schema.json",
   "version": "1",
   "php-version": "8.3"
 }
 </code></pre>
 <p>Pour TOML, le commentaire est lu par le serveur de langage <a href="https://taplo.tamasfe.dev/">Taplo</a>, qui alimente l'extension VS Code « Even Better TOML » et le support TOML de JetBrains. Pour YAML, le commentaire est lu par le <a href="https://github.com/redhat-developer/yaml-language-server">serveur de langage YAML de Red Hat</a>. Pour JSON, tout éditeur moderne lit <code>$schema</code> nativement. Mago lui-même ignore la clé <code>$schema</code> et les commentaires magiques, ils n'existent que pour l'outillage des éditeurs.</p>
 <p>Si vous régénérez le schéma en CI (par exemple, pour valider des fichiers de configuration de manière programmatique), <code>mago config --schema</code> l'imprime sur stdout.</p>
-<h2 id="sharing-configuration-with-extends">Partager une configuration avec <code>extends</code></h2>
+<h2 id="local-schema-with-composer">Partager une configuration avec <code>extends</code></h2>
 <blockquote>
 <p>Disponible depuis Mago 1.25. Les versions antérieures ignorent silencieusement la directive.</p>
 </blockquote>
@@ -610,10 +665,10 @@ extends = [
 # Les clés propres à ce fichier remplacent tout ce qui vient des couches précédentes
 php-version = "8.3"
 </code></pre>
-<h3 id="resolution">Résolution</h3>
+<h3 id="sharing-configuration-with-extends">Résolution</h3>
 <p>Les chemins absolus sont utilisés tels quels. Les chemins relatifs sont résolus par rapport au répertoire du fichier qui déclare <code>extends</code>, et non par rapport au répertoire de travail courant. Ainsi, <code>mago --config some/dir/config.toml</code> avec <code>extends = "base.toml"</code> cherche <code>some/dir/base.toml</code>.</p>
 <p>Les entrées de fichier doivent exister et utiliser une extension reconnue (<code>.toml</code>, <code>.yaml</code>, <code>.yml</code>, <code>.json</code>). Les entrées de répertoire sont parcourues à la recherche de <code>mago.{toml,yaml,yml,json}</code> selon cette précédence ; un répertoire sans fichier reconnu est ignoré avec un avertissement plutôt que de faire échouer la construction.</p>
-<h3 id="effective-precedence">Précédence effective</h3>
+<h3 id="resolution">Précédence effective</h3>
 <p>Les couches sont fusionnées en partant de la plus profonde, et la dernière l'emporte :</p>
 <ol>
 <li>Valeurs par défaut intégrées.</li>
@@ -622,7 +677,7 @@ php-version = "8.3"
 <li>Les variables d'environnement <code>MAGO_*</code> pour les <a href="../../../../main/fr/guide/environment-variables">scalaires pris en charge</a>.</li>
 <li>Les drapeaux CLI tels que <code>--php-version</code>, <code>--threads</code>.</li>
 </ol>
-<h3 id="merge-semantics">Sémantique de fusion</h3>
+<h3 id="effective-precedence">Sémantique de fusion</h3>
 <p>Par clé de premier niveau :</p>
 <ul>
 <li>Les tables et objets sont fusionnés en profondeur. Un enfant peut surcharger une seule clé d'une table imbriquée sans redéfinir toute la table.</li>
@@ -641,7 +696,7 @@ threads = 8
 excludes = ["build"]   # concaténé -&gt; ["vendor", "node_modules", "build"]
 </code></pre>
 <p>Les cycles sont détectés via le suivi des chemins canoniques et déclenchent une erreur claire au lieu de boucler indéfiniment. L'héritage en losange (A étend B et C, qui étendent tous deux D) traite D une seule fois et fonctionne sans souci. Les couches peuvent mélanger les formats librement ; chacune est analysée par son propre driver et fusionnée à un niveau de valeur générique avant que le document final ne soit validé selon le schéma.</p>
-<h2 id="global-options">Options globales</h2>
+<h2 id="merge-semantics">Options globales</h2>
 <p>Ces clés se trouvent à la racine de <code>mago.toml</code>.</p>
 <pre><code class="language-toml">version = "1"
 php-version = "8.2"
@@ -650,7 +705,7 @@ stack-size = 8388608     # 8 MiB
 editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 </code></pre>
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th><th style="text-align: left">Description</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>version</code></td><td style="text-align: left">string</td><td style="text-align: left">aucun</td><td style="text-align: left">Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (<code>"1"</code>), mineur (<code>"1.29"</code>) ou exact (<code>"1.29.0"</code>). Voir <a href="#version-pinning">épinglage de version</a>.</td></tr>
+<tr><td style="text-align: left"><code>version</code></td><td style="text-align: left">string</td><td style="text-align: left">aucun</td><td style="text-align: left">Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (<code>"1"</code>), mineur (<code>"1.60"</code>) ou exact (<code>"1.60.2"</code>). Voir <a href="#version-pinning">épinglage de version</a>.</td></tr>
 <tr><td style="text-align: left"><code>php-version</code></td><td style="text-align: left">string</td><td style="text-align: left">dernière stable</td><td style="text-align: left">La version PHP que Mago doit cibler pour l'analyse syntaxique et l'analyse. <code>mago init</code> la détecte automatiquement depuis <code>composer.json</code> quand c'est possible.</td></tr>
 <tr><td style="text-align: left"><code>allow-unsupported-php-version</code></td><td style="text-align: left">boolean</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Autoriser Mago à s'exécuter sur une version PHP qu'il ne prend pas officiellement en charge. Non recommandé.</td></tr>
 <tr><td style="text-align: left"><code>no-version-check</code></td><td style="text-align: left">boolean</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Désactive l'avertissement émis quand le binaire installé diverge de la version épinglée. Une divergence de version majeure est toujours fatale.</td></tr>
@@ -658,13 +713,13 @@ editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 <tr><td style="text-align: left"><code>stack-size</code></td><td style="text-align: left">integer</td><td style="text-align: left">2 MiB</td><td style="text-align: left">Taille de pile par thread en octets. Minimum 2 MiB, maximum 8 MiB.</td></tr>
 <tr><td style="text-align: left"><code>editor-url</code></td><td style="text-align: left">string</td><td style="text-align: left">aucun</td><td style="text-align: left">Modèle d'URL pour les chemins de fichiers cliquables dans la sortie du terminal. Voir <a href="#editor-integration">intégration éditeur</a>.</td></tr>
 </tbody></table>
-<h3 id="version-pinning">Épinglage de version</h3>
+<h3 id="global-options">Épinglage de version</h3>
 <p>Épingler la version fait remonter rapidement les divergences entre le binaire installé et les attentes du projet, plutôt que de produire silencieusement une sortie différente.</p>
 <p>Trois niveaux d'épinglage :</p>
 <ul>
 <li><strong>Épinglage majeur</strong> (<code>version = "1"</code>) : tout <code>1.x.y</code> satisfait l'épinglage. Une montée vers <code>2.x</code> est une erreur fatale, car une nouvelle version majeure peut introduire des défauts incompatibles, des changements de schéma ou de comportement de règles. C'est ce que <code>mago init</code> écrit par défaut.</li>
-<li><strong>Épinglage mineur</strong> (<code>version = "1.29"</code>) : tout <code>1.29.y</code> satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale.</li>
-<li><strong>Épinglage exact</strong> (<code>version = "1.29.0"</code>) : toute divergence émet un avertissement ; une divergence majeure reste fatale.</li>
+<li><strong>Épinglage mineur</strong> (<code>version = "1.60"</code>) : tout <code>1.60.y</code> satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale.</li>
+<li><strong>Épinglage exact</strong> (<code>version = "1.60.2"</code>) : toute divergence émet un avertissement ; une divergence majeure reste fatale.</li>
 </ul>
 <p>L'avertissement peut être désactivé avec <code>--no-version-check</code>, la variable d'environnement <code>MAGO_NO_VERSION_CHECK</code>, ou <code>no-version-check = true</code> dans la configuration. Aucun de ces moyens n'affecte la divergence de version majeure, qui est tout l'intérêt de l'épinglage.</p>
 <p>Pour synchroniser le binaire installé avec l'épinglage du projet :</p>
@@ -672,25 +727,28 @@ editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 </code></pre>
 <p>Pour les épinglages exacts, cela résout directement vers ce tag de release. Pour les épinglages majeurs ou mineurs, Mago parcourt les releases GitHub récentes et installe la plus haute qui satisfait l'épinglage. Ainsi, <code>version = "1"</code> avec 2.0 déjà sortie installe quand même la dernière release 1.x sans vous tirer en avant.</p>
 <p><code>version</code> est actuellement optionnel. Une future version de Mago pourrait commencer à émettre un avertissement quand il est absent, afin de préparer les projets à l'éventuelle montée vers la 2.0.</p>
-<h2 id="source"><code>[source]</code></h2>
+<h2 id="version-pinning"><code>[source]</code></h2>
 <p>La section <code>[source]</code> contrôle la manière dont Mago découvre et traite les fichiers.</p>
-<h3 id="four-categories-of-paths">Trois catégories de chemins</h3>
-<p>Mago distingue votre code, le code tiers et le code à ignorer entièrement :</p>
+<h3 id="source">Quatre catégories de chemins</h3>
+<p>Mago distingue votre code, le code tiers, les correctifs de types et le code à ignorer entièrement :</p>
 <ul>
 <li><strong><code>paths</code></strong> sont vos fichiers source. Mago les analyse, les linte et les formate.</li>
-<li><strong><code>includes</code></strong> sont les dépendances (généralement <code>vendor</code>). Mago les analyse pour pouvoir résoudre les symboles et les types, mais ne les analyse, ne les linte ni ne les réécrit jamais.</li>
+<li><strong><code>includes</code></strong> sont les dépendances (généralement <code>vendor</code>). Mago les lit pour résoudre les symboles et les types, mais ne les analyse, ne les linte ni ne les réécrit.</li>
+<li><strong><code>patches</code></strong> sont des fichiers PHP qui corrigent les types et les marqueurs PHPDoc sémantiques pris en charge du code tiers ou du code intégré. Leurs déclarations de types et leur PHPDoc prennent la priorité, mais Mago ne les analyse, ne les linte ni ne les formate. Voir <a href="#corriger-les-types-du-code-tiers">Corriger les types du code tiers</a>.</li>
 <li><strong><code>excludes</code></strong> sont des chemins ou des globs que Mago ignore entièrement. Ils s'appliquent à chaque outil.</li>
 </ul>
 <p>Si un fichier correspond à la fois à <code>paths</code> et à <code>includes</code>, le motif le plus spécifique l'emporte. Les chemins de fichier exacts sont les plus spécifiques, puis les chemins de répertoires plus profonds, puis les moins profonds, puis les motifs glob. Quand les motifs sont également spécifiques, <code>includes</code> l'emporte, ce qui vous permet de marquer explicitement un chemin comme dépendance.</p>
 <pre><code class="language-toml">[source]
 paths     = ["src", "tests"]
+patches   = ["patches"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
 extensions = ["php"]
 </code></pre>
-<p>Les motifs glob fonctionnent dans les trois listes :</p>
+<p>Les motifs glob fonctionnent dans les quatre listes :</p>
 <pre><code class="language-toml">[source]
 paths    = ["src/**/*.php"]
+patches  = ["patches/**/*.php"]
 includes = ["vendor/symfony/**/*.php"]   # only Symfony from vendor
 excludes = [
   "**/*_generated.php",
@@ -698,13 +756,27 @@ excludes = [
   "src/Legacy/**",
 ]
 </code></pre>
-<h3 id="reference">Référence</h3>
+<h3 id="four-categories-of-paths">Référence</h3>
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th><th style="text-align: left">Description</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>paths</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Répertoires ou globs pour votre code source. Si vide, l'ensemble du workspace est scanné.</td></tr>
-<tr><td style="text-align: left"><code>includes</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Répertoires ou globs pour le code tiers que Mago doit analyser sans le modifier.</td></tr>
+<tr><td style="text-align: left"><code>includes</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Répertoires ou globs pour le code tiers que Mago doit lire sans le modifier.</td></tr>
+<tr><td style="text-align: left"><code>patches</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Répertoires ou globs pour les correctifs de types et de marqueurs sémantiques. Leurs types et marqueurs pris en charge remplacent ceux de <code>includes</code> et du code intégré. Mago ne les analyse, ne les linte ni ne les formate.</td></tr>
 <tr><td style="text-align: left"><code>excludes</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Globs ou chemins exclus de tous les outils.</td></tr>
 <tr><td style="text-align: left"><code>extensions</code></td><td style="text-align: left">liste de strings</td><td style="text-align: left"><code>["php"]</code></td><td style="text-align: left">Extensions de fichiers traitées comme du PHP.</td></tr>
 </tbody></table>
+<h3 id="reference">Corriger les types du code tiers</h3>
+<p>Un correctif est un fichier PHP qui redéclare un symbole tiers ou intégré avec son nom pleinement qualifié. Mago lit ses types et ses marqueurs PHPDoc sémantiques pris en charge, et ignore son corps. Le correctif précise un symbole existant ; il ne le remplace pas et ne peut pas créer un symbole absent du code d'origine.</p>
+<p>Un seul correctif peut viser un symbole. Si plusieurs correctifs visent le même symbole, Mago signale le conflit au lieu de choisir l'un d'eux. Regroupez-les ou ne gardez qu'un seul correctif.</p>
+<p><strong>Ce qu'un correctif peut préciser</strong></p>
+<ul>
+<li>Les signatures de méthodes : types des paramètres et du retour, <code>@throws</code>, <code>@template</code> et assertions de type <code>@psalm-assert</code>. Mago ne change un champ que si le correctif le fournit.</li>
+<li>Les types des propriétés et des constantes.</li>
+<li>Les marqueurs PHPDoc sémantiques : les tags communs (<code>@deprecated</code>, <code>@not-deprecated</code>, <code>@internal</code>, <code>@experimental</code>, <code>@api</code>), les tags de fonctions et méthodes (<code>@pure</code>, <code>@impure</code>, <code>@mutation-free</code>, <code>@external-mutation-free</code>, <code>@must-use</code>, <code>@no-named-arguments</code>, <code>@suspends-fiber</code>) et les tags de classes (<code>@consistent-constructor</code>, <code>@consistent-templates</code>). Les alias PHPStan et Psalm existants sont pris en charge lorsque le scanner les reconnaît. Un marqueur ne change que si le correctif déclare explicitement son tag ; les tags absents conservent la valeur d'origine. <code>@impure</code> efface <code>@pure</code>, et <code>@not-deprecated</code> efface <code>@deprecated</code>.</li>
+<li>Les déclarations <code>@template</code> de la classe et les alias de types. Mago précise les paramètres existants par leur nom et ajoute les nouveaux.</li>
+<li>Les paramètres de type des parents avec <code>@extends</code> et <code>@implements</code>. Le correctif remplace les arguments de chaque parent qu'il nomme et garde les autres.</li>
+<li>Les membres magiques avec <code>@method</code>, <code>@property</code>, <code>@property-read</code> et <code>@property-write</code>, même si le code d'origine ne déclare pas ces membres. Ces annotations décrivent <code>__call</code>, <code>__get</code> ou <code>__set</code>.</li>
+</ul>
+<p>Les marqueurs sémantiques ne sont appliqués qu'aux déclarations où ces tags sont pris en charge. Les modificateurs structurels et les marqueurs de contrôle de l'analyse, notamment <code>final</code>, <code>readonly</code>, <code>static</code>, les suppressions et les marqueurs dérivés du corps, restent ceux de la déclaration d'origine.</p>
 <h3 id="patching-vendor-types">Réglages des globs</h3>
 <p><code>[source.glob]</code> ajuste la façon dont les globs correspondent. Disponible depuis 1.19.</p>
 <pre><code class="language-toml">[source.glob]
@@ -774,9 +846,13 @@ enable-short-tags = false
 </code></pre>
 <table><thead><tr><th style="text-align: left">Variable</th><th style="text-align: left">Signification</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>%file%</code></td><td style="text-align: left">Chemin absolu vers le fichier.</td></tr>
+<tr><td style="text-align: left"><code>%rel_file%</code></td><td style="text-align: left">Chemin du fichier relatif à l'espace de travail.</td></tr>
 <tr><td style="text-align: left"><code>%line%</code></td><td style="text-align: left">Numéro de ligne, base 1.</td></tr>
 <tr><td style="text-align: left"><code>%column%</code></td><td style="text-align: left">Numéro de colonne, base 1.</td></tr>
 </tbody></table>
+<p>Utilisez <code>%rel_file%</code> lorsque l'éditeur résout les chemins relativement à l'espace de travail ouvert :</p>
+<pre><code class="language-sh">export MAGO_EDITOR_URL="vscode://file/%rel_file%:%line%:%column%"
+</code></pre>
 <p>Modèles courants :</p>
 <table><thead><tr><th style="text-align: left">Éditeur</th><th style="text-align: left">Modèle</th></tr></thead><tbody>
 <tr><td style="text-align: left">VS Code</td><td style="text-align: left"><code>vscode://file/%file%:%line%:%column%</code></td></tr>
@@ -833,43 +909,47 @@ mago config --schema --show linter
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#editor-schema">Schéma pour l&#x27;éditeur</a>
+      <a class="doc-toc__link" href="#editor-schema">Schéma pour l&#39;éditeur</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#sharing-configuration-with-extends">Partager une configuration avec extends</a>
+      <a class="doc-toc__link" href="#local-schema-with-composer">Partager une configuration avec extends</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#resolution">Résolution</a>
+      <a class="doc-toc__link" href="#sharing-configuration-with-extends">Résolution</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#effective-precedence">Précédence effective</a>
+      <a class="doc-toc__link" href="#resolution">Précédence effective</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#merge-semantics">Sémantique de fusion</a>
+      <a class="doc-toc__link" href="#effective-precedence">Sémantique de fusion</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#global-options">Options globales</a>
+      <a class="doc-toc__link" href="#merge-semantics">Options globales</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#version-pinning">Épinglage de version</a>
+      <a class="doc-toc__link" href="#global-options">Épinglage de version</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#source">[source]</a>
+      <a class="doc-toc__link" href="#version-pinning">[source]</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#four-categories-of-paths">Trois catégories de chemins</a>
+      <a class="doc-toc__link" href="#source">Quatre catégories de chemins</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#reference">Référence</a>
+      <a class="doc-toc__link" href="#four-categories-of-paths">Référence</a>
+    </li>
+    
+    <li class="doc-toc__item doc-toc__item--lvl3">
+      <a class="doc-toc__link" href="#reference">Corriger les types du code tiers</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
@@ -921,11 +1001,12 @@ mago config --schema --show linter
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

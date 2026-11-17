@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="Règles · Mago">
   <meta property="og:description" content="Référence complète de chaque règle du linter, triée par sévérité. Cliquez sur une règle pour afficher sa description, ses exemples et sa configuration.">
-  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools&#x2F;linter&#x2F;rules/">
+  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools/linter/rules/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools&#x2F;linter&#x2F;rules/">
+  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools/linter/rules/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../../main/fr/">
+      <img class="brand__mark" src="../../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">Appuyez sur &#x2F; pour rechercher</span>
+      <span class="search-trigger__hint">Appuyez sur / pour rechercher</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/guide/getting-started">Guide</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/faq">FAQ</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/playground">Playground</a>
+      <a class="header-link" href="../../../../../main/fr/guide/getting-started">Guide</a>
+      <a class="header-link" href="../../../../../main/fr/faq">FAQ</a>
+      <a class="header-link" href="../../../../../main/fr/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">Soutenir</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="Dépôt GitHub" title="Dépôt GitHub">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="fr"
-  data-logical-path="tools&#x2F;linter&#x2F;rules"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="tools/linter/rules"
+  data-path-to-root="../../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -155,7 +156,7 @@
   
   <div class="doc-banner">Cette traduction peut être obsolète.</div>
   
-  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#x27;est pas encore traduite. Vous avez été redirigé vers la page d&#x27;accueil de la langue.</div>
+  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#39;est pas encore traduite. Vous avez été redirigé vers la page d&#39;accueil de la langue.</div>
 
   
 <div class="doc-layout">
@@ -198,7 +199,7 @@
       
       <li>
         <a href="../../../../../main/fr/guide/environment-variables">
-          <span>Variables d&#x27;environnement</span>
+          <span>Variables d&#39;environnement</span>
         </a>
       </li>
       
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../../main/fr/guide/inspecting-the-ast">
-          <span>Inspecter l&#x27;AST</span>
+        <a href="../../../../../main/fr/guide/inspecting-the-cst">
+          <span>Inspecter l&#39;CST</span>
         </a>
       </li>
       
@@ -360,13 +361,13 @@
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/command-reference">
-            <span>Référence de commande de l&#x27;analyseur</span>
+            <span>Référence de commande de l&#39;analyseur</span>
           </a>
         </li>
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/configuration-reference">
-            <span>Référence de configuration de l&#x27;analyseur</span>
+            <span>Référence de configuration de l&#39;analyseur</span>
           </a>
         </li>
         
@@ -460,6 +461,54 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/formatter/twig">
+            <span>Formateur Twig</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter">
+            <span>Linter Twig</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter/rules">
+            <span>Règles</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -505,6 +554,12 @@
       <li>
         <a href="../../../../../main/fr/recipes/docker">
           <span>Recette Docker</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../../main/fr/recipes/drupal">
+          <span>Recette Drupal</span>
         </a>
       </li>
       
@@ -554,8 +609,8 @@
 
   <main id="content" class="doc-content">
     <article class="doc-page">
-      <p>Le linter de Mago propose 184 règles réparties sur 9 catégories. Cliquez sur une règle pour afficher sa description, ses prérequis, sa configuration par défaut et ses exemples.</p>
-<div class="rule-index" role="navigation" aria-label="Catégories de règles"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarté</span><span class="rule-index__count">22 règles</span><span class="rule-index__blurb">Règles qui rendent l'intention explicite et réduisent l'effort de lecture. Elles signalent des constructions techniquement valides mais qui obscurcissent ce que fait le code.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Bonnes pratiques</span><span class="rule-index__count">45 règles</span><span class="rule-index__blurb">Patterns idiomatiques et conventions largement adoptées. Ces règles orientent le code vers la manière dont le PHP moderne est écrit par celles et ceux qui en livrent beaucoup.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Cohérence</span><span class="rule-index__count">27 règles</span><span class="rule-index__blurb">Uniformité stylistique sur l'ensemble du code. Choisissez une façon de faire, ces règles aident tout le monde à s'y tenir.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Obsolescence</span><span class="rule-index__count">7 règles</span><span class="rule-index__blurb">Fonctionnalités et API PHP marquées comme obsolètes en amont, et qui finiront par être supprimées. Migrez avant qu'elles ne cassent.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintenabilité</span><span class="rule-index__count">11 règles</span><span class="rule-index__blurb">Du code difficile à maintenir dans la durée, trop complexe, trop emmêlé, trop fragile. Ces règles font remonter le coût tôt.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redondance</span><span class="rule-index__count">29 règles</span><span class="rule-index__blurb">Code mort, valeurs inutilisées, constructions sans effet observable. Les retirer garde le code honnête.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Sécurité</span><span class="rule-index__count">15 règles</span><span class="rule-index__blurb">Règles qui signalent des vulnérabilités, vecteurs d'injection, désérialisation non sûre, données non fiables atteignant des points dangereux.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Sûreté</span><span class="rule-index__count">9 règles</span><span class="rule-index__blurb">Constructions qui compilent mais explosent à l'exécution. Ces règles attrapent les pièges avant les utilisateurs.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correction</span><span class="rule-index__count">19 règles</span><span class="rule-index__blurb">Bugs et erreurs de logique. Les règles de cette catégorie attrapent du code qui fait probablement autre chose que ce que l'auteur voulait.</span></a></div>
+      <p>Le linter de Mago propose 194 règles réparties sur 9 catégories. Cliquez sur une règle pour afficher sa description, ses prérequis, sa configuration par défaut et ses exemples.</p>
+<div class="rule-index" role="navigation" aria-label="Catégories de règles"><a class="rule-index__item" href="#clarity"><span class="rule-index__name">Clarté</span><span class="rule-index__count">22 règles</span><span class="rule-index__blurb">Règles qui rendent l'intention explicite et réduisent l'effort de lecture. Elles signalent des constructions techniquement valides mais qui obscurcissent ce que fait le code.</span></a><a class="rule-index__item" href="#bestpractices"><span class="rule-index__name">Bonnes pratiques</span><span class="rule-index__count">49 règles</span><span class="rule-index__blurb">Patterns idiomatiques et conventions largement adoptées. Ces règles orientent le code vers la manière dont le PHP moderne est écrit par celles et ceux qui en livrent beaucoup.</span></a><a class="rule-index__item" href="#consistency"><span class="rule-index__name">Cohérence</span><span class="rule-index__count">27 règles</span><span class="rule-index__blurb">Uniformité stylistique sur l'ensemble du code. Choisissez une façon de faire, ces règles aident tout le monde à s'y tenir.</span></a><a class="rule-index__item" href="#deprecation"><span class="rule-index__name">Obsolescence</span><span class="rule-index__count">7 règles</span><span class="rule-index__blurb">Fonctionnalités et API PHP marquées comme obsolètes en amont, et qui finiront par être supprimées. Migrez avant qu'elles ne cassent.</span></a><a class="rule-index__item" href="#maintainability"><span class="rule-index__name">Maintenabilité</span><span class="rule-index__count">11 règles</span><span class="rule-index__blurb">Du code difficile à maintenir dans la durée, trop complexe, trop emmêlé, trop fragile. Ces règles font remonter le coût tôt.</span></a><a class="rule-index__item" href="#redundancy"><span class="rule-index__name">Redondance</span><span class="rule-index__count">32 règles</span><span class="rule-index__blurb">Code mort, valeurs inutilisées, constructions sans effet observable. Les retirer garde le code honnête.</span></a><a class="rule-index__item" href="#security"><span class="rule-index__name">Sécurité</span><span class="rule-index__count">15 règles</span><span class="rule-index__blurb">Règles qui signalent des vulnérabilités, vecteurs d'injection, désérialisation non sûre, données non fiables atteignant des points dangereux.</span></a><a class="rule-index__item" href="#safety"><span class="rule-index__name">Sûreté</span><span class="rule-index__count">9 règles</span><span class="rule-index__blurb">Constructions qui compilent mais explosent à l'exécution. Ces règles attrapent les pièges avant les utilisateurs.</span></a><a class="rule-index__item" href="#correctness"><span class="rule-index__name">Correction</span><span class="rule-index__count">22 règles</span><span class="rule-index__blurb">Bugs et erreurs de logique. Les règles de cette catégorie attrapent du code qui fait probablement autre chose que ce que l'auteur voulait.</span></a></div>
 <h2 id="integration-specific-rules">Règles spécifiques aux intégrations</h2>
 <p>Certaines règles ne se déclenchent que lorsque Mago détecte une bibliothèque ou un framework particulier. Chaque règle renvoie à sa description complète dans la section ci-dessus.</p>
 <h3 id="integration-cakephp">CakePHP</h3>
@@ -1402,6 +1457,7 @@ function foo() {}
 <tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
 <tr><td style="text-align: left"><code>enum-cases</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
 <tr><td style="text-align: left"><code>enums</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>exclusions</code></td><td style="text-align: left"><code>object</code></td><td style="text-align: left"><code>{"functions":[],"classes":[],"interfaces":[],"traits":[],"enums":[],"enum-cases":[],"constants":[],"statics":[],"methods":[],"properties":[]}</code></td></tr>
 <tr><td style="text-align: left"><code>functions</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
 <tr><td style="text-align: left"><code>interfaces</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
 <tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
@@ -2871,6 +2927,40 @@ $a = fn($x) =&gt; $x + 1;
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="prefer-datetimeimmutable-create-from-timestamp">
+<summary><code class="rule__code">prefer-datetimeimmutable-create-from-timestamp</code><a class="rule__anchor" href="#prefer-datetimeimmutable-create-from-timestamp" aria-label="Lien permanent vers prefer-datetimeimmutable-create-from-timestamp">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Suggests <code>DateTimeImmutable::createFromTimestamp()</code> when a Unix timestamp is converted
+to a string and parsed by the <code>DateTimeImmutable</code> constructor.</p>
+<p>The factory accepts an <code>int</code> or <code>float</code> timestamp directly, avoiding the intermediate
+string construction and date parsing step.</p>
+<blockquote class="rule-requirement">Cette règle requiert PHP <code>8.4.0</code> ou supérieur.</blockquote>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+$timestamp = time();
+$date = new DateTimeImmutable('@' . $timestamp);
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+$timestamp = time();
+$date = DateTimeImmutable::createFromTimestamp($timestamp);
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="prefer-early-continue">
 <summary><code class="rule__code">prefer-early-continue</code><a class="rule__anchor" href="#prefer-early-continue" aria-label="Lien permanent vers prefer-early-continue">¶</a><span class="rule__level rule__level--help">help</span></summary>
 <div class="rule__body">
@@ -2910,6 +3000,77 @@ for ($i = 0; $i &lt; 10; $i++) {
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="prefer-early-return">
+<summary><code class="rule__code">prefer-early-return</code><a class="rule__anchor" href="#prefer-early-return" aria-label="Lien permanent vers prefer-early-return">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Suggests using early return pattern when a function body contains only a single if statement.</p>
+<p>This improves code readability by reducing nesting and making the control flow more explicit.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+function process($condition) {
+    if ($condition) {
+        doSomething();
+    }
+}
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+function process($condition) {
+    if (!$condition) {
+        return;
+    }
+    doSomething();
+}
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+<tr><td style="text-align: left"><code>max_allowed_statements</code></td><td style="text-align: left"><code>number</code></td><td style="text-align: left"><code>0</code></td></tr>
+</tbody></table>
+</div>
+</details>
+<details class="rule" name="rule" id="prefer-null-coalescing-assignment">
+<summary><code class="rule__code">prefer-null-coalescing-assignment</code><a class="rule__anchor" href="#prefer-null-coalescing-assignment" aria-label="Lien permanent vers prefer-null-coalescing-assignment">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Suggests the null coalescing assignment operator (<code>??=</code>) when the right operand
+of <code>??</code> assigns to the same variable or property as its left operand.</p>
+<p><code>$value ?? ($value = $default)</code> and <code>$value ??= $default</code> do the same work, but
+the latter names the target once.</p>
+<blockquote class="rule-requirement">Cette règle requiert PHP <code>7.4.0</code> ou supérieur.</blockquote>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+return $this-&gt;ids ?? ($this-&gt;ids = $this-&gt;readIds());
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+return $this-&gt;ids ??= $this-&gt;readIds();
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="prefer-pre-increment">
 <summary><code class="rule__code">prefer-pre-increment</code><a class="rule__anchor" href="#prefer-pre-increment" aria-label="Lien permanent vers prefer-pre-increment">¶</a><span class="rule__level rule__level--help">help</span></summary>
 <div class="rule__body">
@@ -2934,6 +3095,66 @@ $count--;
 
 ++$i;
 --$count;
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+</tbody></table>
+</div>
+</details>
+<details class="rule" name="rule" id="prefer-self">
+<summary><code class="rule__code">prefer-self</code><a class="rule__anchor" href="#prefer-self" aria-label="Lien permanent vers prefer-self">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Suggests using <code>self</code> when a class refers to itself by name.</p>
+<p>Using <code>self</code> keeps the code working when the class is renamed, and makes it
+obvious that the reference points at the enclosing class.</p>
+<p>A static call through the class name does not forward late static binding, while
+a call through <code>self</code> does. In a class that can be extended, replacing the name in
+a static method call or first-class callable can therefore change what <code>static</code>
+resolves to in the called method, so those fixes are marked as potentially unsafe.
+The same applies inside closures, which can be rebound to another class scope.</p>
+<p>References inside traits, anonymous classes, and attribute arguments are ignored.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new Box(Box::DEFAULT_SIZE);
+    }
+}
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+final class Box
+{
+    private const DEFAULT_SIZE = 10;
+
+    public function __construct(
+        public int $size,
+    ) {}
+
+    public static function create(): self
+    {
+        return new self(self::DEFAULT_SIZE);
+    }
+}
 </code></pre>
 </div>
 </div>
@@ -3869,7 +4090,8 @@ interface MyInterface {}
 <p>Enforces that PHP keywords (like <code>if</code>, <code>else</code>, <code>return</code>, <code>function</code>, etc.) be written
 in lowercase. Using uppercase or mixed case is discouraged for consistency and readability.</p>
 <p>When the <code>drupal</code> integration is enabled, <code>TRUE</code>, <code>FALSE</code>, and <code>NULL</code> are exempted to
-match Drupal's coding standards (and the <code>drupal</code> formatter preset).</p>
+match Drupal's coding standards (and the <code>drupal</code> formatter preset). Drupal projects
+should use the official <code>drupal/mago</code> extension instead, which sets this rule up for them.</p>
 <hr class="rule__separator">
 <div class="rule-examples">
 <div class="rule-example rule-example--bad">
@@ -4584,7 +4806,7 @@ function hasRequiredFields($user) {
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
 <tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"error"</code></td></tr>
-<tr><td style="text-align: left"><code>method-threshold</code></td><td style="text-align: left"><code>null</code></td><td style="text-align: left"><code>null</code></td></tr>
+<tr><td style="text-align: left"><code>method-threshold</code></td><td style="text-align: left"><code>number or null</code></td><td style="text-align: left"><code>null</code></td></tr>
 <tr><td style="text-align: left"><code>threshold</code></td><td style="text-align: left"><code>number</code></td><td style="text-align: left"><code>15</code></td></tr>
 </tbody></table>
 </div>
@@ -4617,7 +4839,7 @@ function processOrder($orderId, $userId, $total, $status, $date) {
 </div>
 <hr class="rule__separator">
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>constructor-threshold</code></td><td style="text-align: left"><code>null</code></td><td style="text-align: left"><code>null</code></td></tr>
+<tr><td style="text-align: left"><code>constructor-threshold</code></td><td style="text-align: left"><code>number or null</code></td><td style="text-align: left"><code>null</code></td></tr>
 <tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
 <tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"error"</code></td></tr>
 <tr><td style="text-align: left"><code>threshold</code></td><td style="text-align: left"><code>number</code></td><td style="text-align: left"><code>5</code></td></tr>
@@ -4949,7 +5171,7 @@ if ($condition) {
 <hr class="rule__separator">
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
-<tr><td style="text-align: left"><code>function-like-threshold</code></td><td style="text-align: left"><code>null</code></td><td style="text-align: left"><code>null</code></td></tr>
+<tr><td style="text-align: left"><code>function-like-threshold</code></td><td style="text-align: left"><code>number or null</code></td><td style="text-align: left"><code>null</code></td></tr>
 <tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"warning"</code></td></tr>
 <tr><td style="text-align: left"><code>threshold</code></td><td style="text-align: left"><code>number</code></td><td style="text-align: left"><code>7</code></td></tr>
 </tbody></table>
@@ -5122,9 +5344,13 @@ while ($i &lt; 10) {
 <details class="rule" name="rule" id="no-boolean-flag-parameter">
 <summary><code class="rule__code">no-boolean-flag-parameter</code><a class="rule__anchor" href="#no-boolean-flag-parameter" aria-label="Lien permanent vers no-boolean-flag-parameter">¶</a><span class="rule__level rule__level--help">help</span></summary>
 <div class="rule__body">
-<p>Flags function-like parameters that use a boolean type.</p>
-<p>Boolean flag parameters can indicate a violation of the Single Responsibility Principle (SRP).
-Refactor by extracting the flag logic into its own class or method.</p>
+<p>Flags function-like parameters that use a boolean type and drive the function's behaviour.</p>
+<p>A boolean parameter is only reported when it is used as a flag, that is, referenced in
+the condition of an <code>if</code>/<code>elseif</code> statement or a ternary (<code>?:</code>) expression. Such flag
+parameters can indicate a violation of the Single Responsibility Principle (SRP);
+refactor by extracting the flag logic into its own class or method.</p>
+<p>A boolean parameter that is merely stored (e.g. <code>$this-&gt;enabled = $enabled;</code>), passed on,
+or returned does not branch the function's behaviour and is not reported.</p>
 <hr class="rule__separator">
 <div class="rule-examples">
 <div class="rule-example rule-example--bad">
@@ -5132,7 +5358,11 @@ Refactor by extracting the flag logic into its own class or method.</p>
 <pre><code class="language-php">&lt;?php
 
 function get_difference(string $a, string $b, bool $ignore_case): string {
-    // ...
+    if ($ignore_case) {
+        return strtolower($a) === strtolower($b) ? '' : $a;
+    }
+
+    return $a === $b ? '' : $a;
 }
 </code></pre>
 </div>
@@ -5146,6 +5376,17 @@ function get_difference(string $a, string $b): string {
 
 function get_difference_case_insensitive(string $a, string $b): string {
     // ...
+}
+
+final class Connection
+{
+    private bool $secure;
+
+    // The boolean is only stored, never used to branch behaviour.
+    public function configure(bool $secure): void
+    {
+        $this-&gt;secure = $secure;
+    }
 }
 </code></pre>
 </div>
@@ -5424,6 +5665,45 @@ $foo-&gt;bar = $baz-&gt;bar;
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="no-duplicate-match-arm">
+<summary><code class="rule__code">no-duplicate-match-arm</code><a class="rule__anchor" href="#no-duplicate-match-arm" aria-label="Lien permanent vers no-duplicate-match-arm">¶</a><span class="rule__level rule__level--note">note</span></summary>
+<div class="rule__body">
+<p>Detects <code>match</code> arms that produce the same result as an earlier arm.</p>
+<p>Arms with an identical result can be merged into a single arm by
+combining their conditions, which removes the duplication. The result
+is compared by its constant value, so <code>1 + 2</code> and <code>-(-3)</code> are treated
+as the same result.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+$result = match ($value) {
+    1 =&gt; 'low',
+    2 =&gt; 'high',
+    3 =&gt; 'high',
+};
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+$result = match ($value) {
+    1 =&gt; 'low',
+    2, 3 =&gt; 'high',
+};
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"note"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="no-empty-comment">
 <summary><code class="rule__code">no-empty-comment</code><a class="rule__anchor" href="#no-empty-comment" aria-label="Lien permanent vers no-empty-comment">¶</a><span class="rule__level rule__level--note">note</span></summary>
 <div class="rule__body">
@@ -5467,6 +5747,8 @@ to keep the codebase clean and maintainable.</p>
 <div class="rule__body">
 <p>Detects loops (<code>for</code>, <code>foreach</code>, <code>while</code>, <code>do-while</code>) that have an empty body. An empty
 loop body does not perform any actions and is likely a mistake or redundant code.</p>
+<p>The fix is marked as unsafe because removing the loop also removes the evaluation of its
+header (function calls, assignments, increments), which can change behavior.</p>
 <hr class="rule__separator">
 <div class="rule-examples">
 <div class="rule-example rule-example--bad">
@@ -6273,6 +6555,107 @@ function gen(): Generator {
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="no-unused-return-value">
+<summary><code class="rule__code">no-unused-return-value</code><a class="rule__anchor" href="#no-unused-return-value" aria-label="Lien permanent vers no-unused-return-value">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Detects private methods whose return value is thrown away at every call site.</p>
+<p>Only the class itself can call a private method, so when each call is a bare
+statement, nothing reads the value the method returns. Declaring the method
+<code>void</code> makes that clear.</p>
+<p>The rule stays silent when the class uses a trait, calls methods by a dynamic
+name, takes the method as a callable, or mentions its name in a string.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this-&gt;advance();
+    }
+
+    private function advance(): int
+    {
+        return ++$this-&gt;count;
+    }
+}
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+final class Counter
+{
+    private int $count = 0;
+
+    public function increment(): void
+    {
+        $this-&gt;advance();
+    }
+
+    private function advance(): void
+    {
+        ++$this-&gt;count;
+    }
+}
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+</tbody></table>
+</div>
+</details>
+<details class="rule" name="rule" id="redundant-static">
+<summary><code class="rule__code">redundant-static</code><a class="rule__anchor" href="#redundant-static" aria-label="Lien permanent vers redundant-static">¶</a><span class="rule__level rule__level--help">help</span></summary>
+<div class="rule__body">
+<p>Detects uses of <code>static</code> for late-static binding inside final classes.</p>
+<p>A final class cannot be extended, so <code>static</code> and <code>self</code> resolve to the same class.
+Using <code>self</code> states that intent directly and avoids unnecessary late-static binding.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+final class User
+{
+    public static function create(): static
+    {
+        return new static();
+    }
+}
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+final class User
+{
+    public static function create(): self
+    {
+        return new self();
+    }
+}
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>false</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"help"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 </div>
 <h2 id="security">Sécurité</h2>
 <p>Règles qui signalent des vulnérabilités, vecteurs d'injection, désérialisation non sûre, données non fiables atteignant des points dangereux.</p>
@@ -6323,6 +6706,8 @@ register_activation_hook(__FILE__, 'my_plugin_activate');
 <p>Detects insecure comparison of passwords or tokens using <code>==</code>, <code>!=</code>, <code>===</code>, or <code>!==</code>.</p>
 <p>These operators are vulnerable to timing attacks, which can expose sensitive information.
 Instead, use <code>hash_equals</code> for comparing strings or <code>password_verify</code> for validating hashes.</p>
+<p>Sensitive data is identified by names, such as variables, array keys, and properties.
+String literal values such as <code>'refresh_token'</code> do not by themselves indicate sensitive data.</p>
 <hr class="rule__separator">
 <div class="rule-examples">
 <div class="rule-example rule-example--bad">
@@ -6565,10 +6950,13 @@ function handle_input() {
 <p>You can specify which functions or extensions should be disallowed through the
 <code>functions</code> or <code>extensions</code> options. This helps enforce coding standards,
 security restrictions, or the usage of preferred alternatives.</p>
-<p>Each entry can be a simple string or an object with <code>name</code> and optional <code>help</code>:</p>
+<p>Each entry can be a simple string or an object with <code>name</code>, an optional <code>help</code>,
+and an optional <code>level</code> that supersedes the top-level <code>level</code> for that entry:</p>
 <pre><code class="language-toml">functions = [
     'eval',
     { name = 'error_log', help = 'Use MyLogger instead.' },
+    { name = 'var_dump', level = 'error' },
+    { name = 'var_dump', help = 'Do not commit debug code.', level = 'error' },
 ]
 </code></pre>
 <hr class="rule__separator">
@@ -6608,13 +6996,16 @@ allowed_function(); // Not flagged
 <p>This rule helps enforce architectural patterns such as factory methods or provider patterns
 by preventing direct instantiation of specific classes. This is useful for ensuring consistent
 configuration, centralizing object creation, and maintaining architectural boundaries.</p>
-<p>Each entry can be a simple string or an object with <code>name</code> and optional <code>help</code>:</p>
+<p>Each entry can be a simple string or an object with <code>name</code>, an optional <code>help</code>,
+and an optional <code>level</code> that supersedes the top-level <code>level</code> for that entry:</p>
 <pre><code class="language-toml">[linter.rules]
 disallowed-type-instantiation = {
     enabled = true,
     types = [
         'HttpService\\Client',
         { name = 'DatabaseConnection', help = 'Use DatabaseFactory::create() instead' },
+        { name = 'LegacyService', level = 'error' },
+        { name = 'LegacyService', help = 'Use ShinyNewService instead', level = 'error' },
     ]
 }
 </code></pre>
@@ -7190,6 +7581,40 @@ final class InvoiceService
 <h2 id="correctness">Correction</h2>
 <p>Bugs et erreurs de logique. Les règles de cette catégorie attrapent du code qui fait probablement autre chose que ce que l'auteur voulait.</p>
 <div class="rule-list">
+<details class="rule" name="rule" id="no-missing-format-argument">
+<summary><code class="rule__code">no-missing-format-argument</code><a class="rule__anchor" href="#no-missing-format-argument" aria-label="Lien permanent vers no-missing-format-argument">¶</a><span class="rule__level rule__level--error">error</span></summary>
+<div class="rule__body">
+<p>Detects <code>sprintf</code>-style format calls where the number of placeholders
+in the format string exceeds the number of provided values.</p>
+<p>When the format string is a literal, this rule parses the placeholders
+(regular <code>%s</code>/<code>%d</code> and positional <code>%1$s</code>) and compares the
+required argument count against the actual values given.</p>
+<p>This catches runtime <code>ArgumentCountError</code>-class errors at lint time.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+// Missing second value; will trigger a runtime error.
+$result = sprintf('Hello %s, you have %d messages', $name);
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+$result = sprintf('Hello %s, you have %d messages', $name, $count);
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"error"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="no-only">
 <summary><code class="rule__code">no-only</code><a class="rule__anchor" href="#no-only" aria-label="Lien permanent vers no-only">¶</a><span class="rule__level rule__level--error">error</span></summary>
 <div class="rule__body">
@@ -7534,6 +7959,39 @@ try {
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="no-legacy-constructor">
+<summary><code class="rule__code">no-legacy-constructor</code><a class="rule__anchor" href="#no-legacy-constructor" aria-label="Lien permanent vers no-legacy-constructor">¶</a><span class="rule__level rule__level--warning">warning</span></summary>
+<div class="rule__body">
+<p>Detects class-named methods that are no longer invoked as constructors in PHP 8 and later.</p>
+<blockquote class="rule-requirement">Cette règle requiert PHP <code>8.0.0</code> ou supérieur.</blockquote>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+class LegacyItem {
+    public function LegacyItem() {}
+}
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+class LegacyItem {
+    public function __construct() {}
+}
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"warning"</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="no-redundant-variable">
 <summary><code class="rule__code">no-redundant-variable</code><a class="rule__anchor" href="#no-redundant-variable" aria-label="Lien permanent vers no-redundant-variable">¶</a><span class="rule__level rule__level--warning">warning</span></summary>
 <div class="rule__body">
@@ -7822,6 +8280,39 @@ echo "Hello, World!";
 </tbody></table>
 </div>
 </details>
+<details class="rule" name="rule" id="suspicious-explode-arguments">
+<summary><code class="rule__code">suspicious-explode-arguments</code><a class="rule__anchor" href="#suspicious-explode-arguments" aria-label="Lien permanent vers suspicious-explode-arguments">¶</a><span class="rule__level rule__level--warning">warning</span></summary>
+<div class="rule__body">
+<p>Detects <code>explode</code> calls whose arguments appear to be swapped.</p>
+<p>The signature is <code>explode(string $separator, string $string)</code>: the separator comes first
+and the string being split comes second. When the second argument is a short string literal
+while the first is not a shorter literal, the arguments were most likely passed in the wrong
+order, which produces a silently incorrect result instead of an error.</p>
+<hr class="rule__separator">
+<div class="rule-examples">
+<div class="rule-example rule-example--bad">
+<div class="rule-example__label">À éviter</div>
+<pre><code class="language-php">&lt;?php
+
+$parts = explode($sentence, ' ');
+</code></pre>
+</div>
+<div class="rule-example rule-example--good">
+<div class="rule-example__label">À privilégier</div>
+<pre><code class="language-php">&lt;?php
+
+$parts = explode(' ', $sentence);
+</code></pre>
+</div>
+</div>
+<hr class="rule__separator">
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>enabled</code></td><td style="text-align: left"><code>boolean</code></td><td style="text-align: left"><code>true</code></td></tr>
+<tr><td style="text-align: left"><code>level</code></td><td style="text-align: left"><code>string</code></td><td style="text-align: left"><code>"warning"</code></td></tr>
+<tr><td style="text-align: left"><code>threshold</code></td><td style="text-align: left"><code>number</code></td><td style="text-align: left"><code>10</code></td></tr>
+</tbody></table>
+</div>
+</details>
 <details class="rule" name="rule" id="switch-continue-to-break">
 <summary><code class="rule__code">switch-continue-to-break</code><a class="rule__anchor" href="#switch-continue-to-break" aria-label="Lien permanent vers switch-continue-to-break">¶</a><span class="rule__level rule__level--warning">warning</span></summary>
 <div class="rule__body">
@@ -7979,11 +8470,12 @@ echo 'Hello, world!';
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

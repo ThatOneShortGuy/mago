@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="Référence de configuration du formateur · Mago">
   <meta property="og:description" content="Toutes les options que vous pouvez définir sous [formatter] dans mago.toml.">
-  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools&#x2F;formatter&#x2F;configuration-reference/">
+  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools/formatter/configuration-reference/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools&#x2F;formatter&#x2F;configuration-reference/">
+  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools/formatter/configuration-reference/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../../main/fr/">
+      <img class="brand__mark" src="../../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">Appuyez sur &#x2F; pour rechercher</span>
+      <span class="search-trigger__hint">Appuyez sur / pour rechercher</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/guide/getting-started">Guide</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/faq">FAQ</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/playground">Playground</a>
+      <a class="header-link" href="../../../../../main/fr/guide/getting-started">Guide</a>
+      <a class="header-link" href="../../../../../main/fr/faq">FAQ</a>
+      <a class="header-link" href="../../../../../main/fr/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">Soutenir</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="Dépôt GitHub" title="Dépôt GitHub">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="fr"
-  data-logical-path="tools&#x2F;formatter&#x2F;configuration-reference"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="tools/formatter/configuration-reference"
+  data-path-to-root="../../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -155,7 +156,7 @@
   
   <div class="doc-banner">Cette traduction peut être obsolète.</div>
   
-  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#x27;est pas encore traduite. Vous avez été redirigé vers la page d&#x27;accueil de la langue.</div>
+  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#39;est pas encore traduite. Vous avez été redirigé vers la page d&#39;accueil de la langue.</div>
 
   
 <div class="doc-layout">
@@ -198,7 +199,7 @@
       
       <li>
         <a href="../../../../../main/fr/guide/environment-variables">
-          <span>Variables d&#x27;environnement</span>
+          <span>Variables d&#39;environnement</span>
         </a>
       </li>
       
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../../main/fr/guide/inspecting-the-ast">
-          <span>Inspecter l&#x27;AST</span>
+        <a href="../../../../../main/fr/guide/inspecting-the-cst">
+          <span>Inspecter l&#39;CST</span>
         </a>
       </li>
       
@@ -360,13 +361,13 @@
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/command-reference">
-            <span>Référence de commande de l&#x27;analyseur</span>
+            <span>Référence de commande de l&#39;analyseur</span>
           </a>
         </li>
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/configuration-reference">
-            <span>Référence de configuration de l&#x27;analyseur</span>
+            <span>Référence de configuration de l&#39;analyseur</span>
           </a>
         </li>
         
@@ -460,6 +461,54 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/formatter/twig">
+            <span>Formateur Twig</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter">
+            <span>Linter Twig</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter/rules">
+            <span>Règles</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -505,6 +554,12 @@
       <li>
         <a href="../../../../../main/fr/recipes/docker">
           <span>Recette Docker</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../../main/fr/recipes/drupal">
+          <span>Recette Drupal</span>
         </a>
       </li>
       
@@ -561,6 +616,7 @@ print-width = 100
 use-tabs = true
 </code></pre>
 <h2 id="presets">Préréglages</h2>
+<p>Les réglages et préréglages PHP ne s'appliquent pas à Twig. Utilisez <a href="../../../../../main/fr/tools/formatter/twig#configuration"><code>[twig.formatter]</code></a> pour configurer ou désactiver son formatage.</p>
 <p>Un préréglage est un ensemble complet d'options de formateur ajustées pour une norme de codage spécifique.</p>
 <pre><code class="language-toml">[formatter]
 preset = "laravel"
@@ -569,7 +625,7 @@ preset = "laravel"
 <tr><td style="text-align: left"><code>default</code></td><td style="text-align: left">Conforme à PER-CS. Identique aux valeurs par défaut intégrées.</td></tr>
 <tr><td style="text-align: left"><code>psr-12</code></td><td style="text-align: left">Norme de codage PSR-12.</td></tr>
 <tr><td style="text-align: left"><code>laravel</code></td><td style="text-align: left">Préréglage <code>laravel</code> de Laravel Pint.</td></tr>
-<tr><td style="text-align: left"><code>drupal</code></td><td style="text-align: left">Norme de codage Drupal.</td></tr>
+<tr><td style="text-align: left"><code>drupal</code></td><td style="text-align: left">Norme de codage Drupal. L'<a href="../../../../../main/fr/recipes/drupal">extension officielle <code>drupal/mago</code></a> le règle pour vous.</td></tr>
 </tbody></table>
 <p>Les préréglages acceptent un suffixe de version :</p>
 <pre><code class="language-toml">preset = "psr-12@latest"
@@ -663,6 +719,7 @@ public function bar(
 <tr><td style="text-align: left"><code>preserve-breaking-attribute-list</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Préserver les sauts de ligne existants dans les listes d'attributs.</td></tr>
 <tr><td style="text-align: left"><code>preserve-breaking-conditional-expression</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Préserver les sauts de ligne existants dans les ternaires.</td></tr>
 <tr><td style="text-align: left"><code>preserve-breaking-condition-expression</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Préserver les sauts de ligne existants dans les conditions de structure de contrôle. Lorsque activé, chaque opérateur booléen va sur sa propre ligne.</td></tr>
+<tr><td style="text-align: left"><code>preserve-breaking-pipe-expression</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Préserver les sauts de ligne existants dans les expressions pipe.</td></tr>
 <tr><td style="text-align: left"><code>break-promoted-properties-list</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Toujours casser les listes de paramètres avec des propriétés promues.</td></tr>
 <tr><td style="text-align: left"><code>parameter-attribute-on-new-line</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Mettre les attributs de paramètre sur leur propre ligne lorsque la liste de paramètres se casse (PER-CS 12.2).</td></tr>
 <tr><td style="text-align: left"><code>line-before-binary-operator</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Lorsqu'une expression binaire se casse, placer l'opérateur sur la ligne suivante.</td></tr>
@@ -682,7 +739,7 @@ public function bar(
 </tbody></table>
 <h2 id="use-statements">Instructions <code>use</code></h2>
 <table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Type</th><th style="text-align: left">Défaut</th><th style="text-align: left">Description</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>sort-uses</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Trier les instructions <code>use</code> alphabétiquement.</td></tr>
+<tr><td style="text-align: left"><code>sort-uses</code></td><td style="text-align: left">enum</td><td style="text-align: left"><code>"alpha-ascending"</code></td><td style="text-align: left">Contrôler l'ordre de tri des instructions <code>use</code>. Valeurs : <code>preserve</code> (alias <code>as-is</code>, <code>none</code>, <code>keep</code>, <code>false</code>), <code>alphanumeric-ascending</code> (alias <code>alpha-ascending</code>, <code>ascending</code>, <code>true</code>), <code>alphanumeric-descending</code> (alias <code>alpha-descending</code>, <code>descending</code>), <code>length-ascending</code>, <code>length-descending</code>. Les modes par longueur comptent les codepoints dans l'orthographe source de l'instruction use ; en cas d'égalité, le tri alphanumérique ascendant sert de critère secondaire pour une sortie stable.</td></tr>
 <tr><td style="text-align: left"><code>sort-class-methods</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">Ordonner les méthodes de classe par visibilité et type : constructeur en premier, puis méthodes statiques, puis méthodes d'instance par visibilité, destructeur en dernier.</td></tr>
 <tr><td style="text-align: left"><code>separate-use-types</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Insérer une ligne vide entre différents types de <code>use</code>.</td></tr>
 <tr><td style="text-align: left"><code>expand-use-groups</code></td><td style="text-align: left">booléen</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">Étendre les instructions <code>use</code> groupées en instructions individuelles.</td></tr>
@@ -758,7 +815,7 @@ public function bar(
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#tool-wide-options">Options globales de l&#x27;outil</a>
+      <a class="doc-toc__link" href="#tool-wide-options">Options globales de l&#39;outil</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
@@ -778,7 +835,7 @@ public function bar(
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#preserving-author-breaks">Préservation des sauts de l&#x27;auteur</a>
+      <a class="doc-toc__link" href="#preserving-author-breaks">Préservation des sauts de l&#39;auteur</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
@@ -830,11 +887,12 @@ public function bar(
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

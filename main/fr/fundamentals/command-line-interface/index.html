@@ -5,38 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   
   <title>Interface en ligne de commande · Mago</title>
-  <meta name="description" content="Options globales, sous-commandes, variables d&#x27;environnement et codes de sortie.">
+  <meta name="description" content="Options globales, sous-commandes, variables d&#39;environnement et codes de sortie.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Interface en ligne de commande · Mago">
-  <meta property="og:description" content="Options globales, sous-commandes, variables d&#x27;environnement et codes de sortie.">
-  <meta property="og:url" content="https://mago.carthage.software/main/fr/fundamentals&#x2F;command-line-interface/">
+  <meta property="og:description" content="Options globales, sous-commandes, variables d&#39;environnement et codes de sortie.">
+  <meta property="og:url" content="https://mago.carthage.software/main/fr/fundamentals/command-line-interface/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:locale" content="fr">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Interface en ligne de commande · Mago">
-  <meta name="twitter:description" content="Options globales, sous-commandes, variables d&#x27;environnement et codes de sortie.">
+  <meta name="twitter:description" content="Options globales, sous-commandes, variables d&#39;environnement et codes de sortie.">
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/fr/fundamentals&#x2F;command-line-interface/">
+  <link rel="canonical" href="https://mago.carthage.software/main/fr/fundamentals/command-line-interface/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../main/fr/">
+      <img class="brand__mark" src="../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">Appuyez sur &#x2F; pour rechercher</span>
+      <span class="search-trigger__hint">Appuyez sur / pour rechercher</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/guide/getting-started">Guide</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/faq">FAQ</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/playground">Playground</a>
+      <a class="header-link" href="../../../../main/fr/guide/getting-started">Guide</a>
+      <a class="header-link" href="../../../../main/fr/faq">FAQ</a>
+      <a class="header-link" href="../../../../main/fr/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">Soutenir</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="Dépôt GitHub" title="Dépôt GitHub">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="fr"
-  data-logical-path="fundamentals&#x2F;command-line-interface"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="fundamentals/command-line-interface"
+  data-path-to-root="../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -155,7 +156,7 @@
   
   <div class="doc-banner">Cette traduction peut être obsolète.</div>
   
-  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#x27;est pas encore traduite. Vous avez été redirigé vers la page d&#x27;accueil de la langue.</div>
+  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#39;est pas encore traduite. Vous avez été redirigé vers la page d&#39;accueil de la langue.</div>
 
   
 <div class="doc-layout">
@@ -198,7 +199,7 @@
       
       <li>
         <a href="../../../../main/fr/guide/environment-variables">
-          <span>Variables d&#x27;environnement</span>
+          <span>Variables d&#39;environnement</span>
         </a>
       </li>
       
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../main/fr/guide/inspecting-the-ast">
-          <span>Inspecter l&#x27;AST</span>
+        <a href="../../../../main/fr/guide/inspecting-the-cst">
+          <span>Inspecter l&#39;CST</span>
         </a>
       </li>
       
@@ -360,13 +361,13 @@
         
         <li>
           <a href="../../../../main/fr/tools/analyzer/command-reference">
-            <span>Référence de commande de l&#x27;analyseur</span>
+            <span>Référence de commande de l&#39;analyseur</span>
           </a>
         </li>
         
         <li>
           <a href="../../../../main/fr/tools/analyzer/configuration-reference">
-            <span>Référence de configuration de l&#x27;analyseur</span>
+            <span>Référence de configuration de l&#39;analyseur</span>
           </a>
         </li>
         
@@ -460,6 +461,54 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/fr/tools/formatter/twig">
+            <span>Formateur Twig</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/fr/tools/twig-linter">
+            <span>Linter Twig</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../main/fr/tools/twig-linter/rules">
+            <span>Règles</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -505,6 +554,12 @@
       <li>
         <a href="../../../../main/fr/recipes/docker">
           <span>Recette Docker</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../main/fr/recipes/drupal">
+          <span>Recette Drupal</span>
         </a>
       </li>
       
@@ -582,7 +637,8 @@ mago lint --colors=never        # incorrect, --colors est une option globale
 <p>Les outils principaux :</p>
 <table><thead><tr><th style="text-align: left">Commande</th><th style="text-align: left">Description</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a href="../../../../main/fr/tools/analyzer/command-reference"><code>mago analyze</code></a></td><td style="text-align: left">Analyse statique : erreurs de type, bugs de logique.</td></tr>
-<tr><td style="text-align: left"><a href="../../../../main/fr/guide/inspecting-the-ast"><code>mago ast</code></a></td><td style="text-align: left">Affiche l'AST d'un fichier PHP.</td></tr>
+<tr><td style="text-align: left"><a href="../../../../main/fr/guide/inspecting-the-cst"><code>mago cst</code></a></td><td style="text-align: left">Affiche l'CST d'un fichier PHP.</td></tr>
+<tr><td style="text-align: left"><a href="#mago-fix"><code>mago fix</code></a></td><td style="text-align: left">Applique les corrections des quatre outils jusqu'à ce qu'aucun changement ne reste possible.</td></tr>
 <tr><td style="text-align: left"><a href="../../../../main/fr/tools/formatter/command-reference"><code>mago format</code></a></td><td style="text-align: left">Formate les fichiers PHP.</td></tr>
 <tr><td style="text-align: left"><a href="../../../../main/fr/tools/guard/command-reference"><code>mago guard</code></a></td><td style="text-align: left">Applique les règles et frontières architecturales.</td></tr>
 <tr><td style="text-align: left"><a href="../../../../main/fr/tools/linter/command-reference"><code>mago lint</code></a></td><td style="text-align: left">Linte pour le style, la justesse et les bonnes pratiques.</td></tr>
@@ -596,11 +652,32 @@ mago lint --colors=never        # incorrect, --colors est une option globale
 <tr><td style="text-align: left"><a href="../../../../main/fr/guide/upgrading"><code>mago self-update</code></a></td><td style="text-align: left">Remplace le binaire installé par une release plus récente.</td></tr>
 <tr><td style="text-align: left"><code>mago version</code></td><td style="text-align: left">Affiche la version de Mago. Identique à <code>--version</code>.</td></tr>
 </tbody></table>
+<h2 id="mago-fix">mago fix</h2>
+<p><code>mago fix [PATHS...]</code> lance <strong>guard → analyzer → linter → formatter</strong>, puis répète cet ordre jusqu'à ce qu'un passage complet ne modifie aucun fichier. Chaque outil lit les changements de l'outil précédent. Sans chemins explicites, la commande utilise ceux de la configuration.</p>
+<pre><code class="language-sh">mago fix
+mago fix src/ tests/ --potentially-unsafe
+mago fix --no-analyze --no-guard
+</code></pre>
+<p>Par défaut, seules les corrections sûres s'appliquent. La commande respecte la configuration, les exclusions, les suppressions dans le code et la baseline de chaque outil. Les problèmes sans correction autorisée ne bloquent ni les autres outils ni la fin de la commande.</p>
+<table><thead><tr><th style="text-align: left">Option</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>--potentially-unsafe</code></td><td style="text-align: left">Autorise les corrections sûres et potentiellement risquées.</td></tr>
+<tr><td style="text-align: left"><code>--unsafe</code></td><td style="text-align: left">Autorise toutes les corrections. Vérifiez les changements avec soin.</td></tr>
+<tr><td style="text-align: left"><code>--no-guard</code></td><td style="text-align: left">Ignore le guard.</td></tr>
+<tr><td style="text-align: left"><code>--no-analyze</code></td><td style="text-align: left">Ignore l'analyzer.</td></tr>
+<tr><td style="text-align: left"><code>--no-lint</code></td><td style="text-align: left">Ignore le linter.</td></tr>
+<tr><td style="text-align: left"><code>--no-fmt</code></td><td style="text-align: left">Ignore le formatter.</td></tr>
+<tr><td style="text-align: left"><code>--ignore-baseline</code></td><td style="text-align: left">Corrige aussi les problèmes masqués par les baselines.</td></tr>
+<tr><td style="text-align: left"><code>--fail-on-remaining</code></td><td style="text-align: left">Renvoie le code <code>1</code> s'il reste des problèmes après les corrections.</td></tr>
+<tr><td style="text-align: left"><code>--max-passes &lt;NUMBER&gt;</code></td><td style="text-align: left">Limite le nombre de passages complets : <code>10</code> par défaut, de <code>1</code> à <code>256</code>.</td></tr>
+</tbody></table>
+<p>Par défaut, la commande réussit quand il ne reste aucune correction autorisée par le niveau de sûreté choisi, même s'il reste des problèmes. Désactiver les quatre outils ne fait rien et réussit.</p>
+<p>Si les corrections ramènent les fichiers à un état déjà rencontré ou atteignent la limite de passages, la commande s'arrête avec le code <code>1</code> et signale le problème. Elle conserve les changements déjà faits ; vérifiez les règles et les réglages avant de relancer. Les erreurs d'accès aux fichiers et les autres erreurs des outils arrêtent aussi la commande.</p>
+<p>Vous pouvez augmenter <code>--max-passes</code> jusqu'à <code>256</code>. Si les corrections ne se stabilisent toujours pas après <code>256</code> passages, signalez un bug dans Mago.</p>
 <h2 id="exit-codes">Codes de sortie</h2>
 <table><thead><tr><th style="text-align: left">Code</th><th style="text-align: left">Signification</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>0</code></td><td style="text-align: left">Succès. Aucun problème trouvé.</td></tr>
-<tr><td style="text-align: left"><code>1</code></td><td style="text-align: left">Problèmes trouvés nécessitant attention.</td></tr>
-<tr><td style="text-align: left"><code>2</code></td><td style="text-align: left">Erreur d'outil : configuration, I/O, échec d'analyse, etc.</td></tr>
+<tr><td style="text-align: left"><code>0</code></td><td style="text-align: left">Succès. <code>mago fix</code> n'a plus de correction autorisée à appliquer.</td></tr>
+<tr><td style="text-align: left"><code>1</code></td><td style="text-align: left">Des problèmes demandent votre attention, ou les corrections ne se stabilisent pas.</td></tr>
+<tr><td style="text-align: left"><code>2</code></td><td style="text-align: left">Erreur d'outil : configuration, I/O, etc.</td></tr>
 </tbody></table>
 
     </article>
@@ -618,11 +695,15 @@ mago lint --colors=never        # incorrect, --colors est une option globale
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#environment-variables">Variables d&#x27;environnement</a>
+      <a class="doc-toc__link" href="#environment-variables">Variables d&#39;environnement</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
       <a class="doc-toc__link" href="#subcommands">Sous-commandes</a>
+    </li>
+    
+    <li class="doc-toc__item doc-toc__item--lvl2">
+      <a class="doc-toc__link" href="#mago-fix">mago fix</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
@@ -654,11 +735,12 @@ mago lint --colors=never        # incorrect, --colors est une option globale
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

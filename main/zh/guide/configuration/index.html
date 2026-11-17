@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="配置 · Mago">
   <meta property="og:description" content="Mago 如何发现配置文件、mago.toml 中各选项的作用,以及如何在多个项目间共享配置。">
-  <meta property="og:url" content="https://mago.carthage.software/main/zh/guide&#x2F;configuration/">
+  <meta property="og:url" content="https://mago.carthage.software/main/zh/guide/configuration/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/zh/guide&#x2F;configuration/">
+  <link rel="canonical" href="https://mago.carthage.software/main/zh/guide/configuration/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../main/zh/">
+      <img class="brand__mark" src="../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">按 &#x2F; 搜索</span>
+      <span class="search-trigger__hint">按 / 搜索</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/guide/getting-started">指南</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/faq">常见问题</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/playground">Playground</a>
+      <a class="header-link" href="../../../../main/zh/guide/getting-started">指南</a>
+      <a class="header-link" href="../../../../main/zh/faq">常见问题</a>
+      <a class="header-link" href="../../../../main/zh/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">赞助</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="zh"
-  data-logical-path="guide&#x2F;configuration"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="guide/configuration"
+  data-path-to-root="../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../main/zh/guide/inspecting-the-ast">
-          <span>查看 AST</span>
+        <a href="../../../../main/zh/guide/inspecting-the-cst">
+          <span>查看 CST</span>
         </a>
       </li>
       
@@ -293,6 +294,33 @@
         
         <li>
           <a href="../../../../main/zh/tools/linter/rules">
+            <span>规则</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/zh/tools/twig-linter">
+            <span>Twig Linter</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../main/zh/tools/twig-linter/rules">
             <span>规则</span>
           </a>
         </li>
@@ -487,6 +515,27 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/zh/tools/formatter/twig">
+            <span>Twig 格式化器</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -532,6 +581,12 @@
       <li>
         <a href="../../../../main/zh/recipes/docker">
           <span>Docker 实用方案</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../main/zh/recipes/drupal">
+          <span>Drupal 实用方案</span>
         </a>
       </li>
       
@@ -597,29 +652,29 @@
 <p>每个发布都会发布一个描述完整配置树的 JSON Schema。能识别该 Schema 的编辑器可以为 <code>mago.{toml,yaml,yml,json}</code> 提供自动补全、悬停文档与内联校验。</p>
 <p>Schema 托管在:</p>
 <ul>
-<li><code>https://mago.carthage.software/&lt;version&gt;/schema.json</code>,对应某个具体版本(如 <code>1.29.0</code>)。</li>
+<li><code>https://mago.carthage.software/&lt;version&gt;/schema.json</code>,对应某个具体版本(如 <code>1.60.2</code>)。</li>
 <li><code>https://mago.carthage.software/latest/schema.json</code>,最新的稳定版本。</li>
 <li><code>https://mago.carthage.software/main/schema.json</code>,来自 <code>main</code> 分支的开发构建。</li>
 </ul>
 <p>请将 URL 固定到你已安装的 Mago 版本,这样 Schema 与二进制就能保持同步。<code>mago init</code> 会把固定版本的 URL 写入它生成的配置文件中。</p>
 <p>引用方式因格式而异:</p>
-<pre><code class="language-toml">#:schema https://mago.carthage.software/1.29.0/schema.json
+<pre><code class="language-toml">#:schema https://mago.carthage.software/1.60.2/schema.json
 version = "1"
 php-version = "8.3"
 </code></pre>
-<pre><code class="language-yaml"># yaml-language-server: $schema=https://mago.carthage.software/1.29.0/schema.json
+<pre><code class="language-yaml"># yaml-language-server: $schema=https://mago.carthage.software/1.60.2/schema.json
 version: "1"
 php-version: "8.3"
 </code></pre>
 <pre><code class="language-json">{
-  "$schema": "https://mago.carthage.software/1.29.0/schema.json",
+  "$schema": "https://mago.carthage.software/1.60.2/schema.json",
   "version": "1",
   "php-version": "8.3"
 }
 </code></pre>
 <p>对于 TOML,该注释会被 <a href="https://taplo.tamasfe.dev/">Taplo</a> 语言服务器读取,VS Code 的「Even Better TOML」扩展和 JetBrains 的 TOML 支持均基于它。对于 YAML,该注释会被 <a href="https://github.com/redhat-developer/yaml-language-server">Red Hat YAML 语言服务器</a> 读取。对于 JSON,所有现代编辑器都原生识别 <code>$schema</code>。Mago 本身会忽略 <code>$schema</code> 键以及这些魔法注释,它们仅用于编辑器工具。</p>
 <p>如果你需要在 CI 中重新生成 Schema(例如,以编程方式校验配置文件),<code>mago config --schema</code> 会把它打印到 stdout。</p>
-<h2 id="sharing-configuration-with-extends">用 <code>extends</code> 共享配置</h2>
+<h2 id="local-schema-with-composer">用 <code>extends</code> 共享配置</h2>
 <blockquote>
 <p>自 Mago 1.25 起可用。更早的版本会默默忽略该指令。</p>
 </blockquote>
@@ -637,10 +692,10 @@ extends = [
 # 本文件自身的键会覆盖以上各层中的任何内容
 php-version = "8.3"
 </code></pre>
-<h3 id="resolution">路径解析</h3>
+<h3 id="sharing-configuration-with-extends">路径解析</h3>
 <p>绝对路径按原样使用。相对路径相对于声明 <code>extends</code> 的文件所在目录解析,而不是相对于当前工作目录。所以 <code>mago --config some/dir/config.toml</code> 配合 <code>extends = "base.toml"</code> 时,会查找 <code>some/dir/base.toml</code>。</p>
 <p>文件类条目必须存在,且使用受支持的扩展名(<code>.toml</code>、<code>.yaml</code>、<code>.yml</code>、<code>.json</code>)。目录类条目会按上述优先级在其中扫描 <code>mago.{toml,yaml,yml,json}</code>;一个不含可识别文件的目录会被跳过并打印一条警告,而不是让构建失败。</p>
-<h3 id="effective-precedence">实际优先级</h3>
+<h3 id="resolution">实际优先级</h3>
 <p>各层按"后写入者覆盖、最深层先解析"的方式合并:</p>
 <ol>
 <li>内置默认值。</li>
@@ -649,7 +704,7 @@ php-version = "8.3"
 <li>针对 <a href="../../../../main/zh/guide/environment-variables">受支持的标量</a> 的 <code>MAGO_*</code> 环境变量。</li>
 <li>CLI 参数,如 <code>--php-version</code>、<code>--threads</code>。</li>
 </ol>
-<h3 id="merge-semantics">合并语义</h3>
+<h3 id="effective-precedence">合并语义</h3>
 <p>按顶层键划分:</p>
 <ul>
 <li>表(table)和对象进行深度合并。子层可以覆盖嵌套表中的某个键,而无需重定义整张表。</li>
@@ -668,7 +723,7 @@ threads = 8
 excludes = ["build"]   # 追加后 -&gt; ["vendor", "node_modules", "build"]
 </code></pre>
 <p>通过追踪规范化路径来检测环路,并以清晰的错误提示中断,而不是无限递归。菱形继承(A 继承 B 和 C,两者都继承 D)会只处理 D 一次,完全没有问题。各层可以自由混用格式;每一层由其对应的解析驱动负责解析,在通用值层面合并,最终文档再依据 schema 进行校验。</p>
-<h2 id="global-options">全局选项</h2>
+<h2 id="merge-semantics">全局选项</h2>
 <p>这些键位于 <code>mago.toml</code> 的根层。</p>
 <pre><code class="language-toml">version = "1"
 php-version = "8.2"
@@ -677,7 +732,7 @@ stack-size = 8388608     # 8 MiB
 editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 </code></pre>
 <table><thead><tr><th style="text-align: left">选项</th><th style="text-align: left">类型</th><th style="text-align: left">默认值</th><th style="text-align: left">说明</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>version</code></td><td style="text-align: left">string</td><td style="text-align: left">无</td><td style="text-align: left">锁定本项目所基于的 Mago 版本。接受主版本(<code>"1"</code>)、次版本(<code>"1.29"</code>)或精确版本(<code>"1.29.0"</code>)的锁定。参见 <a href="#version-pinning">版本锁定</a>。</td></tr>
+<tr><td style="text-align: left"><code>version</code></td><td style="text-align: left">string</td><td style="text-align: left">无</td><td style="text-align: left">锁定本项目所基于的 Mago 版本。接受主版本(<code>"1"</code>)、次版本(<code>"1.60"</code>)或精确版本(<code>"1.60.2"</code>)的锁定。参见 <a href="#version-pinning">版本锁定</a>。</td></tr>
 <tr><td style="text-align: left"><code>php-version</code></td><td style="text-align: left">string</td><td style="text-align: left">最新稳定版</td><td style="text-align: left">Mago 在解析与分析时应针对的 PHP 版本。<code>mago init</code> 会尽可能从 <code>composer.json</code> 自动检测。</td></tr>
 <tr><td style="text-align: left"><code>allow-unsupported-php-version</code></td><td style="text-align: left">boolean</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">允许 Mago 运行在它官方不支持的 PHP 版本上。不建议使用。</td></tr>
 <tr><td style="text-align: left"><code>no-version-check</code></td><td style="text-align: left">boolean</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">在已安装二进制与锁定版本不一致时关闭警告。主版本不一致始终是致命错误。</td></tr>
@@ -685,13 +740,13 @@ editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 <tr><td style="text-align: left"><code>stack-size</code></td><td style="text-align: left">integer</td><td style="text-align: left">2 MiB</td><td style="text-align: left">每线程栈大小,以字节为单位。最小 2 MiB,最大 8 MiB。</td></tr>
 <tr><td style="text-align: left"><code>editor-url</code></td><td style="text-align: left">string</td><td style="text-align: left">无</td><td style="text-align: left">终端输出中可点击文件路径的 URL 模板。参见 <a href="#editor-integration">编辑器集成</a>。</td></tr>
 </tbody></table>
-<h3 id="version-pinning">版本锁定</h3>
+<h3 id="global-options">版本锁定</h3>
 <p>锁定版本能让已安装二进制与项目期望之间的差异尽早暴露,而不是默默地输出不同结果。</p>
 <p>三种锁定级别:</p>
 <ul>
 <li><strong>主版本锁定</strong>(<code>version = "1"</code>):任何 <code>1.x.y</code> 都满足。升级到 <code>2.x</code> 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。这是 <code>mago init</code> 默认写入的级别。</li>
-<li><strong>次版本锁定</strong>(<code>version = "1.29"</code>):任何 <code>1.29.y</code> 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。</li>
-<li><strong>精确锁定</strong>(<code>version = "1.29.0"</code>):任何漂移都会发出警告;跨主版本仍然是致命错误。</li>
+<li><strong>次版本锁定</strong>(<code>version = "1.60"</code>):任何 <code>1.60.y</code> 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。</li>
+<li><strong>精确锁定</strong>(<code>version = "1.60.2"</code>):任何漂移都会发出警告;跨主版本仍然是致命错误。</li>
 </ul>
 <p>警告可通过 <code>--no-version-check</code>、<code>MAGO_NO_VERSION_CHECK</code> 环境变量,或配置中的 <code>no-version-check = true</code> 关闭。这些都不会影响主版本漂移,而后者正是版本锁定的全部意义所在。</p>
 <p>把已安装二进制同步到项目的锁定版本:</p>
@@ -699,25 +754,28 @@ editor-url = "phpstorm://open?file=%file%&amp;line=%line%&amp;column=%column%"
 </code></pre>
 <p>对于精确锁定,会直接解析到对应的发布 tag。对于主版本或次版本锁定,Mago 会扫描近期的 GitHub 发布,安装满足锁定的最高版本。所以即便 2.0 已经发布,<code>version = "1"</code> 仍会安装最新的 1.x。</p>
 <p><code>version</code> 目前是可选项。未来某个 Mago 版本可能在未设置时开始警告,以提醒项目为最终的 2.0 升级做准备。</p>
-<h2 id="source"><code>[source]</code></h2>
+<h2 id="version-pinning"><code>[source]</code></h2>
 <p><code>[source]</code> 小节控制 Mago 如何发现和处理文件。</p>
-<h3 id="four-categories-of-paths">三类路径</h3>
-<p>Mago 区分你的代码、第三方代码,以及完全要忽略的代码:</p>
+<h3 id="source">四类路径</h3>
+<p>Mago 区分你的代码、第三方代码、类型补丁,以及完全要忽略的代码:</p>
 <ul>
 <li><strong><code>paths</code></strong> 是你的源码文件。Mago 会对它们进行分析、lint 和格式化。</li>
 <li><strong><code>includes</code></strong> 是依赖(通常是 <code>vendor</code>)。Mago 会解析它们以解析符号和类型,但绝不会分析、lint 或重写它们。</li>
+<li><strong><code>patches</code></strong> 是为第三方代码或内置代码提供类型及受支持语义 PHPDoc 标记补丁的 PHP 文件。Mago 优先使用其中的类型声明、PHPDoc 和受支持标记,但不分析、lint 或格式化这些文件。详见<a href="#%E4%BF%AE%E8%A1%A5%E7%AC%AC%E4%B8%89%E6%96%B9%E4%BB%A3%E7%A0%81%E7%9A%84%E7%B1%BB%E5%9E%8B">修补第三方代码的类型</a>。</li>
 <li><strong><code>excludes</code></strong> 是 Mago 完全忽略的路径或 glob。它们对所有工具生效。</li>
 </ul>
 <p>如果一个文件同时匹配 <code>paths</code> 和 <code>includes</code>,更具体的模式胜出。精确文件路径最具体,其次是更深的目录路径,然后是较浅的目录路径,最后是 glob 模式。当模式具体程度相同,<code>includes</code> 胜出,这让你可以显式地把某个路径标记为依赖。</p>
 <pre><code class="language-toml">[source]
 paths     = ["src", "tests"]
+patches   = ["patches"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
 extensions = ["php"]
 </code></pre>
-<p>三种列表都支持 glob 模式:</p>
+<p>四种列表都支持 glob 模式:</p>
 <pre><code class="language-toml">[source]
 paths    = ["src/**/*.php"]
+patches  = ["patches/**/*.php"]
 includes = ["vendor/symfony/**/*.php"]   # 仅包含 vendor 中的 Symfony
 excludes = [
   "**/*_generated.php",
@@ -725,13 +783,27 @@ excludes = [
   "src/Legacy/**",
 ]
 </code></pre>
-<h3 id="reference">参考</h3>
+<h3 id="four-categories-of-paths">参考</h3>
 <table><thead><tr><th style="text-align: left">选项</th><th style="text-align: left">类型</th><th style="text-align: left">默认值</th><th style="text-align: left">说明</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>paths</code></td><td style="text-align: left">string list</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">你源码的目录或 glob。为空时扫描整个工作区。</td></tr>
 <tr><td style="text-align: left"><code>includes</code></td><td style="text-align: left">string list</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">Mago 应解析但不修改的第三方代码的目录或 glob。</td></tr>
+<tr><td style="text-align: left"><code>patches</code></td><td style="text-align: left">string list</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">类型和语义标记补丁的目录或 glob。其类型及受支持标记覆盖 <code>includes</code> 和内置代码。不进行分析、lint 或格式化。</td></tr>
 <tr><td style="text-align: left"><code>excludes</code></td><td style="text-align: left">string list</td><td style="text-align: left"><code>[]</code></td><td style="text-align: left">在所有工具中都被排除的 glob 或路径。</td></tr>
 <tr><td style="text-align: left"><code>extensions</code></td><td style="text-align: left">string list</td><td style="text-align: left"><code>["php"]</code></td><td style="text-align: left">视为 PHP 的文件扩展名。</td></tr>
 </tbody></table>
+<h3 id="reference">修补第三方代码的类型</h3>
+<p>补丁是一个 PHP 文件,按完全限定名称重新声明第三方或内置符号。Mago 读取其中的类型信息和受支持的语义 PHPDoc 标记,忽略函数体。补丁修正已有符号,不会替换整个符号,也不能创建原代码中不存在的符号。</p>
+<p>每个符号只能有一个补丁。如果多个补丁指向同一符号,Mago 会报告冲突,而不是自行选择。请合并这些补丁,或只保留一个。</p>
+<p><strong>补丁可以修正的内容</strong></p>
+<ul>
+<li>方法签名:参数类型、返回类型、<code>@throws</code>、<code>@template</code> 和 <code>@psalm-assert</code> 等类型断言。只有补丁明确提供的字段才会改变。</li>
+<li>属性和常量的类型。</li>
+<li>语义 PHPDoc 标记:通用标签(<code>@deprecated</code>、<code>@not-deprecated</code>、<code>@internal</code>、<code>@experimental</code>、<code>@api</code>),函数和方法标签(<code>@pure</code>、<code>@impure</code>、<code>@mutation-free</code>、<code>@external-mutation-free</code>、<code>@must-use</code>、<code>@no-named-arguments</code>、<code>@suspends-fiber</code>),以及类标签(<code>@consistent-constructor</code>、<code>@consistent-templates</code>)。扫描器已识别的 PHPStan 和 Psalm 别名同样受支持。只有补丁显式声明的标签才会更改对应标记;未声明的标签保留原值。<code>@impure</code> 会清除 <code>@pure</code>,<code>@not-deprecated</code> 会清除 <code>@deprecated</code>。</li>
+<li>类级别的 <code>@template</code> 声明和类型别名。已有模板按名称更新,新模板追加到末尾。</li>
+<li>通过 <code>@extends</code> 和 <code>@implements</code> 指定父类型的泛型实参。补丁覆盖它明确指定的绑定,保留其他绑定。</li>
+<li>通过 <code>@method</code>、<code>@property</code>、<code>@property-read</code> 和 <code>@property-write</code> 添加魔术成员,即使原符号没有声明这些成员。这些注解为 <code>__call</code>、<code>__get</code> 或 <code>__set</code> 提供类型信息。</li>
+</ul>
+<p>语义标记只会应用于支持相应标签的声明。结构修饰符和分析控制标记(包括 <code>final</code>、<code>readonly</code>、<code>static</code>、抑制标记和从函数体推导的标记)仍由原声明决定。</p>
 <h3 id="patching-vendor-types">Glob 设置</h3>
 <p><code>[source.glob]</code> 用于调整 glob 的匹配方式。自 1.19 起可用。</p>
 <pre><code class="language-toml">[source.glob]
@@ -801,9 +873,13 @@ enable-short-tags = false
 </code></pre>
 <table><thead><tr><th style="text-align: left">占位符</th><th style="text-align: left">含义</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>%file%</code></td><td style="text-align: left">文件的绝对路径。</td></tr>
+<tr><td style="text-align: left"><code>%rel_file%</code></td><td style="text-align: left">相对于工作区的文件路径。</td></tr>
 <tr><td style="text-align: left"><code>%line%</code></td><td style="text-align: left">行号,从 1 开始。</td></tr>
 <tr><td style="text-align: left"><code>%column%</code></td><td style="text-align: left">列号,从 1 开始。</td></tr>
 </tbody></table>
+<p>当编辑器相对于当前打开的工作区解析文件路径时，请使用 <code>%rel_file%</code>：</p>
+<pre><code class="language-sh">export MAGO_EDITOR_URL="vscode://file/%rel_file%:%line%:%column%"
+</code></pre>
 <p>常用模板:</p>
 <table><thead><tr><th style="text-align: left">编辑器</th><th style="text-align: left">模板</th></tr></thead><tbody>
 <tr><td style="text-align: left">VS Code</td><td style="text-align: left"><code>vscode://file/%file%:%line%:%column%</code></td></tr>
@@ -864,39 +940,43 @@ mago config --schema --show linter
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#sharing-configuration-with-extends">用 extends 共享配置</a>
+      <a class="doc-toc__link" href="#local-schema-with-composer">用 extends 共享配置</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#resolution">路径解析</a>
+      <a class="doc-toc__link" href="#sharing-configuration-with-extends">路径解析</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#effective-precedence">实际优先级</a>
+      <a class="doc-toc__link" href="#resolution">实际优先级</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#merge-semantics">合并语义</a>
+      <a class="doc-toc__link" href="#effective-precedence">合并语义</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#global-options">全局选项</a>
+      <a class="doc-toc__link" href="#merge-semantics">全局选项</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#version-pinning">版本锁定</a>
+      <a class="doc-toc__link" href="#global-options">版本锁定</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
-      <a class="doc-toc__link" href="#source">[source]</a>
+      <a class="doc-toc__link" href="#version-pinning">[source]</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#four-categories-of-paths">三类路径</a>
+      <a class="doc-toc__link" href="#source">四类路径</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
-      <a class="doc-toc__link" href="#reference">参考</a>
+      <a class="doc-toc__link" href="#four-categories-of-paths">参考</a>
+    </li>
+    
+    <li class="doc-toc__item doc-toc__item--lvl3">
+      <a class="doc-toc__link" href="#reference">修补第三方代码的类型</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
@@ -948,11 +1028,12 @@ mago config --schema --show linter
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

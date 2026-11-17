@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="格式化器配置参考 · Mago">
   <meta property="og:description" content="mago.toml 中 [formatter] 下可设置的所有选项。">
-  <meta property="og:url" content="https://mago.carthage.software/main/zh/tools&#x2F;formatter&#x2F;configuration-reference/">
+  <meta property="og:url" content="https://mago.carthage.software/main/zh/tools/formatter/configuration-reference/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/zh/tools&#x2F;formatter&#x2F;configuration-reference/">
+  <link rel="canonical" href="https://mago.carthage.software/main/zh/tools/formatter/configuration-reference/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../../main/zh/">
+      <img class="brand__mark" src="../../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">按 &#x2F; 搜索</span>
+      <span class="search-trigger__hint">按 / 搜索</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/guide/getting-started">指南</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/faq">常见问题</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/playground">Playground</a>
+      <a class="header-link" href="../../../../../main/zh/guide/getting-started">指南</a>
+      <a class="header-link" href="../../../../../main/zh/faq">常见问题</a>
+      <a class="header-link" href="../../../../../main/zh/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">赞助</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="zh"
-  data-logical-path="tools&#x2F;formatter&#x2F;configuration-reference"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="tools/formatter/configuration-reference"
+  data-path-to-root="../../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../../main/zh/guide/inspecting-the-ast">
-          <span>查看 AST</span>
+        <a href="../../../../../main/zh/guide/inspecting-the-cst">
+          <span>查看 CST</span>
         </a>
       </li>
       
@@ -293,6 +294,33 @@
         
         <li>
           <a href="../../../../../main/zh/tools/linter/rules">
+            <span>规则</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/zh/tools/twig-linter">
+            <span>Twig Linter</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../../main/zh/tools/twig-linter/rules">
             <span>规则</span>
           </a>
         </li>
@@ -487,6 +515,27 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/zh/tools/formatter/twig">
+            <span>Twig 格式化器</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -532,6 +581,12 @@
       <li>
         <a href="../../../../../main/zh/recipes/docker">
           <span>Docker 实用方案</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../../main/zh/recipes/drupal">
+          <span>Drupal 实用方案</span>
         </a>
       </li>
       
@@ -588,6 +643,7 @@ print-width = 100
 use-tabs = true
 </code></pre>
 <h2 id="presets">预设</h2>
+<p>PHP 设置和预设不适用于 Twig。使用 <a href="../../../../../main/zh/tools/formatter/twig#%E9%85%8D%E7%BD%AE"><code>[twig.formatter]</code></a> 配置或关闭 Twig 格式化。</p>
 <p>预设是为某种编码标准量身打包的一整套格式化器选项。</p>
 <pre><code class="language-toml">[formatter]
 preset = "laravel"
@@ -596,7 +652,7 @@ preset = "laravel"
 <tr><td style="text-align: left"><code>default</code></td><td style="text-align: left">兼容 PER-CS。等同于内置默认值。</td></tr>
 <tr><td style="text-align: left"><code>psr-12</code></td><td style="text-align: left">PSR-12 编码标准。</td></tr>
 <tr><td style="text-align: left"><code>laravel</code></td><td style="text-align: left">Laravel Pint 的 <code>laravel</code> 预设。</td></tr>
-<tr><td style="text-align: left"><code>drupal</code></td><td style="text-align: left">Drupal 编码标准。</td></tr>
+<tr><td style="text-align: left"><code>drupal</code></td><td style="text-align: left">Drupal 编码标准。官方的 <a href="../../../../../main/zh/recipes/drupal"><code>drupal/mago</code> 扩展</a>会为你设置它。</td></tr>
 </tbody></table>
 <p>预设支持版本后缀:</p>
 <pre><code class="language-toml">preset = "psr-12@latest"
@@ -690,6 +746,7 @@ public function bar(
 <tr><td style="text-align: left"><code>preserve-breaking-attribute-list</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">保留 attribute 列表中已有的换行。</td></tr>
 <tr><td style="text-align: left"><code>preserve-breaking-conditional-expression</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">保留三元表达式中已有的换行。</td></tr>
 <tr><td style="text-align: left"><code>preserve-breaking-condition-expression</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">保留控制结构条件中已有的换行。启用时,每个布尔运算符放在独立的一行。</td></tr>
+<tr><td style="text-align: left"><code>preserve-breaking-pipe-expression</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">保留管道表达式中已有的换行。</td></tr>
 <tr><td style="text-align: left"><code>break-promoted-properties-list</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">始终对包含构造器属性提升的形参列表进行换行。</td></tr>
 <tr><td style="text-align: left"><code>parameter-attribute-on-new-line</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">形参列表换行时,把形参 attribute 放到独立的一行(PER-CS 12.2)。</td></tr>
 <tr><td style="text-align: left"><code>line-before-binary-operator</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">二元表达式换行时,把运算符放到下一行。</td></tr>
@@ -709,7 +766,7 @@ public function bar(
 </tbody></table>
 <h2 id="use-statements"><code>use</code> 语句</h2>
 <table><thead><tr><th style="text-align: left">选项</th><th style="text-align: left">类型</th><th style="text-align: left">默认值</th><th style="text-align: left">说明</th></tr></thead><tbody>
-<tr><td style="text-align: left"><code>sort-uses</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">按字母顺序排序 <code>use</code> 语句。</td></tr>
+<tr><td style="text-align: left"><code>sort-uses</code></td><td style="text-align: left">枚举</td><td style="text-align: left"><code>"alpha-ascending"</code></td><td style="text-align: left">控制 <code>use</code> 语句的排序方式。取值:<code>preserve</code>（别名 <code>as-is</code>、<code>none</code>、<code>keep</code>、<code>false</code>）、<code>alphanumeric-ascending</code>（别名 <code>alpha-ascending</code>、<code>ascending</code>、<code>true</code>）、<code>alphanumeric-descending</code>（别名 <code>alpha-descending</code>、<code>descending</code>）、<code>length-ascending</code>、<code>length-descending</code>。按长度排序时按源码中 use 语句的码点数计算；长度相同的语句以 <code>alphanumeric-ascending</code> 作为次级排序，保证输出稳定。</td></tr>
 <tr><td style="text-align: left"><code>sort-class-methods</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>false</code></td><td style="text-align: left">按可见性和类型排序类方法:构造函数在前,然后是静态方法,然后按可见性排序的实例方法,析构函数在最后。</td></tr>
 <tr><td style="text-align: left"><code>separate-use-types</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">在不同种类的 <code>use</code> 之间插入空行。</td></tr>
 <tr><td style="text-align: left"><code>expand-use-groups</code></td><td style="text-align: left">布尔值</td><td style="text-align: left"><code>true</code></td><td style="text-align: left">把分组的 <code>use</code> 语句展开为单独的语句。</td></tr>
@@ -857,11 +914,12 @@ public function bar(
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

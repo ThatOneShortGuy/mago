@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="分析器配置参考 · Mago">
   <meta property="og:description" content="Mago 在 [analyzer] 下接受的所有选项。">
-  <meta property="og:url" content="https://mago.carthage.software/main/zh/tools&#x2F;analyzer&#x2F;configuration-reference/">
+  <meta property="og:url" content="https://mago.carthage.software/main/zh/tools/analyzer/configuration-reference/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/zh/tools&#x2F;analyzer&#x2F;configuration-reference/">
+  <link rel="canonical" href="https://mago.carthage.software/main/zh/tools/analyzer/configuration-reference/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../../main/zh/">
+      <img class="brand__mark" src="../../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">按 &#x2F; 搜索</span>
+      <span class="search-trigger__hint">按 / 搜索</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/guide/getting-started">指南</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/faq">常见问题</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/playground">Playground</a>
+      <a class="header-link" href="../../../../../main/zh/guide/getting-started">指南</a>
+      <a class="header-link" href="../../../../../main/zh/faq">常见问题</a>
+      <a class="header-link" href="../../../../../main/zh/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">赞助</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="zh"
-  data-logical-path="tools&#x2F;analyzer&#x2F;configuration-reference"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="tools/analyzer/configuration-reference"
+  data-path-to-root="../../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../../main/zh/guide/inspecting-the-ast">
-          <span>查看 AST</span>
+        <a href="../../../../../main/zh/guide/inspecting-the-cst">
+          <span>查看 CST</span>
         </a>
       </li>
       
@@ -293,6 +294,33 @@
         
         <li>
           <a href="../../../../../main/zh/tools/linter/rules">
+            <span>规则</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/zh/tools/twig-linter">
+            <span>Twig Linter</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../../main/zh/tools/twig-linter/rules">
             <span>规则</span>
           </a>
         </li>
@@ -487,6 +515,27 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/zh/tools/formatter/twig">
+            <span>Twig 格式化器</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -532,6 +581,12 @@
       <li>
         <a href="../../../../../main/zh/recipes/docker">
           <span>Docker 实用方案</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../../main/zh/recipes/drupal">
+          <span>Drupal 实用方案</span>
         </a>
       </li>
       
@@ -623,6 +678,7 @@ ignore = [
 </code></pre>
 <p>glob 匹配会遵循 <code>[source.glob]</code> 下的项目级设置,因此像 <code>literal-separator</code> 和 <code>case-insensitive</code> 这样的开关在这里同样适用。</p>
 <p><code>excludes</code> 与 <code>ignore</code> 含义不同。<code>excludes</code> 把文件完全从分析中移除,因此这些文件不会被解析以提供类型信息。<code>ignore</code> 仍会分析文件,但会在输出中抑制所列代码。</p>
+<p>若想查看 <code>ignore</code> 列表当前隐藏了哪些问题,可运行一次 <code>mago analyze --skip-ignores</code>,该列表仅在这一次运行中被禁用。</p>
 <h2 id="pattern-based-ignoring">特性开关</h2>
 <p>这些开关用于切换各项独立的分析。默认值已为日常使用调好;在代码库逐步收紧时再开启它们。</p>
 <table><thead><tr><th style="text-align: left">选项</th><th style="text-align: left">默认值</th><th style="text-align: left">说明</th></tr></thead><tbody>
@@ -632,12 +688,15 @@ ignore = [
 <tr><td style="text-align: left"><code>analyze-dead-code</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">分析看似不可达的代码。</td></tr>
 <tr><td style="text-align: left"><code>memoize-properties</code></td><td style="text-align: left"><code>true</code></td><td style="text-align: left">跟踪字面量属性值以获得更精准的推断,代价是占用一些额外内存。</td></tr>
 <tr><td style="text-align: left"><code>allow-possibly-undefined-array-keys</code></td><td style="text-align: left"><code>true</code></td><td style="text-align: left">**已弃用。**允许访问可能不存在的键,而不报告。设为 <code>false</code> 时仅对带有单个字面量键的 <code>array&lt;K, V&gt;</code> 读取发出警告,且不会将类型扩展为 <code>T|null</code>。请改用 <code>strict-array-index-existence</code>。</td></tr>
-<tr><td style="text-align: left"><code>check-throws</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告未被捕获且未通过 <code>@throws</code> 声明的异常。</td></tr>
+<tr><td style="text-align: left"><code>check-throws</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告未捕获且未使用 <code>@throws</code> 文档说明的异常。</td></tr>
+<tr><td style="text-align: left"><code>check-dead-catch</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告与 <code>try</code> 块中任何已知异常都不匹配的 <code>catch</code> 子句。需要启用 <code>check-throws</code>;未记录的代码仍可能抛出分析器无法发现的异常。</td></tr>
+<tr><td style="text-align: left"><code>check-throw-type-covariance</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">检查重写和实现方法的 <code>@throws</code> 契约协变性。缺少该标签时按 <code>Throwable</code> 处理；无异常时使用 <code>@throws void</code>。</td></tr>
 <tr><td style="text-align: left"><code>check-missing-override</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告重写方法上缺失的 <code>#[Override]</code> attribute(PHP 8.3+)。</td></tr>
 <tr><td style="text-align: left"><code>find-unused-parameters</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告从未被读取的参数。</td></tr>
 <tr><td style="text-align: left"><code>strict-list-index-checks</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">要求作为列表下标使用的整数必须可被证明非负。</td></tr>
 <tr><td style="text-align: left"><code>strict-array-index-existence</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">当数组或列表读取的键无法证明存在时,将结果视为 <code>T|null</code> 并发出 <code>possibly-undefined-{int,string}-array-index</code> 警告。用于替代 <code>allow-possibly-undefined-array-keys = false</code>。</td></tr>
 <tr><td style="text-align: left"><code>allow-array-truthy-operand</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">允许将数组用作 <code>&amp;&amp;</code>、<code>||</code> 与 <code>xor</code> 的操作数,而不触发 <code>invalid-operand</code>。独立的 <code>if ($array)</code> 不受影响,也不会发出警告。</td></tr>
+<tr><td style="text-align: left"><code>allow-operator-overloading</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">接受 <code>BcMath\Number</code> 和 <code>GMP</code> 重载的运算符（算术、位运算、移位、<code>-</code>、<code>+</code>、<code>~</code>、<code>++</code>、<code>--</code>），而不报告 <code>invalid-operand</code>。无论是否启用该选项，结果类型都会被推断；比较运算不受影响。</td></tr>
 <tr><td style="text-align: left"><code>no-boolean-literal-comparison</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">禁止与布尔字面量进行直接比较,例如 <code>$a === true</code>。</td></tr>
 <tr><td style="text-align: left"><code>check-missing-type-hints</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">报告参数、属性和返回值缺失的类型提示。</td></tr>
 <tr><td style="text-align: left"><code>check-closure-missing-type-hints</code></td><td style="text-align: left"><code>false</code></td><td style="text-align: left">把类型提示检查扩展到闭包(需要 <code>check-missing-type-hints</code>)。</td></tr>
@@ -765,6 +824,7 @@ find-unused-definitions = true
 find-overly-wide-return-types = true
 analyze-dead-code = true
 check-throws = true
+check-dead-catch = true
 check-missing-override = true
 find-unused-parameters = true
 check-missing-type-hints = true
@@ -778,6 +838,7 @@ strict-array-index-existence = true
 no-boolean-literal-comparison = true
 trust-existence-checks = false
 </code></pre>
+<p><code>check-dead-catch</code> 默认关闭,因为 PHP 运行时可能抛出函数类型或 <code>@throws</code> 文档未描述的异常,例如 <code>TypeError</code>。如果代码库的异常文档足够完整,可启用此选项进行更严格的检查。</p>
 <h3 id="maximum-strictness">宽松模式</h3>
 <pre><code class="language-toml">[analyzer]
 check-missing-type-hints = false
@@ -808,6 +869,7 @@ check-throws = false
 <p><code>strict-array-index-existence</code> 让类型系统与 PHP 的运行时语义保持一致。在运行时,PHP 会把缺失的读取结果视为 <code>null</code>,并发出 <code>Undefined array key</code> 警告;开启该开关后,分析器会发出 <code>possibly-undefined-int-array-index</code>(或 <code>-string-array-index</code>)并把结果类型扩展为 <code>T|null</code>,这样后续的 <code>=== null</code> 与 <code>??</code> 检查就能按预期工作。它适用于 <code>list&lt;T&gt;</code> 中非零下标的读取、<code>array{...}</code> 形状中的可选条目,以及通过任意键访问 <code>array&lt;K, V&gt;</code> 的情况。该选项默认关闭,因为对于不显式断言键存在便对列表进行解构或下标访问的 PHP 代码来说,把它设为默认值会过于嘈杂。</p>
 <p><code>allow-possibly-undefined-array-keys = false</code> 已弃用。它仅对带有单个字面量键的 <code>array&lt;K, V&gt;</code> 读取发出警告,且不会把类型扩展为 <code>T|null</code>,因此读取后的 <code>=== null</code> 检查会被报告为冗余。请改用 <code>strict-array-index-existence = true</code>,它的覆盖更全面,并将运行时语义体现到类型上。设置 <code>allow-possibly-undefined-array-keys = false</code> 时,CLI 会输出弃用警告。</p>
 <p><code>allow-array-truthy-operand</code> 控制是否接受数组作为 <code>&amp;&amp;</code>、<code>||</code> 与 <code>xor</code> 的操作数。PHP 会将空数组转换为 <code>false</code>,非空数组转换为 <code>true</code>,这与独立的 <code>if ($array)</code> 所使用的真值判定一致。默认情况下,分析器会对逻辑运算符的数组操作数发出 <code>invalid-operand</code>,以提醒这种隐式的 <code>bool</code> 转换;开启该选项会抑制该警告,从而允许依赖此转换风格的代码库保留其写法。独立的 <code>if ($array)</code> 始终不受影响。</p>
+<p><code>allow-operator-overloading</code> 控制是否接受在重载了运算符的类（例如 <code>BcMath\Number</code> 和 <code>GMP</code>）上使用运算符。对于这些对象，PHP 会通过该类来执行 <code>$a + $b</code>，而不是将其作为普通算术处理；仅凭表达式本身，阅读代码的人无法看出这一点。默认情况下，分析器会将这些运算报告为 <code>invalid-operand</code>，但仍会将结果推断为该类的实例，因此不会出现后续的 <code>mixed</code> 问题；启用该选项后，这些运算会被接受。比较运算和 <code>&lt;=&gt;</code> 不受该选项影响，而类在运行时会拒绝的操作数无论是否启用该选项都会被报告。</p>
 <h2 id="notes-on-individual-flags">性能调优</h2>
 <p>分析器使用内部阈值在分析深度与速度之间取得平衡。设置位于 <code>[analyzer.performance]</code> 下。</p>
 <table><thead><tr><th style="text-align: left">选项</th><th style="text-align: left">类型</th><th style="text-align: left">默认值</th><th style="text-align: left">说明</th></tr></thead><tbody>
@@ -820,6 +882,7 @@ check-throws = false
 <tr><td style="text-align: left"><code>integer-combination-threshold</code></td><td style="text-align: left"><code>u16</code></td><td style="text-align: left"><code>128</code></td><td style="text-align: left">在泛化为 <code>int</code> 之前能跟踪的最大字面整数数。</td></tr>
 <tr><td style="text-align: left"><code>array-combination-threshold</code></td><td style="text-align: left"><code>u16</code></td><td style="text-align: left"><code>32</code></td><td style="text-align: left">在合并之前能单独跟踪的最大封闭键控数组形状数。</td></tr>
 <tr><td style="text-align: left"><code>loop-assignment-depth-threshold</code></td><td style="text-align: left"><code>u8</code></td><td style="text-align: left"><code>1</code></td><td style="text-align: left">循环不动点迭代的最大深度。<code>0</code> 表示禁用重新迭代。</td></tr>
+<tr><td style="text-align: left"><code>slow-file-warning-threshold-ms</code></td><td style="text-align: left"><code>u16</code></td><td style="text-align: left"><code>5000</code></td><td style="text-align: left">单个源文件的分析耗时超过此毫秒数时发出警告。</td></tr>
 </tbody></table>
 <p><code>string-concat-combination-threshold</code> 仍作为 <code>string-combination-threshold</code> 的别名被接受。</p>
 <h3 id="performance-tuning">何时调整</h3>
@@ -983,11 +1046,12 @@ loop-assignment-depth-threshold = 4
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

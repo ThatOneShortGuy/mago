@@ -9,7 +9,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="Référence de configuration du guard · Mago">
   <meta property="og:description" content="Toutes les options que Mago accepte sous [guard].">
-  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools&#x2F;guard&#x2F;configuration-reference/">
+  <meta property="og:url" content="https://mago.carthage.software/main/fr/tools/guard/configuration-reference/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -20,23 +20,24 @@
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools&#x2F;guard&#x2F;configuration-reference/">
+  <link rel="canonical" href="https://mago.carthage.software/main/fr/tools/guard/configuration-reference/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../../main/fr/">
+      <img class="brand__mark" src="../../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">Appuyez sur &#x2F; pour rechercher</span>
+      <span class="search-trigger__hint">Appuyez sur / pour rechercher</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/guide/getting-started">Guide</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/faq">FAQ</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/fr/playground">Playground</a>
+      <a class="header-link" href="../../../../../main/fr/guide/getting-started">Guide</a>
+      <a class="header-link" href="../../../../../main/fr/faq">FAQ</a>
+      <a class="header-link" href="../../../../../main/fr/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">Soutenir</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="Dépôt GitHub" title="Dépôt GitHub">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="fr"
-  data-logical-path="tools&#x2F;guard&#x2F;configuration-reference"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="tools/guard/configuration-reference"
+  data-path-to-root="../../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -155,7 +156,7 @@
   
   <div class="doc-banner">Cette traduction peut être obsolète.</div>
   
-  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#x27;est pas encore traduite. Vous avez été redirigé vers la page d&#x27;accueil de la langue.</div>
+  <div id="untranslated-banner" class="doc-banner doc-banner--info" hidden>Cette page n&#39;est pas encore traduite. Vous avez été redirigé vers la page d&#39;accueil de la langue.</div>
 
   
 <div class="doc-layout">
@@ -198,7 +199,7 @@
       
       <li>
         <a href="../../../../../main/fr/guide/environment-variables">
-          <span>Variables d&#x27;environnement</span>
+          <span>Variables d&#39;environnement</span>
         </a>
       </li>
       
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../../main/fr/guide/inspecting-the-ast">
-          <span>Inspecter l&#x27;AST</span>
+        <a href="../../../../../main/fr/guide/inspecting-the-cst">
+          <span>Inspecter l&#39;CST</span>
         </a>
       </li>
       
@@ -360,13 +361,13 @@
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/command-reference">
-            <span>Référence de commande de l&#x27;analyseur</span>
+            <span>Référence de commande de l&#39;analyseur</span>
           </a>
         </li>
         
         <li>
           <a href="../../../../../main/fr/tools/analyzer/configuration-reference">
-            <span>Référence de configuration de l&#x27;analyseur</span>
+            <span>Référence de configuration de l&#39;analyseur</span>
           </a>
         </li>
         
@@ -460,6 +461,54 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/formatter/twig">
+            <span>Formateur Twig</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter">
+            <span>Linter Twig</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../../main/fr/tools/twig-linter/rules">
+            <span>Règles</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -505,6 +554,12 @@
       <li>
         <a href="../../../../../main/fr/recipes/docker">
           <span>Recette Docker</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../../main/fr/recipes/drupal">
+          <span>Recette Drupal</span>
         </a>
       </li>
       
@@ -590,6 +645,7 @@ layering = [
     "CarthageSoftware\\UI",
     "CarthageSoftware\\Infrastructure",
 ]
+layering-reason = "Outer layers may depend on inner layers, never the reverse."
 
 [guard.perimeter.layers]
 core = ["@native", "Psl\\**"]
@@ -599,6 +655,7 @@ framework = ["Symfony\\**", "Doctrine\\**"]
 [[guard.perimeter.rules]]
 namespace = "CarthageSoftware\\Domain"
 permit = ["@layer:core"]
+reason = "Domain code may only use PHP built-ins and Psl."
 
 [[guard.perimeter.rules]]
 namespace = "CarthageSoftware\\Application"
@@ -614,6 +671,8 @@ permit = ["@all"]
 </code></pre>
 <h3 id="layering"><code>layering</code></h3>
 <p>Une liste ordonnée d'espaces de noms, du cœur le plus indépendant jusqu'à la couche la plus externe. Chaque couche ne peut dépendre que des couches définies avant elle. Une dépendance qui pointe vers une couche plus externe déclenche une violation.</p>
+<h3 id="layering-reason"><code>layering-reason</code></h3>
+<p>Explication optionnelle affichée lorsqu'une violation de layering est signalée.</p>
 <h3 id="layer-aliases">Alias de couche</h3>
 <p><code>[guard.perimeter.layers]</code> définit des groupes réutilisables d'espaces de noms et de chemins, référencés depuis les règles avec <code>@layer:&lt;name&gt;</code>.</p>
 <h3 id="rules">Règles</h3>
@@ -621,6 +680,7 @@ permit = ["@all"]
 <ul>
 <li><code>namespace</code> : l'espace de noms auquel cette règle s'applique. Soit un espace de noms se terminant par <code>\</code>, soit le mot-clé spécial <code>@global</code> pour l'espace de noms global.</li>
 <li><code>permit</code> : les dépendances autorisées. Soit une liste de chaînes, soit une liste d'objets détaillés.</li>
+<li><code>reason</code> : explication optionnelle affichée dans les messages d'erreur.</li>
 </ul>
 <h4 id="permit-values">Valeurs <code>permit</code></h4>
 <p><code>permit</code> accepte des chemins. Un chemin peut être un mot-clé, un espace de noms, un symbole ou un motif glob.</p>
@@ -643,6 +703,26 @@ permit = [{ path = "@all", kinds = ["class-like"] }]
 <li><code>path</code> : n'importe quelle des formes de chemin ci-dessus.</li>
 <li><code>kinds</code> : quels types de symboles sont autorisés. Les valeurs sont <code>class-like</code> (couvre les classes, interfaces, traits, enums), <code>function</code>, <code>constant</code> et <code>attribute</code>.</li>
 </ul>
+<h3 id="dependency-restrictions">Restrictions de dépendance</h3>
+<p><code>[[guard.perimeter.restrictions]]</code> définit des restrictions orientées vers la dépendance cible. Utilisez-les lorsqu'une dépendance ne doit être utilisée que depuis certains espaces de noms, ou doit être interdite depuis certains espaces de noms.</p>
+<pre><code class="language-toml">[[guard.perimeter.restrictions]]
+dependency = "App\\Http\\Controllers\\Controller"
+allow-from = ["App\\Http\\Controllers\\"]
+kinds = ["class-like"]
+reason = "Controllers must stay in the HTTP layer."
+
+[[guard.perimeter.restrictions]]
+dependency = "Illuminate\\Foundation\\Bus\\Dispatchable"
+deny-from = ["App\\"]
+</code></pre>
+<table><thead><tr><th style="text-align: left">Clé</th><th style="text-align: left">Description</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>dependency</code></td><td style="text-align: left">Sélecteur de symbole requis. Accepte un nom pleinement qualifié exact, un espace de noms se terminant par <code>\</code> ou un motif glob.</td></tr>
+<tr><td style="text-align: left"><code>allow-from</code></td><td style="text-align: left">Motifs optionnels d'espaces de noms sources. Lorsque la liste n'est pas vide, les dépendances correspondantes ne sont autorisées que depuis ces espaces de noms.</td></tr>
+<tr><td style="text-align: left"><code>deny-from</code></td><td style="text-align: left">Motifs optionnels d'espaces de noms sources. Les dépendances correspondantes sont interdites depuis ces espaces de noms.</td></tr>
+<tr><td style="text-align: left"><code>kinds</code></td><td style="text-align: left">Filtre optionnel sur le type de dépendance. Valeurs : <code>class-like</code>, <code>function</code>, <code>constant</code>, <code>attribute</code>. Une liste vide s'applique à tous les types.</td></tr>
+<tr><td style="text-align: left"><code>reason</code></td><td style="text-align: left">Explication optionnelle affichée dans les messages d'erreur.</td></tr>
+</tbody></table>
+<p>Les restrictions sont évaluées avant les règles <code>permit</code> ordinaires et le layering ; une permission ne peut donc pas remplacer une restriction. Si <code>allow-from</code> et <code>deny-from</code> correspondent tous les deux, <code>deny-from</code> l'emporte. Une correspondance avec <code>allow-from</code> satisfait uniquement la restriction ; les règles de périmètre ordinaires et le layering doivent toujours autoriser la dépendance lorsqu'ils sont configurés. Une configuration qui ne contient que des restrictions autorise les dépendances sans rapport ; les restrictions ne créent pas une liste d'autorisation implicite.</p>
 <h2 id="structural-guard">Guard structurel</h2>
 <p><code>[[guard.structural.rules]]</code> définit les conventions structurelles. Chaque entrée combine des sélecteurs qui choisissent quels symboles inspecter avec des contraintes que les symboles sélectionnés doivent satisfaire.</p>
 <pre><code class="language-toml">[[guard.structural.rules]]
@@ -688,8 +768,17 @@ reason = "This namespace is designated for enums only."
 <tr><td style="text-align: left"><code>must-extend</code></td><td style="text-align: left">Une classe que le symbole doit étendre.</td></tr>
 <tr><td style="text-align: left"><code>must-use-trait</code></td><td style="text-align: left">Un ou plusieurs traits que le symbole doit utiliser.</td></tr>
 <tr><td style="text-align: left"><code>must-use-attribute</code></td><td style="text-align: left">Un ou plusieurs attributs que le symbole doit porter.</td></tr>
+<tr><td style="text-align: left"><code>only-public-methods</code></td><td style="text-align: left">Noms des méthodes publiques que les classes correspondantes peuvent déclarer.</td></tr>
 <tr><td style="text-align: left"><code>reason</code></td><td style="text-align: left">Explication lisible affichée dans les messages d'erreur.</td></tr>
 </tbody></table>
+<h4 id="public-method-allowlists">Listes d'autorisation de méthodes publiques</h4>
+<p><code>only-public-methods</code> s'applique aux classes et énumère les noms de méthodes autorisés. La comparaison des noms est insensible à la casse. Les méthodes listées sont autorisées, mais leur présence n'est pas obligatoire.</p>
+<pre><code class="language-toml">[[guard.structural.rules]]
+on = "App\\Http\\Controllers\\**"
+target = "class"
+only-public-methods = ["__construct", "__invoke"]
+</code></pre>
+<p>La règle vérifie les méthodes publiques déclarées directement par chaque classe correspondante, y compris les méthodes sans visibilité explicite, puisque PHP les considère comme publiques. Les méthodes privées et protégées ne sont pas restreintes. Les méthodes héritées et celles fournies par des traits ne sont pas vérifiées.</p>
 <h4 id="inheritance-constraint-shapes">Formes des contraintes d'héritage</h4>
 <p><code>must-implement</code>, <code>must-extend</code>, <code>must-use-trait</code> et <code>must-use-attribute</code> acceptent une seule chaîne, un tableau de chaînes (AND) ou un tableau de tableaux de chaînes (OR de AND). Le littéral <code>"@nothing"</code> interdit toute valeur.</p>
 <pre><code class="language-toml">must-extend = "App\\BaseClass"
@@ -727,11 +816,19 @@ must-implement = "@nothing"
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
+      <a class="doc-toc__link" href="#layering-reason">layering-reason</a>
+    </li>
+    
+    <li class="doc-toc__item doc-toc__item--lvl3">
       <a class="doc-toc__link" href="#layer-aliases">Alias de couche</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl3">
       <a class="doc-toc__link" href="#rules">Règles</a>
+    </li>
+    
+    <li class="doc-toc__item doc-toc__item--lvl3">
+      <a class="doc-toc__link" href="#dependency-restrictions">Restrictions de dépendance</a>
     </li>
     
     <li class="doc-toc__item doc-toc__item--lvl2">
@@ -771,11 +868,12 @@ must-implement = "@nothing"
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>

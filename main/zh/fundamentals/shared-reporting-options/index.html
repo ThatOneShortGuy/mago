@@ -5,38 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   
   <title>报告与修复选项 · Mago</title>
-  <meta name="description" content="lint、analyze 和 ast 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
+  <meta name="description" content="lint、analyze 和 cst 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
   <meta property="og:type" content="website">
   <meta property="og:title" content="报告与修复选项 · Mago">
-  <meta property="og:description" content="lint、analyze 和 ast 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
-  <meta property="og:url" content="https://mago.carthage.software/main/zh/fundamentals&#x2F;shared-reporting-options/">
+  <meta property="og:description" content="lint、analyze 和 cst 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
+  <meta property="og:url" content="https://mago.carthage.software/main/zh/fundamentals/shared-reporting-options/">
   <meta property="og:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:locale" content="zh">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="报告与修复选项 · Mago">
-  <meta name="twitter:description" content="lint、analyze 和 ast 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
+  <meta name="twitter:description" content="lint、analyze 和 cst 共用的一组参数,用于报告问题、应用修复以及管理 baseline。">
   <meta name="twitter:image" content="https://mago.carthage.software/main/_assets/img/banner.png">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" sizes="32x32" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../main/_assets/img/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="../../../../main/_assets/img/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../main/_assets/img/apple-touch-icon.png">
   
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/reset.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/base.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/typography.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/layout.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/components.css">
-  <link rel="stylesheet" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/css/code.css">
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSerif-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../../../../main/_assets/fonts/IBMPlexMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../../../../main/_assets/css/reset.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/base.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/typography.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/layout.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/components.css">
+  <link rel="stylesheet" href="../../../../main/_assets/css/code.css">
+  
   
   
   <style>:root { --accent: #3c8d58; }</style>
-  <link rel="canonical" href="https://mago.carthage.software/main/zh/fundamentals&#x2F;shared-reporting-options/">
+  <link rel="canonical" href="https://mago.carthage.software/main/zh/fundamentals/shared-reporting-options/">
   <script>
     (() => {
       try {
@@ -51,8 +52,8 @@
 <body>
   <header class="site-header">
   <div class="header-start">
-    <a class="brand" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/">
-      <img class="brand__mark" src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
+    <a class="brand" href="../../../../main/zh/">
+      <img class="brand__mark" src="../../../../main/_assets/img/favicon-32x32.png" alt="" width="22" height="22">
       <span class="brand__name">Mago</span>
       <span class="brand__divider">/</span>
       <span class="brand__tag">PHP toolchain</span>
@@ -65,15 +66,15 @@
         <circle cx="7" cy="7" r="4.5"/>
         <path d="M10.5 10.5 14 14"/>
       </svg>
-      <span class="search-trigger__hint">按 &#x2F; 搜索</span>
+      <span class="search-trigger__hint">按 / 搜索</span>
     </button>
   </div>
 
   <div class="header-end">
     <nav class="header-nav" aria-label="Primary">
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/guide/getting-started">指南</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/faq">常见问题</a>
-      <a class="header-link" href="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/zh/playground">Playground</a>
+      <a class="header-link" href="../../../../main/zh/guide/getting-started">指南</a>
+      <a class="header-link" href="../../../../main/zh/faq">常见问题</a>
+      <a class="header-link" href="../../../../main/zh/playground">Playground</a>
       <a class="header-link" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener">赞助</a>
       <a class="header-icon" href="https://github.com/carthage-software/mago" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" width="16" height="16">
@@ -91,8 +92,8 @@
   data-version-select
   data-current-version="main"
   data-current-lang="zh"
-  data-logical-path="fundamentals&#x2F;shared-reporting-options"
-  data-path-to-root="..&#x2F;..&#x2F;..&#x2F;..&#x2F;"
+  data-logical-path="fundamentals/shared-reporting-options"
+  data-path-to-root="../../../../"
 >
   <summary>
     <span class="plate__sigil">v</span>
@@ -215,8 +216,8 @@
       </li>
       
       <li>
-        <a href="../../../../main/zh/guide/inspecting-the-ast">
-          <span>查看 AST</span>
+        <a href="../../../../main/zh/guide/inspecting-the-cst">
+          <span>查看 CST</span>
         </a>
       </li>
       
@@ -293,6 +294,33 @@
         
         <li>
           <a href="../../../../main/zh/tools/linter/rules">
+            <span>规则</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Linter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/zh/tools/twig-linter">
+            <span>Twig Linter</span>
+          </a>
+        </li>
+        
+        <li>
+          <a href="../../../../main/zh/tools/twig-linter/rules">
             <span>规则</span>
           </a>
         </li>
@@ -487,6 +515,27 @@
       
     </details>
     
+    <details class="sidebar-subsection">
+      <summary class="sidebar-subsection__heading">
+        <span class="sidebar-subsection__title">Twig Formatter</span>
+        <span class="sidebar-subsection__chev" aria-hidden="true">+</span>
+      </summary>
+
+      
+      <ul class="sidebar-section__items sidebar-subsection__items">
+        
+        <li>
+          <a href="../../../../main/zh/tools/formatter/twig">
+            <span>Twig 格式化器</span>
+          </a>
+        </li>
+        
+      </ul>
+      
+
+      
+    </details>
+    
   </details>
   
   <details class="sidebar-section">
@@ -532,6 +581,12 @@
       <li>
         <a href="../../../../main/zh/recipes/docker">
           <span>Docker 实用方案</span>
+        </a>
+      </li>
+      
+      <li>
+        <a href="../../../../main/zh/recipes/drupal">
+          <span>Drupal 实用方案</span>
         </a>
       </li>
       
@@ -582,7 +637,7 @@
   <main id="content" class="doc-content">
     <article class="doc-page">
       <h1 id="reporting-and-fixing-options">报告与修复选项</h1>
-<p><code>mago lint</code>、<code>mago analyze</code> 和 <code>mago ast</code> 共用一组参数,用来控制问题如何被报告、修复如何被应用。本页是这些参数的集中参考,这样我们就不必在每个命令页里重复它们。</p>
+<p><code>mago lint</code>、<code>mago analyze</code> 和 <code>mago cst</code> 共用一组参数,用来控制问题如何被报告、修复如何被应用。本页是这些参数的集中参考,这样我们就不必在每个命令页里重复它们。</p>
 <h2 id="auto-fixing">自动修复</h2>
 <p>大多数 linter 规则以及若干分析器检查都附带了自动修复。下列参数控制如何应用修复,以及哪些类别可被修复。</p>
 <table><thead><tr><th style="text-align: left">参数</th><th style="text-align: left">说明</th></tr></thead><tbody>
@@ -597,6 +652,7 @@
 <p>Mago 如何呈现它发现的问题。</p>
 <table><thead><tr><th style="text-align: left">参数</th><th style="text-align: left">说明</th></tr></thead><tbody>
 <tr><td style="text-align: left"><code>--sort</code></td><td style="text-align: left">按级别、code、位置依次排序报告中的问题。</td></tr>
+<tr><td style="text-align: left"><code>--stats</code></td><td style="text-align: left">显示每个 code 的问题数量汇总（按数量从高到低排序），而不是逐条列出问题。等同于 <code>--reporting-format code-count</code> 的简写。</td></tr>
 <tr><td style="text-align: left"><code>--reporting-target &lt;TARGET&gt;</code></td><td style="text-align: left">报告写入的目标。可选值:<code>stdout</code>(默认)、<code>stderr</code>。</td></tr>
 <tr><td style="text-align: left"><code>--reporting-format &lt;FORMAT&gt;</code></td><td style="text-align: left">输出格式。详见下文;默认自动检测。</td></tr>
 <tr><td style="text-align: left"><code>--minimum-fail-level &lt;LEVEL&gt;</code>, <code>-m</code></td><td style="text-align: left">触发非零退出的最低级别。可选值:<code>note</code>、<code>help</code>、<code>warning</code>、<code>error</code>。默认采用配置文件中的值,若无则为 <code>error</code>。</td></tr>
@@ -698,11 +754,12 @@ mago analyze --retain-code invalid-argument --retain-code type-mismatch
 
   
 
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/theme.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/search.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/anchors.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/versions.js" defer></script>
-  <script src="..&#x2F;..&#x2F;..&#x2F;..&#x2F;main/_assets/js/highlight.js" defer></script>
+  <script src="../../../../main/_assets/js/theme.js" defer></script>
+  <script src="../../../../main/_assets/js/search.js" defer></script>
+  <script src="../../../../main/_assets/js/anchors.js" defer></script>
+  <script src="../../../../main/_assets/js/versions.js" defer></script>
+  <script src="../../../../main/_assets/js/highlight.js" defer></script>
+  
   
   
 </body>
